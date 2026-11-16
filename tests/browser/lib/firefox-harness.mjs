@@ -22,6 +22,8 @@ export const GECKODRIVER_URL = `https://github.com/mozilla/geckodriver/releases/
 export const XPI_PATH = path.resolve(process.env.BH_FIREFOX_XPI || path.join(TOOLS_DIR, 'floccus-5.13.0.xpi'))
 export const GECKODRIVER_PATH = path.resolve(process.env.BH_GECKODRIVER ||
   path.join(TOOLS_DIR, 'geckodriver', process.platform === 'win32' ? 'geckodriver.exe' : 'geckodriver'))
+// Default WebDriver async-script timeout; must exceed the longest RPC wait (60 s default sync).
+export const SCRIPT_TIMEOUT_MS = 70000
 const WIN_FIREFOX = ['C:/Program Files/Mozilla Firefox/firefox.exe', 'C:/Program Files (x86)/Mozilla Firefox/firefox.exe']
 
 /** Thrown for any close/cleanup problem. `profileRetained` is the directory left on disk. */
@@ -77,17 +79,25 @@ export function pidAlive(pid) {
  * Quit the WebDriver session, prove the browser process is gone, and only then delete the
  * profile. Any problem throws FirefoxHarnessError carrying `profileRetained`. Messages hold
  * only the path and the cause, never profile contents (a profile may contain credentials).
+ * `service` (the owned geckodriver service) is always killed best-effort, even when quit fails.
+ * Only the pid this harness learned from its own session is ever probed; nothing is signalled.
  */
-export async function closeAndCleanFirefox({ driver, profileDir, pid },
+export async function closeAndCleanFirefox({ driver, profileDir, pid, service },
   { quitTimeoutMs = 30000, exitWaitMs = 15000, pollMs = 100, isAlive = pidAlive, remove = removeProfileDir } = {}) {
   const retained = (why, cause) => new FirefoxHarnessError(`profile RETAINED at ${profileDir}: ${why}`, { profileRetained: profileDir, cause })
+  const killService = async () => {
+    if (!service) return
+    try { await withTimeout(Promise.resolve(service.kill()), quitTimeoutMs, 'service.kill') } catch { /* best effort */ }
+  }
   if (driver) {
     try {
       await withTimeout(driver.quit(), quitTimeoutMs, 'driver.quit')
     } catch (e) {
+      await killService()
       throw retained(`driver quit failed (${e.message}); browser may still be running`, e)
     }
   }
+  await killService()
   if (!pid) throw retained('browser pid unknown, cannot prove the browser exited')
   const deadline = Date.now() + exitWaitMs
   while (isAlive(pid)) {
@@ -100,13 +110,56 @@ export async function closeAndCleanFirefox({ driver, profileDir, pid },
   return true
 }
 
+const sessionPid = session => session.getCapabilities().get('moz:processID')
+
+/**
+ * Start a WebDriver session while keeping ownership of the driver and service handles.
+ * `create()` must synchronously return { driver, service } (selenium's Driver.createSession
+ * starts the session in the background; `driver.getSession()` is the startup promise).
+ * On timeout or failure the handles are NOT lost: a late-arriving session is quit (bounded),
+ * the owned service is killed, and the error carries `owned = { driver, service, pid }`
+ * (pid only if our own session reported it). A session that arrives even later than
+ * `lateWaitMs` is still shut down by a background handler. Nothing here signals any process.
+ */
+export async function startOwnedDriver({ create, startupTimeoutMs = 60000, lateWaitMs = 20000, quitTimeoutMs = 20000 }) {
+  const { driver, service } = create()
+  const sessionP = Promise.resolve(driver.getSession())
+  const settled = sessionP.then(s => ({ s }), e => ({ e }))
+  const killService = async () => {
+    try { await withTimeout(Promise.resolve(service.kill()), quitTimeoutMs, 'service.kill') } catch { /* best effort */ }
+  }
+  let first
+  try {
+    first = await withTimeout(settled, startupTimeoutMs, 'start Firefox via geckodriver')
+  } catch (timeoutErr) {
+    // Startup is slow or hung. Keep ownership: give it a bounded grace period.
+    let pid
+    let late
+    try { late = await withTimeout(settled, lateWaitMs, 'late startup grace period') } catch { /* still hung */ }
+    if (late && late.s) {
+      try { pid = sessionPid(late.s) } catch { /* unknown */ }
+      try { await withTimeout(driver.quit(), quitTimeoutMs, 'late driver.quit') } catch { /* retained path reports it */ }
+    } else {
+      // Even later arrival: shut it down whenever it shows up, so no browser is orphaned.
+      settled.then(r => { if (r.s) { Promise.resolve().then(() => driver.quit()).catch(() => {}).finally(() => Promise.resolve(service.kill()).catch(() => {})) } })
+    }
+    await killService()
+    throw Object.assign(new FirefoxHarnessError(timeoutErr.message), { owned: { driver, service, pid } })
+  }
+  if (first.e) {
+    await killService()
+    throw Object.assign(first.e, { owned: { driver, service, pid: undefined } })
+  }
+  return { driver, service, pid: sessionPid(first.s) }
+}
+
 /**
  * Launch headless Firefox in a fresh isolated profile, temporarily install the unmodified
  * signed floccus XPI and locate its moz-extension UUID.
- * Returns { driver, profileDir, pid, addonId, extensionUuid, browserVersion, seleniumVersion }.
+ * Returns { driver, service, profileDir, pid, addonId, extensionUuid, browserVersion, seleniumVersion }.
  * On any failure after launch the browser is quit and the profile cleaned (or retained and reported).
  */
-export async function launchFirefoxWithFloccus({ headless = true, timeoutMs = 60000 } = {}) {
+export async function launchFirefoxWithFloccus({ headless = true, timeoutMs = 60000, scriptTimeoutMs = SCRIPT_TIMEOUT_MS } = {}) {
   const resolved = resolveFirefox()
   if (resolved.missing) throw Object.assign(new Error('Firefox executable not found'), { code: 'BROWSER_MISSING' })
   verifyToolchain()
@@ -123,27 +176,30 @@ export async function launchFirefoxWithFloccus({ headless = true, timeoutMs = 60
     'datareporting.policy.dataSubmissionEnabled': false, 'toolkit.telemetry.reportingpolicy.firstRun': false,
     'browser.startup.homepage_override.mstone': 'ignore'
   })) options.setPreference(k, v)
-  // Scoped to the child process tree we own (not a global setting): lets Marionette read the add-on
-  // UUID pref in chrome context. The profile is disposable and nothing privileged is written.
-  // Env is scoped to the child process tree we own (not a global setting): it lets Marionette read
-  // the add-on UUID pref in chrome context. The profile is disposable; nothing is written via it.
+  // Env is scoped to the geckodriver child process tree we own (not a global setting): it lets
+  // Marionette read the add-on UUID pref in chrome context. The profile is disposable.
   const service = new firefox.ServiceBuilder(GECKODRIVER_PATH)
-    .setEnvironment({ ...process.env, MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: '1' }).setEnvironment({ ...process.env, MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: '1' })
-  let driver, pid
+    .setEnvironment({ ...process.env, MOZ_REMOTE_ALLOW_SYSTEM_ACCESS: '1' })
+    .build()
+  let owned = { driver: undefined, service, pid: undefined }
   try {
-    driver = await withTimeout(
-      new selenium.Builder().forBrowser('firefox').setFirefoxOptions(options).setFirefoxService(service).build(),
-      timeoutMs, 'start Firefox via geckodriver')
+    const started = await startOwnedDriver({
+      create: () => ({ driver: firefox.Driver.createSession(options, service), service }),
+      startupTimeoutMs: timeoutMs
+    }).catch(e => { if (e.owned) owned = { ...e.owned, driver: undefined }; throw e })
+    const { driver, pid } = started
+    owned = { driver, service, pid }
+    // Bound executeAsyncScript so a hung page script fails inside the RPC timeouts (45/60 s).
+    await driver.manage().setTimeouts({ script: scriptTimeoutMs })
     const caps = await driver.getCapabilities()
-    pid = caps.get('moz:processID')
     const browserVersion = caps.getBrowserVersion()
     // Temporary install of the official signed XPI: no signing/policy setting is changed.
     const addonId = await withTimeout(driver.installAddon(XPI_PATH, true), timeoutMs, 'installAddon')
     const extensionUuid = await locateExtensionUuid(driver, selenium, timeoutMs)
-    return { driver, profileDir, pid, addonId, extensionUuid, browserVersion, seleniumVersion }
+    return { driver, service, profileDir, pid, addonId, extensionUuid, browserVersion, seleniumVersion }
   } catch (err) {
     try {
-      err.profileCleaned = await closeAndCleanFirefox({ driver, profileDir, pid })
+      err.profileCleaned = await closeAndCleanFirefox({ ...owned, profileDir })
     } catch (cleanupErr) {
       err.profileCleaned = false
       err.profileRetained = cleanupErr.profileRetained

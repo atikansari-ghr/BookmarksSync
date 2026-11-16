@@ -117,7 +117,7 @@ try {
       const folderId = await createSandboxFolder(driver, 'bookmarksync-harness-rpc')
       const accountId = await importAccount(driver, {
         type: 'nextcloud-bookmarks', url: `http://127.0.0.1:${port}/`, username: 'harness',
-        password: process.env.BOOKMARKSYNC_APP_TOKEN || 'harness-placeholder-not-a-secret',
+        password: 'harness-placeholder-not-a-secret', // fixed placeholder only; no environment secrets are read
         serverRoot: '', localRoot: folderId, strategy: 'slave', failsafe: true,
         syncIntervalEnabled: false, enabled: true, includeCredentials: false, allowRedirects: false, label: 'harness-recorder'
       })

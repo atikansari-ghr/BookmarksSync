@@ -57,19 +57,39 @@ export function isContained(parent, child) {
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel)
 }
 
-export function makeProfileDir(label) {
-  fs.mkdirSync(PROFILES_ROOT, { recursive: true })
-  const dir = path.join(PROFILES_ROOT, `${label}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`)
-  if (!isContained(PROFILES_ROOT, dir)) throw new Error('profile path escaped root')
+/** Like isContained, but on physical paths: resolves junctions/symlinks in both. */
+export function isPhysicallyContained(parent, child) {
+  return isContained(fs.realpathSync.native(parent), fs.realpathSync.native(child))
+}
+
+export function makeProfileDir(label, { root = PROFILES_ROOT, toolsDir = TOOLS_DIR } = {}) {
+  fs.mkdirSync(toolsDir, { recursive: true })
+  fs.mkdirSync(root, { recursive: true })
+  // The root must physically live inside the tools dir (a junction here would redirect every profile).
+  if (!isPhysicallyContained(toolsDir, root)) throw new Error(`refusing: profiles root escapes tools dir: ${root}`)
+  const dir = path.join(root, `${label}-${Date.now()}-${crypto.randomBytes(4).toString('hex')}`)
+  if (!isContained(root, dir)) throw new Error('profile path escaped root')
   fs.mkdirSync(dir)
-  fs.writeFileSync(path.join(dir, PROFILE_MARKER), 'created by tests/browser harness\n')
+  try {
+    if (fs.lstatSync(dir).isSymbolicLink() || !isPhysicallyContained(root, dir)) throw new Error('profile path escaped root (physical)')
+    fs.writeFileSync(path.join(dir, PROFILE_MARKER), 'created by tests/browser harness\n')
+  } catch (e) {
+    try { fs.rmdirSync(dir) } catch {}
+    throw e
+  }
   return dir
 }
 
-/** Remove only a directory this harness created: inside PROFILES_ROOT and carrying the marker. */
-export function removeProfileDir(dir) {
+/**
+ * Remove only a directory this harness created: lexically AND physically (realpath) inside the
+ * profiles root, not itself a link, and carrying the marker.
+ */
+export function removeProfileDir(dir, { root = PROFILES_ROOT } = {}) {
   const abs = path.resolve(dir)
-  if (!isContained(PROFILES_ROOT, abs)) throw new Error(`refusing to delete outside harness root: ${abs}`)
+  if (!isContained(root, abs)) throw new Error(`refusing to delete outside harness root: ${abs}`)
+  if (!fs.existsSync(abs)) return true
+  if (fs.lstatSync(abs).isSymbolicLink()) throw new Error(`refusing to delete a link: ${abs}`)
+  if (!isPhysicallyContained(root, abs)) throw new Error(`refusing to delete: resolves outside harness root: ${abs}`)
   if (!fs.existsSync(path.join(abs, PROFILE_MARKER))) throw new Error(`refusing to delete unmarked directory: ${abs}`)
   fs.rmSync(abs, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
   return !fs.existsSync(abs)

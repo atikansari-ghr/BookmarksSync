@@ -15,11 +15,11 @@
     "smoke:chrome": "node smoke.mjs --browser=chrome",
     "smoke:edge": "node smoke.mjs --browser=edge",
     "pending": "node server-capability.pending.mjs",
-    "test:firefox": "node --test test/firefox-cleanup.test.mjs",
+    "test:firefox": "node --test test/firefox-cleanup.test.mjs test/firefox-startup.test.mjs test/profile-containment.test.mjs",
     "smoke:firefox": "node firefox-smoke.mjs"
   },
   "devDependencies": {
     "playwright": "1.65.1",
-    "selenium-webdriver": "4.52.0"
+    "selenium-webdriver": "4.46.0"
   }
 }

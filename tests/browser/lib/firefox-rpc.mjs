@@ -94,6 +94,8 @@ export function getAccountStatus(driver, accountId) {
  * The listener is registered before the message is sent, as Controller.syncAccount does.
  */
 export async function syncAccount(driver, accountId, { strategy, force = true, timeoutMs = 60000 } = {}) {
+  // WebDriver's async-script timeout must outlive the in-page wait (+5 s) so the page-side timer fires first.
+  await driver.manage().setTimeouts({ script: timeoutMs + 5000 })
   const outcome = await withTimeout(evalInPage(driver, (accountId, strategy, force, timeoutMs) => new Promise((resolve) => {
     const timer = setTimeout(() => {
       browser.runtime.onMessage.removeListener(listener)

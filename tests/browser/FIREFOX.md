@@ -16,7 +16,7 @@ prove server protocol compatibility. Server sync and cross-vendor root assertion
 | Firefox | 160.0 (system install, not modified) | `C:\Program Files\Mozilla Firefox\firefox.exe` or `BH_FIREFOX_EXE` |
 | floccus XPI | v5.13.0, add-on id `floccus@handmadeideas.org` | https://github.com/floccusaddon/floccus/releases/download/v5.13.0/floccus-build-v5.13.0.xpi, `f9aa443d5f64612c7d1c17bce2df8a9441ec756665c8a64b89f62d7d69ad1630` |
 | geckodriver | 0.37.1 win64 | https://github.com/mozilla/geckodriver/releases/download/v0.37.1/geckodriver-v0.37.1-win64.zip, zip `dfed9315abe8d2fbc1b6161a2ee8002452e79cf05ee92fdc653a4e26bc35edd8` (matches the GitHub release digest) |
-| selenium-webdriver | 4.52.0 (exact, in `package-lock.json`) | npm |
+| selenium-webdriver | 4.46.0 (exact, in `package-lock.json`; engines node >=20, newest line that supports the installed Node 24.19) | npm |
 
 The XPI digest is re-checked on every run. The geckodriver zip digest is checked at setup time (below).
 Nothing is rebuilt or patched, and no signing or policy setting is changed: the signed XPI is installed
@@ -61,9 +61,10 @@ npm run test:firefox      # unit tests: cleanup/error helpers, digest check (no 
 npm run smoke:firefox     # native smoke (headless); add `-- --headed` or `-- --no-rpc`
 ```
 
-POSIX is identical (`npm run test:firefox`, `npm run smoke:firefox`). Optional: `BOOKMARKSYNC_APP_TOKEN`
-supplies the account credential; otherwise a non-secret placeholder is used. It is never printed or written.
-
+POSIX is identical (`npm run test:firefox`, `npm run smoke:firefox`). The smoke imports the account with a fixed
+placeholder credential only; it reads no environment secrets. A future real-server run will have the genuine
+extension store whatever credential it is given inside the disposable profile; the harness never logs it or
+writes it to result files, and the profile is deleted (or reported as retained) afterwards.
 ## Result statuses and exit codes
 
 | Status | Exit | Meaning |
@@ -94,6 +95,12 @@ update, search, remove and removeTree inside a sandbox folder, import of a flocc
   passed to Firefox via `-profile`. Real user profiles are never used. Profile prefs go to that profile only.
 - `MOZ_REMOTE_ALLOW_SYSTEM_ACCESS=1` is set in the environment of the geckodriver child process only. It is
   needed to read the UUID pref in chrome context. It is not a global setting.
+- Containment is physical: `harness.mjs` resolves junctions/symlinks (`realpath`) before creating a profile (root must
+  live inside `.tools`) and before deleting one (must resolve inside the root, not be a link, carry the marker).
+- Startup keeps ownership of the driver and geckodriver service handles: a slow or hung start is bounded, a late
+  session is quit, the service is killed, and an unknown browser pid fails closed (profile retained). The harness
+  never signals any process it did not start. `executeAsyncScript` has an explicit timeout (70 s default;
+  `syncAccount` sets timeout+5 s).
 - Deletion happens only after `driver.quit()` completes (bounded timeout) and the browser PID is confirmed
   gone, and only after the existing `removeProfileDir` containment and marker check passes.
 - Quit rejection or timeout, a still-running browser, an unknown PID, or failed or incomplete deletion
