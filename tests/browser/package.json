@@ -4,7 +4,9 @@
   "private": true,
   "description": "Dev-only harness that drives the stock, unmodified floccus extension in isolated browser profiles.",
   "type": "module",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "test": "node --test test/cleanup.test.mjs",
     "smoke": "node smoke.mjs",
@@ -12,9 +14,12 @@
     "smoke:brave": "node smoke.mjs --browser=brave",
     "smoke:chrome": "node smoke.mjs --browser=chrome",
     "smoke:edge": "node smoke.mjs --browser=edge",
-    "pending": "node server-capability.pending.mjs"
+    "pending": "node server-capability.pending.mjs",
+    "test:firefox": "node --test test/firefox-cleanup.test.mjs",
+    "smoke:firefox": "node firefox-smoke.mjs"
   },
   "devDependencies": {
-    "playwright": "1.65.1"
+    "playwright": "1.65.1",
+    "selenium-webdriver": "4.52.0"
   }
 }
