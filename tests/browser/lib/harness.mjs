@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs'
 import crypto from 'node:crypto'
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 export const REPO_ROOT = path.resolve(here, '..', '..', '..')
@@ -166,7 +166,7 @@ export function parseDevToolsActivePort(text) {
 }
 
 /** Minimal CDP client over a WebSocket-like object (send / addEventListener). */
-export function createCdpClient(socket) {
+export function createCdpClient(socket, { requestTimeoutMs = 15000 } = {}) {
   let nextId = 0
   let closed = false
   const pending = new Map()
@@ -193,8 +193,18 @@ export function createCdpClient(socket) {
       if (closed) return Promise.reject(new Error('CDP connection closed'))
       const id = ++nextId
       return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject })
-        socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }))
+        // Every request has a deadline: a response that never arrives must not hang the run.
+        const timer = setTimeout(() => {
+          pending.delete(id)
+          reject(new Error(`timeout after ${requestTimeoutMs}ms: CDP ${method}`))
+        }, requestTimeoutMs)
+        pending.set(id, {
+          resolve: v => { clearTimeout(timer); resolve(v) },
+          reject: e => { clearTimeout(timer); reject(e) }
+        })
+        try {
+          socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }))
+        } catch (e) { pending.get(id)?.reject(e); pending.delete(id) }
       })
     },
     on(method, handler) {
@@ -246,22 +256,41 @@ export async function waitForServiceWorkerTarget(client, predicate, timeoutMs) {
  * Playwright context that closeAndClean uses. close() asks the browser to quit, then AWAITS
  * process exit; a process that stays alive is killed and close() fails (profile retained).
  */
-export function createOwnedBrowserHandle({ child, client }, { exitTimeoutMs = 15000 } = {}) {
+export function createOwnedBrowserHandle({ child, client }, { exitTimeoutMs = 8000, killTimeoutMs = 5000 } = {}) {
   let exited = child.exitCode !== null && child.exitCode !== undefined
   const exitP = exited ? Promise.resolve() : new Promise(r => child.once('exit', () => { exited = true; r() }))
   return {
     browser: () => ({ isConnected: () => !exited }),
+    // Whole shutdown is bounded by exitTimeoutMs + killTimeoutMs (kept below closeAndClean's own limit).
     async close() {
       let sendErr
-      try { await client.send('Browser.close') } catch (e) { sendErr = e }
+      // Browser.close is fire-and-forget: its response may never come (or the socket drops as Chrome quits).
+      client.send('Browser.close').catch(e => { sendErr = e })
       try {
         await withTimeout(exitP, exitTimeoutMs, 'browser process exit')
+        client.close()
+        return
       } catch (e) {
-        try { child.kill() } catch {}
-        throw new Error(`browser process did not exit (${e.message}${sendErr ? `; Browser.close: ${sendErr.message}` : ''})`)
+        const graceful = e.message
+        try {
+          terminateProcess(child)
+          await withTimeout(exitP, killTimeoutMs, 'forced termination')
+        } catch (killErr) {
+          client.close()
+          throw new Error(`browser process did not exit, even after forced kill (${graceful}; ${killErr.message}${sendErr ? `; Browser.close: ${sendErr.message}` : ''})`)
+        }
+        client.close()
+        throw new Error(`browser process did not exit gracefully and was force-killed (${graceful}${sendErr ? `; Browser.close: ${sendErr.message}` : ''})`)
       }
-      client.close()
     }
+  }
+}
+
+/** Force-terminate a process this harness spawned (and only it, with its own children on Windows). */
+function terminateProcess(child) {
+  try { child.kill() } catch {}
+  if (process.platform === 'win32' && child.pid) {
+    try { spawnSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true, timeout: 5000 }) } catch {}
   }
 }
 
@@ -270,7 +299,8 @@ export async function waitUntilReady(probe, timeoutMs, what, intervalMs = 50) {
   const deadline = Date.now() + timeoutMs
   let last
   while (Date.now() < deadline) {
-    try { if (await probe()) return } catch (e) { last = e }
+    // Each attempt is itself bounded by the time left, so a probe that never settles cannot hang us.
+    try { if (await withTimeout(Promise.resolve().then(probe), Math.max(1, deadline - Date.now()), what)) return } catch (e) { last = e }
     await new Promise(r => setTimeout(r, intervalMs))
   }
   throw new Error(`timeout after ${timeoutMs}ms: ${what}${last ? ` (${last.message.split('\n')[0]})` : ''}`)
@@ -302,7 +332,7 @@ async function launchChromeNative({ resolved, headless, loadTimeoutMs }) {
       ws.addEventListener('open', res)
       ws.addEventListener('error', () => rej(new Error('CDP websocket error')))
     }), loadTimeoutMs, 'CDP websocket open')
-    client = createCdpClient(ws)
+    client = createCdpClient(ws, { requestTimeoutMs: loadTimeoutMs })
     handle = createOwnedBrowserHandle({ child, client })
     const browserVersion = (await client.send('Browser.getVersion')).product.replace(/^Chrome\//, '')
     await client.send('Target.setDiscoverTargets', { discover: true })
@@ -330,8 +360,8 @@ async function launchChromeNative({ resolved, headless, loadTimeoutMs }) {
         handle = {
           browser: () => ({ isConnected: () => child.exitCode === null }),
           close: async () => {
-            child.kill()
-            await withTimeout(new Promise(r => (child.exitCode !== null ? r() : child.once('exit', r))), 10000, 'browser process exit')
+            terminateProcess(child)
+            await withTimeout(new Promise(r => (child.exitCode !== null ? r() : child.once('exit', r))), 8000, 'forced termination')
           }
         }
       }

@@ -170,7 +170,7 @@ test('owned browser handle: process that never exits fails close (and is killed)
   const dir = newProfile()
   const child = fakeChild()
   const client = { send: async () => ({}), close() {} }
-  const h = createOwnedBrowserHandle({ child, client }, { exitTimeoutMs: 50 })
+  const h = createOwnedBrowserHandle({ child, client }, { exitTimeoutMs: 50, killTimeoutMs: 50 })
   try {
     await assert.rejects(closeAndClean({ context: h, profileDir: dir }),
       e => e.profileRetained === dir && /did not exit|timeout/i.test(e.message))
@@ -182,7 +182,7 @@ test('owned browser handle: process that never exits fails close (and is killed)
 test('owned browser handle: Browser.close rejection still waits/kills and fails when process stays up', async () => {
   const child = fakeChild()
   const client = { send: async () => { throw new Error('ws gone') }, close() {} }
-  const h = createOwnedBrowserHandle({ child, client }, { exitTimeoutMs: 50 })
+  const h = createOwnedBrowserHandle({ child, client }, { exitTimeoutMs: 50, killTimeoutMs: 50 })
   await assert.rejects(h.close(), /did not exit|timeout|ws gone/i)
   assert.equal(h.browser().isConnected(), true)
 })
@@ -194,4 +194,53 @@ test('waitUntilReady retries thrown/falsy probes until ready, then times out wit
   await waitUntilReady(async () => { if (++n < 3) throw new Error('chrome is not defined'); return true }, 2000, 'x', 5)
   assert.equal(n, 3)
   await assert.rejects(waitUntilReady(async () => { throw new Error('still no') }, 40, 'apis', 5), /timeout.*apis.*still no/)
+})
+
+// ---- round 1 review: bounded requests and bounded, awaited shutdown ----
+test('cdp client: a request that is never answered rejects at its deadline and is dropped', async () => {
+  const s = new FakeSocket()
+  const c = createCdpClient(s, { requestTimeoutMs: 40 })
+  const t0 = Date.now()
+  await assert.rejects(c.send('Never.answers'), /timeout.*Never\.answers/i)
+  assert.ok(Date.now() - t0 < 1000)
+  s.reply({ id: 1, result: {} }) // late reply must be ignored without throwing
+})
+
+test('waitUntilReady: a probe that never settles still fails within the overall bound', async () => {
+  const t0 = Date.now()
+  await assert.rejects(waitUntilReady(() => new Promise(() => {}), 100, 'hung probe', 5), /timeout.*hung probe/i)
+  assert.ok(Date.now() - t0 < 1500)
+})
+
+test('owned handle: hung Browser.close response + process that exits on kill: bounded, kill AWAITED before failing', async () => {
+  const child = fakeChild()
+  child.kill = () => { child.killed = true; setTimeout(() => child.exit(1), 30) }
+  const client = { send: () => new Promise(() => {}), close() {} }
+  const h = createOwnedBrowserHandle({ child, client }, { exitTimeoutMs: 50, killTimeoutMs: 1000 })
+  const t0 = Date.now()
+  await assert.rejects(h.close(), /did not exit gracefully|did not exit/i)
+  assert.equal(child.killed, true)
+  assert.notEqual(child.exitCode, null, 'forced termination must have completed before close() settled')
+  assert.equal(h.browser().isConnected(), false)
+  assert.ok(Date.now() - t0 < 2000)
+})
+
+test('owned handle: hung Browser.close response but process exits by itself: close succeeds', async () => {
+  const child = fakeChild()
+  setTimeout(() => child.exit(0), 20)
+  const h = createOwnedBrowserHandle({ child, client: { send: () => new Promise(() => {}), close() {} } }, { exitTimeoutMs: 1000 })
+  await h.close()
+  assert.equal(h.browser().isConnected(), false)
+})
+
+test('owned handle: stubborn process survives kill: fails, still reported connected, profile preserved', async () => {
+  const dir = newProfile()
+  const child = fakeChild() // kill() does nothing
+  const h = createOwnedBrowserHandle({ child, client: { send: () => new Promise(() => {}), close() {} } }, { exitTimeoutMs: 40, killTimeoutMs: 40 })
+  try {
+    await assert.rejects(closeAndClean({ context: h, profileDir: dir }, { closeTimeoutMs: 5000 }),
+      e => e.profileRetained === dir && /even after (a )?forced kill/i.test(e.message))
+    assert.equal(h.browser().isConnected(), true)
+    assert.equal(fs.existsSync(dir), true)
+  } finally { forceRemove(dir) }
 })
