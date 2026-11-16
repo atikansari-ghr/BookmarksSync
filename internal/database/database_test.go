@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"sync"
 	"testing"
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/database"
@@ -99,9 +101,50 @@ func TestEveryPooledConnectionHasSafetyPragmas(t *testing.T) {
 		if err := conn.QueryRowContext(ctx, `PRAGMA busy_timeout`).Scan(&busy); err != nil {
 			t.Fatal(err)
 		}
+		var sync int
+		if err := conn.QueryRowContext(ctx, `PRAGMA synchronous`).Scan(&sync); err != nil {
+			t.Fatal(err)
+		}
 		if journal != "wal" || fk != 1 || busy < 1000 {
 			t.Errorf("conn %d: journal=%q foreign_keys=%d busy_timeout=%d", i, journal, fk, busy)
 		}
+		// 2 == FULL: an acknowledged write survives power loss even in WAL mode.
+		if sync != 2 {
+			t.Errorf("conn %d: synchronous=%d, want 2 (FULL)", i, sync)
+		}
+	}
+}
+
+func TestPingReadsSchemaMigrations(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, tempDB(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if err := db.Ping(ctx); err != nil {
+		t.Fatalf("Ping on healthy db: %v", err)
+	}
+	if _, err := db.SQL().ExecContext(ctx, `ALTER TABLE schema_migrations RENAME TO schema_migrations_gone`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Ping(ctx); err == nil {
+		t.Fatal("Ping succeeded although schema_migrations is missing")
+	}
+}
+
+func TestPingFailsWhenSchemaIsBehindThisBuild(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, tempDB(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.SQL().ExecContext(ctx, `DELETE FROM schema_migrations`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Ping(ctx); err == nil {
+		t.Fatal("Ping succeeded with no recorded schema version")
 	}
 }
 
@@ -172,11 +215,19 @@ func TestPrivatePermissions(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer db.Close()
-	if fi, err := os.Stat(filepath.Dir(path)); err != nil || fi.Mode().Perm() != 0o700 {
-		t.Errorf("dir perm = %v (err %v), want 0700", fi.Mode().Perm(), err)
+	dirInfo, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("stat data dir: %v", err)
 	}
-	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm()&0o077 != 0 {
-		t.Errorf("file perm = %v (err %v), want no group/other access", fi.Mode().Perm(), err)
+	if dirInfo.Mode().Perm() != 0o700 {
+		t.Errorf("dir perm = %v, want 0700", dirInfo.Mode().Perm())
+	}
+	fileInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat database file: %v", err)
+	}
+	if fileInfo.Mode().Perm()&0o077 != 0 {
+		t.Errorf("file perm = %v, want no group/other access", fileInfo.Mode().Perm())
 	}
 }
 
@@ -240,7 +291,72 @@ func TestOpenTightensPermissionsOfExistingFile(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	defer db.Close()
-	if fi, err := os.Stat(path); err != nil || fi.Mode().Perm()&0o077 != 0 {
-		t.Errorf("existing file perm = %v (err %v), want no group/other access", fi.Mode().Perm(), err)
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat database file: %v", err)
+	}
+	if fi.Mode().Perm()&0o077 != 0 {
+		t.Errorf("existing file perm = %v, want no group/other access", fi.Mode().Perm())
+	}
+}
+
+// Transactions must start with BEGIN IMMEDIATE: a deferred transaction that reads
+// and then writes fails at once with SQLITE_BUSY instead of waiting on the busy
+// timeout when another writer committed in between. Read-modify-write sync
+// operations rely on writers queueing.
+func TestConcurrentReadModifyWriteTransactionsQueueInsteadOfFailing(t *testing.T) {
+	ctx := context.Background()
+	db, err := database.Open(ctx, tempDB(t))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.SQL().ExecContext(ctx, `INSERT INTO app_metadata(key, value) VALUES ('counter', '0')`); err != nil {
+		t.Fatal(err)
+	}
+	const workers, rounds = 8, 25
+	errs := make(chan error, workers*rounds)
+	var wg sync.WaitGroup
+	for w := 0; w < workers; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < rounds; i++ {
+				tx, err := db.SQL().BeginTx(ctx, nil)
+				if err != nil {
+					errs <- err
+					return
+				}
+				var v int
+				var s string
+				if err := tx.QueryRowContext(ctx, `SELECT value FROM app_metadata WHERE key='counter'`).Scan(&s); err != nil {
+					tx.Rollback()
+					errs <- err
+					return
+				}
+				v, _ = strconv.Atoi(s)
+				if _, err := tx.ExecContext(ctx, `UPDATE app_metadata SET value=? WHERE key='counter'`, strconv.Itoa(v+1)); err != nil {
+					tx.Rollback()
+					errs <- err
+					return
+				}
+				if err := tx.Commit(); err != nil {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("transaction failed: %v", err)
+	}
+	var final string
+	if err := db.SQL().QueryRowContext(ctx, `SELECT value FROM app_metadata WHERE key='counter'`).Scan(&final); err != nil {
+		t.Fatal(err)
+	}
+	if final != strconv.Itoa(workers*rounds) {
+		t.Errorf("counter = %s, want %d (lost updates)", final, workers*rounds)
 	}
 }

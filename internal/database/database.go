@@ -44,10 +44,13 @@ func Open(ctx context.Context, path string) (*DB, error) {
 
 	// Pragmas are passed in the DSN so every pooled connection gets them.
 	q := url.Values{}
+	// BEGIN IMMEDIATE for every transaction so read-modify-write writers queue on
+	// busy_timeout instead of failing with SQLITE_BUSY when upgrading from a read.
+	q.Add("_txlock", "immediate")
 	q.Add("_pragma", "busy_timeout(5000)")
 	q.Add("_pragma", "foreign_keys(1)")
 	q.Add("_pragma", "journal_mode(WAL)")
-	q.Add("_pragma", "synchronous(NORMAL)")
+	q.Add("_pragma", "synchronous(FULL)")
 	abs, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolve database path: %w", err)
@@ -83,10 +86,18 @@ func Open(ctx context.Context, path string) (*DB, error) {
 // SQL returns the underlying pool for use by repositories.
 func (d *DB) SQL() *sql.DB { return d.sql }
 
-// Ping verifies the database is usable; it satisfies the server readiness check.
+// Ping verifies the database is usable by reading the applied schema version, so a
+// missing or unreadable schema_migrations table (or a database behind this build)
+// reports not-ready. It satisfies the server readiness check.
 func (d *DB) Ping(ctx context.Context) error {
-	var one int
-	return d.sql.QueryRowContext(ctx, `SELECT 1`).Scan(&one)
+	v, err := d.SchemaVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("read schema version: %w", err)
+	}
+	if v < LatestSchemaVersion {
+		return fmt.Errorf("schema version %d is behind this build (%d)", v, LatestSchemaVersion)
+	}
+	return nil
 }
 
 // SchemaVersion returns the highest applied migration version.

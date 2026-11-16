@@ -1,0 +1,112 @@
+{
+ "type": "folder",
+ "children": [
+  {
+   "type": "folder",
+   "title": "Bookmarks Bar",
+   "children": [
+    {
+     "type": "bookmark",
+     "title": "plain",
+     "url": "https://example.com/a?b=c&d=e",
+     "hash": "7a961a16a5a01aaafccdddd12c8c0c3a7de2abd5212b84db857bfcbf08eac15a"
+    },
+    {
+     "type": "bookmark",
+     "title": "quotes \"double\" 'single'",
+     "url": "https://example.com/q",
+     "hash": "12b6f80928f10a76100b55e19b9626af821943941bce87e48f02f7ae9b031414"
+    },
+    {
+     "type": "bookmark",
+     "title": "back\\slash \\\\ pair",
+     "url": "https://example.com/back\\slash",
+     "hash": "52250fd991993a566e93e456440aa3adcd15b5b0189f7e731d4be7b855819b00"
+    },
+    {
+     "type": "bookmark",
+     "title": "html <b>&amp; \"x\"</b>",
+     "url": "https://example.com/?a=<1>&b=2",
+     "hash": "76268da003e5ceb7cc41beb8a2a6de2fdb5508b6d4b39a8559bf4ac12be9a1ad"
+    },
+    {
+     "type": "bookmark",
+     "title": "raw line sep [\u2028] para sep [\u2029]",
+     "url": "https://example.com/ls\u2028ps\u2029",
+     "hash": "9b53c43b77bbfdbfcd4d60e9a36cf19bc8b05254219b59a1a8aad9e0e6cac944"
+    },
+    {
+     "type": "bookmark",
+     "title": "literal text \\u2028 and \\u2029 and \\u003c",
+     "url": "https://example.com/lit\\u2028",
+     "hash": "26de38bce851c25be3cb5fdfc2f9eca7eb36918080a47085e8d98f16215fe14b"
+    },
+    {
+     "type": "bookmark",
+     "title": "unicode \u00e9 \u65e5\u672c \ud83d\ude00 \u0627\u0644",
+     "url": "https://example.com/\u00fc/\u65e5",
+     "hash": "6de1246d5652f669bf77e77614b509e45d16383596112f755fa90a1472da9f36"
+    },
+    {
+     "type": "bookmark",
+     "title": "controls \u0001 \t \n \r \b \f \u001f del\u007f",
+     "url": "https://example.com/ctl",
+     "hash": "0cd43a40e72f25840ec1370ef9201722e5da4ba07c329c126333036d8d97b1a4"
+    },
+    {
+     "type": "bookmark",
+     "title": "",
+     "url": "https://example.com/empty-title",
+     "hash": "547989c16612e514f87060036e6bf08c3042f6b06946b6aca93b138ab09bb9fe"
+    },
+    {
+     "type": "folder",
+     "title": "Nested <&> \"quote\" \\u2028 \u2028",
+     "children": [
+      {
+       "type": "folder",
+       "title": "deep",
+       "children": [
+        {
+         "type": "folder",
+         "title": "deeper",
+         "children": [
+          {
+           "type": "bookmark",
+           "title": "leaf",
+           "url": "https://example.com/leaf",
+           "hash": "46d6484f0aff0a746004a23bdf39055df852ebc23a951aa37d1651476299dac9"
+          }
+         ],
+         "hash": "96807f6eaa0f5f8cbe58392abe794736ac6a0d5caeb965532aec678bd5002701"
+        }
+       ],
+       "hash": "103d1bb642d836ffb81e00e71d51ad531c5bb112f42cc8b2b0915b60fd917714"
+      },
+      {
+       "type": "bookmark",
+       "title": "slashes",
+       "url": "https://example.com/a/b/c//d",
+       "hash": "dad5d2ea88c04b3864fb4e04d90217ed6477167d99d5af9d550c6ad4909de398"
+      },
+      {
+       "type": "folder",
+       "title": "empty",
+       "children": [],
+       "hash": "24531a4a043f1a06b00283a72be60f3d03ed7a297a566aee83b0432332118731"
+      }
+     ],
+     "hash": "68c198358996e9b6f4471bfde241950a00c8c0fcc70a8047bbe7cbb6abc735c6"
+    }
+   ],
+   "hash": "5c22cc005457ea69a34204908aa3796782bf60f4c9ed4fd2ad593c043c0795b3"
+  },
+  {
+   "type": "folder",
+   "title": "Other Bookmarks",
+   "children": [],
+   "hash": "f113983a5499c729bf1f64d8ea3995b2aa5a95d51c9919020492b0fb3ae8108f"
+  }
+ ],
+ "hash": "6e94c8c2240b63acdc6d4789cce7fce14b9f0bdaf3b05c149a8abc5852df6a65"
+}

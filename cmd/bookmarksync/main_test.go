@@ -16,7 +16,7 @@ import (
 func TestVersionFlagPrintsBuildInfo(t *testing.T) {
 	for _, arg := range []string{"--version", "version"} {
 		var out, errb bytes.Buffer
-		code := run(context.Background(), []string{arg}, &out, &errb, func(string) string { return "" })
+		code := run(context.Background(), []string{arg}, strings.NewReader(""), &out, &errb, func(string) string { return "" })
 		if code != 0 {
 			t.Fatalf("%s: exit %d, stderr %q", arg, code, errb.String())
 		}
@@ -36,7 +36,7 @@ func TestUsageErrors(t *testing.T) {
 	for name, args := range cases {
 		t.Run(name, func(t *testing.T) {
 			var out, errb bytes.Buffer
-			if code := run(context.Background(), args, &out, &errb, func(string) string { return "" }); code == 0 {
+			if code := run(context.Background(), args, strings.NewReader(""), &out, &errb, func(string) string { return "" }); code == 0 {
 				t.Fatalf("exit 0 for %v", args)
 			}
 			if errb.Len() == 0 {
@@ -63,7 +63,7 @@ func TestServeStartsAnsweringAndStopsOnCancel(t *testing.T) {
 	done := make(chan int, 1)
 	var errb bytes.Buffer
 	go func() {
-		done <- run(ctx, []string{"serve", "--listen", addr, "--data-dir", dir}, io.Discard, &errb, func(string) string { return "" })
+		done <- run(ctx, []string{"serve", "--listen", addr, "--data-dir", dir}, strings.NewReader(""), io.Discard, &errb, func(string) string { return "" })
 	}()
 
 	url := fmt.Sprintf("http://%s/readyz", addr)
