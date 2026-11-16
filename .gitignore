@@ -1,0 +1,11 @@
+.tools/
+.superpowers/
+node_modules/
+web/dist/
+dist/
+data/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
