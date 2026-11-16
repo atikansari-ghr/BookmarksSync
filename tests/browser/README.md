@@ -24,7 +24,7 @@ npm ci                         # installs the pinned playwright 1.65.1
 npm run smoke:chromium         # baseline: Playwright full Chromium, headless
 npm run smoke:brave
 npm run smoke:edge
-npm run smoke:chrome           # expected BLOCKED, see below
+npm run smoke:chrome           # branded Chrome, loaded over CDP (see "Native Chrome")
 npm run pending                # server capability placeholders, all PENDING
 npm test                       # unit tests for profile cleanup failure handling
 ```
@@ -45,7 +45,8 @@ then `.tools/browser-harness/node_modules`.
 ## What the smoke checks
 
 1. Launch with a unique temporary `--user-data-dir` under `.tools/browser-profiles/`
-   and `--load-extension` of the stock extension (event-based service worker discovery).
+   and load the stock extension (`--load-extension` for Chromium/Brave/Edge, CDP
+   `Extensions.loadUnpacked` for branded Chrome; event-based service worker discovery).
 2. Background service worker reports manifest version 5.13.0.
 3. Real `chrome.bookmarks`: list roots, create/read/move/update/search/remove in a sandbox folder.
 4. RPC plumbing: import a floccus account into extension storage and trigger a sync
@@ -75,5 +76,36 @@ The app credential comes from the environment (`BOOKMARKSYNC_APP_TOKEN`); never 
 | Playwright full Chromium | supported (baseline) |
 | Brave | supported via `--load-extension` |
 | Edge | supported via `--load-extension` (as tested) |
-| Chrome (branded) | blocked: `--load-extension` is ignored; no service worker appears |
+| Chrome (branded) | supported via native launch + CDP `Extensions.loadUnpacked` (verified on Chrome 157.0.8103.51); see below |
 | Firefox | not covered. Playwright's Firefox cannot load floccus (needs a WebExtension driver such as web-ext/Marionette); a pass there would not prove floccus behavior |
+
+## Native Chrome (branded Chrome v157+)
+
+Branded Chrome ignores `--load-extension`, and Playwright does not surface the
+extension worker after `Extensions.loadUnpacked`. For `--browser=chrome` the harness
+therefore does not use Playwright to launch:
+
+- It spawns the installed `chrome.exe` itself with the disposable profile, `--remote-debugging-port=0`
+  and `--enable-unsafe-extension-debugging`, reads `DevToolsActivePort`, and opens a raw CDP
+  WebSocket. Those flags exist only on this throw-away profile; no real profile or
+  global browser setting is touched, and the extension is not patched.
+- `Extensions.loadUnpacked` loads the unmodified floccus directory. The harness waits for the
+  real `chrome-extension://<id>/dist/js/background-script.js` `service_worker` target, attaches
+  to it (`Target.attachToTarget`, flatten) and waits for `chrome.runtime`/`chrome.bookmarks`
+  to be bound before use.
+- `session.serviceWorker` is a CDP evaluator (`kind: 'cdp-service-worker-target'`) running
+  `Runtime.evaluate` in that actual worker. It is not a Playwright Worker. The smoke report
+  records `serviceWorkerKind` and `loadMethod`. Extension pages (options UI used for the
+  sync RPC) are opened through Playwright `connectOverCDP` to the same browser, exposed as
+  `session.pageContext`.
+- Lifecycle is owned: close sends `Browser.close` and awaits process exit. A process that does not
+  exit is killed and the run fails with the profile retained. The profile is deleted only after
+  the process has exited, with the same containment and marker checks as the other browsers.
+- Chrome is never replaced by Chrome for Testing or Chromium; if it is missing the run is NOT_RUN.
+
+### Credentials
+
+The floccus app token (`BOOKMARKSYNC_APP_TOKEN`) is passed in by the test process and stored by
+the extension in `chrome.storage.local` inside the disposable profile only. The harness never
+writes it to result JSON or logs, and the profile (with the token) is deleted on clean shutdown. If
+cleanup fails the profile is retained and may still contain it; delete it by hand.

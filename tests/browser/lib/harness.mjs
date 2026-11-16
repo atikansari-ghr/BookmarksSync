@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import path from 'node:path'
 import fs from 'node:fs'
 import crypto from 'node:crypto'
+import { spawn } from 'node:child_process'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 export const REPO_ROOT = path.resolve(here, '..', '..', '..')
@@ -46,7 +47,8 @@ export function resolveBrowser(name) {
   if (name === 'chromium') return { name, branded: false, executablePath: undefined, channel: 'chromium' }
   const exe = (process.env[`BH_${name.toUpperCase()}_EXE`] ? [process.env[`BH_${name.toUpperCase()}_EXE`]] : WIN_BROWSERS[name] || []).find(p => fs.existsSync(p))
   if (!exe) return { name, missing: true }
-  return { name, branded: name !== 'brave' ? true : false, executablePath: exe }
+  // Branded Chrome ignores --load-extension, so it is launched natively and loaded over CDP.
+  return { name, branded: name !== 'brave' ? true : false, executablePath: exe, nativeCdp: name === 'chrome' }
 }
 
 /** True when `child` is strictly inside `parent` after resolving both. */
@@ -97,10 +99,11 @@ export function withTimeout(promise, ms, what) {
  * Returns { context, profileDir, serviceWorker, extensionId, browserVersion, loadMethod }.
  */
 export async function launchWithExtension({ browser, headless = true, loadTimeoutMs = 30000 }) {
-  const { playwright } = loadPlaywright()
   const resolved = resolveBrowser(browser)
   if (resolved.missing) throw Object.assign(new Error(`${browser} executable not found`), { code: 'BROWSER_MISSING' })
   verifyExtensionDir()
+  if (resolved.nativeCdp) return launchChromeNative({ resolved, headless, loadTimeoutMs })
+  const { playwright } = loadPlaywright()
   const profileDir = makeProfileDir(browser)
   const args = [
     `--disable-extensions-except=${EXTENSION_DIR}`,
@@ -124,10 +127,215 @@ export async function launchWithExtension({ browser, headless = true, loadTimeou
     }
     const extensionId = new URL(serviceWorker.url()).host
     const browserVersion = context.browser()?.version() ?? null
-    return { context, profileDir, serviceWorker, extensionId, browserVersion, loadMethod: '--load-extension', resolved }
+    return { context, pageContext: context, profileDir, serviceWorker, extensionId, browserVersion, loadMethod: '--load-extension', resolved }
   } catch (err) {
     try {
       err.profileCleaned = await closeAndClean({ context, profileDir })
+    } catch (cleanupErr) {
+      err.profileCleaned = false
+      err.profileRetained = cleanupErr.profileRetained
+      err.cleanupError = cleanupErr.message
+    }
+    throw err
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Native branded Chrome: launched by this harness (not Playwright) with a
+// disposable profile; the extension is loaded through CDP Extensions.loadUnpacked.
+// The Chrome flags below are for this throw-away profile only.
+// ---------------------------------------------------------------------------
+
+export function buildChromeNativeArgs({ profileDir, headless = true }) {
+  return [
+    ...(headless ? ['--headless=new'] : []),
+    `--user-data-dir=${profileDir}`,
+    '--remote-debugging-port=0',
+    '--enable-unsafe-extension-debugging', // required by Extensions.loadUnpacked; never used on a real profile
+    '--no-first-run', '--no-default-browser-check', '--disable-sync',
+    'about:blank'
+  ]
+}
+
+/** DevToolsActivePort is "<port>\n<browser ws path>\n". Returns null until complete and valid. */
+export function parseDevToolsActivePort(text) {
+  const [portLine, wsPath] = String(text).split('\n')
+  const port = Number(portLine)
+  if (!Number.isInteger(port) || port <= 0 || !wsPath || !wsPath.startsWith('/')) return null
+  return { port, path: wsPath.trim() }
+}
+
+/** Minimal CDP client over a WebSocket-like object (send / addEventListener). */
+export function createCdpClient(socket) {
+  let nextId = 0
+  let closed = false
+  const pending = new Map()
+  const listeners = new Map()
+  socket.addEventListener('message', (ev) => {
+    let m
+    try { m = JSON.parse(typeof ev.data === 'string' ? ev.data : String(ev.data)) } catch { return }
+    if (m.id !== undefined && pending.has(m.id)) {
+      const { resolve, reject } = pending.get(m.id)
+      pending.delete(m.id)
+      if (m.error) reject(new Error(`${m.error.message}${m.error.data ? ` (${m.error.data})` : ''}`))
+      else resolve(m.result ?? {})
+    } else if (m.method) {
+      for (const h of [...(listeners.get(m.method) || [])]) h(m.params, m.sessionId)
+    }
+  })
+  socket.addEventListener('close', () => {
+    closed = true
+    for (const { reject } of pending.values()) reject(new Error('CDP connection closed'))
+    pending.clear()
+  })
+  return {
+    send(method, params = {}, sessionId) {
+      if (closed) return Promise.reject(new Error('CDP connection closed'))
+      const id = ++nextId
+      return new Promise((resolve, reject) => {
+        pending.set(id, { resolve, reject })
+        socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) }))
+      })
+    },
+    on(method, handler) {
+      if (!listeners.has(method)) listeners.set(method, new Set())
+      listeners.get(method).add(handler)
+      return () => listeners.get(method)?.delete(handler)
+    },
+    close() { try { socket.close() } catch {} }
+  }
+}
+
+/**
+ * Evaluator bound to a CDP-attached extension service worker target. It runs code in the
+ * real background worker (Runtime.evaluate). It is NOT a Playwright Worker and NOT an
+ * extension page, hence the explicit `kind`.
+ */
+export function createServiceWorkerEvaluator({ client, sessionId, url }) {
+  return {
+    kind: 'cdp-service-worker-target',
+    url: () => url,
+    async evaluate(fn, arg) {
+      const expression = `(${fn.toString()})(${arg === undefined ? '' : JSON.stringify(arg)})`
+      const res = await client.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, sessionId)
+      if (res.exceptionDetails) {
+        const d = res.exceptionDetails
+        throw new Error(`service worker evaluate failed: ${d.exception?.description || d.text}`)
+      }
+      return res.result?.value
+    }
+  }
+}
+
+/** Resolve the first target matching `predicate`, already present or announced via Target.targetCreated. */
+export async function waitForServiceWorkerTarget(client, predicate, timeoutMs) {
+  let off
+  const created = new Promise((resolve) => {
+    off = client.on('Target.targetCreated', ({ targetInfo }) => { if (predicate(targetInfo)) resolve(targetInfo) })
+  })
+  try {
+    const { targetInfos = [] } = await client.send('Target.getTargets')
+    const existing = targetInfos.find(predicate)
+    if (existing) return existing
+    return await withTimeout(created, timeoutMs, 'extension service worker target')
+  } finally { off?.() }
+}
+
+/**
+ * Close-able handle for a browser process this harness spawned, shaped like the part of a
+ * Playwright context that closeAndClean uses. close() asks the browser to quit, then AWAITS
+ * process exit; a process that stays alive is killed and close() fails (profile retained).
+ */
+export function createOwnedBrowserHandle({ child, client }, { exitTimeoutMs = 15000 } = {}) {
+  let exited = child.exitCode !== null && child.exitCode !== undefined
+  const exitP = exited ? Promise.resolve() : new Promise(r => child.once('exit', () => { exited = true; r() }))
+  return {
+    browser: () => ({ isConnected: () => !exited }),
+    async close() {
+      let sendErr
+      try { await client.send('Browser.close') } catch (e) { sendErr = e }
+      try {
+        await withTimeout(exitP, exitTimeoutMs, 'browser process exit')
+      } catch (e) {
+        try { child.kill() } catch {}
+        throw new Error(`browser process did not exit (${e.message}${sendErr ? `; Browser.close: ${sendErr.message}` : ''})`)
+      }
+      client.close()
+    }
+  }
+}
+
+/** Retry `probe` (which may throw or return falsy) until truthy; bounded, fails with the last error. */
+export async function waitUntilReady(probe, timeoutMs, what, intervalMs = 50) {
+  const deadline = Date.now() + timeoutMs
+  let last
+  while (Date.now() < deadline) {
+    try { if (await probe()) return } catch (e) { last = e }
+    await new Promise(r => setTimeout(r, intervalMs))
+  }
+  throw new Error(`timeout after ${timeoutMs}ms: ${what}${last ? ` (${last.message.split('\n')[0]})` : ''}`)
+}
+
+async function readDevToolsPort(profileDir, child, timeoutMs) {
+  const file = path.join(profileDir, 'DevToolsActivePort')
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null && child.exitCode !== undefined) throw new Error(`Chrome exited early (code ${child.exitCode})`)
+    try {
+      const info = parseDevToolsActivePort(fs.readFileSync(file, 'utf8'))
+      if (info) return info
+    } catch {}
+    await new Promise(r => setTimeout(r, 100))
+  }
+  throw new Error(`timeout after ${timeoutMs}ms: DevToolsActivePort`)
+}
+
+async function launchChromeNative({ resolved, headless, loadTimeoutMs }) {
+  const profileDir = makeProfileDir('chrome')
+  let child, client, handle
+  try {
+    child = spawn(resolved.executablePath, buildChromeNativeArgs({ profileDir, headless }), { stdio: 'ignore', windowsHide: true })
+    child.once('error', () => {})
+    const { port, path: wsPath } = await readDevToolsPort(profileDir, child, loadTimeoutMs)
+    const ws = new WebSocket(`ws://127.0.0.1:${port}${wsPath}`)
+    await withTimeout(new Promise((res, rej) => {
+      ws.addEventListener('open', res)
+      ws.addEventListener('error', () => rej(new Error('CDP websocket error')))
+    }), loadTimeoutMs, 'CDP websocket open')
+    client = createCdpClient(ws)
+    handle = createOwnedBrowserHandle({ child, client })
+    const browserVersion = (await client.send('Browser.getVersion')).product.replace(/^Chrome\//, '')
+    await client.send('Target.setDiscoverTargets', { discover: true })
+    const { id: extensionId } = await client.send('Extensions.loadUnpacked', { path: EXTENSION_DIR })
+    const swInfo = await waitForServiceWorkerTarget(client,
+      t => t.type === 'service_worker' && t.url === `chrome-extension://${extensionId}/dist/js/background-script.js`, loadTimeoutMs)
+    const { sessionId } = await client.send('Target.attachToTarget', { targetId: swInfo.targetId, flatten: true })
+    const serviceWorker = createServiceWorkerEvaluator({ client, sessionId, url: swInfo.url })
+    // The worker target is announced before its chrome.* bindings exist; wait (bounded) for the real APIs.
+    await waitUntilReady(() => serviceWorker.evaluate(() => typeof chrome !== 'undefined' && !!chrome.runtime?.id && !!chrome.bookmarks),
+      loadTimeoutMs, 'extension APIs in service worker')
+    // Extension pages (options UI that talks to the worker) go through Playwright attached to the same browser.
+    const { playwright } = loadPlaywright()
+    const pwBrowser = await playwright.chromium.connectOverCDP(`http://127.0.0.1:${port}`, { timeout: loadTimeoutMs })
+    const pageContext = pwBrowser.contexts()[0]
+    if (!pageContext) throw new Error('no default browser context over CDP')
+    return {
+      context: handle, pageContext, profileDir, serviceWorker, extensionId, browserVersion,
+      loadMethod: 'CDP Extensions.loadUnpacked (--enable-unsafe-extension-debugging)', resolved
+    }
+  } catch (err) {
+    try {
+      if (!handle && child) {
+        // Failed before the CDP handle existed: kill and await the process we own.
+        handle = {
+          browser: () => ({ isConnected: () => child.exitCode === null }),
+          close: async () => {
+            child.kill()
+            await withTimeout(new Promise(r => (child.exitCode !== null ? r() : child.once('exit', r))), 10000, 'browser process exit')
+          }
+        }
+      }
+      err.profileCleaned = await closeAndClean({ context: handle, profileDir })
     } catch (cleanupErr) {
       err.profileCleaned = false
       err.profileRetained = cleanupErr.profileRetained

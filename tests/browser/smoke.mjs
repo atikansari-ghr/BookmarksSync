@@ -60,13 +60,14 @@ try {
   } catch (e) {
     // Never substitute another browser: report the limitation explicitly.
     report.status = 'BLOCKED'
-    report.reason = `could not load extension in ${browser} via --load-extension: ${e.message.split('\n')[0]}`
+    report.reason = `could not load extension in ${browser}:${e.message.split('\n')[0]}`
     report.profileCleaned = e.profileCleaned
     report.profileRetained = e.profileRetained
     report.cleanupError = e.cleanupError
     throw Object.assign(new Error(report.reason), { skip: true })
   }
-  const { context, serviceWorker: sw, extensionId, browserVersion, profileDir } = session
+  const { pageContext, serviceWorker: sw, extensionId, browserVersion, profileDir } = session
+  report.serviceWorkerKind = sw.kind || 'playwright-worker'
   report.browserVersion = browserVersion
   report.loadMethod = session.loadMethod
   report.profileDir = profileDir
@@ -107,7 +108,7 @@ try {
     const { srv, requests, port } = await stubServer()
     try {
       const folderId = await createSandboxFolder(sw, 'bookmarksync-harness-rpc')
-      const page = await openExtensionPage(context, extensionId)
+      const page = await openExtensionPage(pageContext, extensionId)
       const accountId = await importAccount(page, {
         type: 'nextcloud-bookmarks', url: `http://127.0.0.1:${port}/`, username: 'harness',
         password: process.env.BOOKMARKSYNC_APP_TOKEN || 'harness-placeholder-not-a-secret',
