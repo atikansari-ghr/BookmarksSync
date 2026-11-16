@@ -62,6 +62,8 @@ try {
     report.status = 'BLOCKED'
     report.reason = `could not load extension in ${browser} via --load-extension: ${e.message.split('\n')[0]}`
     report.profileCleaned = e.profileCleaned
+    report.profileRetained = e.profileRetained
+    report.cleanupError = e.cleanupError
     throw Object.assign(new Error(report.reason), { skip: true })
   }
   const { context, serviceWorker: sw, extensionId, browserVersion, profileDir } = session
@@ -133,11 +135,24 @@ try {
   if (e.skip) exitCode = report.status === 'NOT_RUN' ? 2 : 3
 } finally {
   if (session) {
-    try { report.profileCleaned = await closeAndClean(session) } catch (e) { report.profileCleaned = false; report.cleanupError = e.message }
+    try {
+      report.profileCleaned = await closeAndClean(session)
+    } catch (e) {
+      report.profileCleaned = false
+      report.profileRetained = e.profileRetained ?? session.profileDir
+      report.cleanupError = e.message
+    }
+  }
+  if (report.profileCleaned === false) {
+    // A leftover browser/profile (may hold credentials) is a failure, whatever else happened.
+    report.status = 'FAIL'
+    report.error = report.cleanupError || 'cleanup failed'
+    exitCode = 1
   }
   report.finishedAt = new Date().toISOString()
   const file = writeResult(`smoke-${browser}`, report)
   console.log(`\nRESULT ${browser}: ${report.status}${report.reason ? ' (' + report.reason + ')' : ''}${report.error && report.status === 'FAIL' ? ' - ' + report.error : ''}`)
   console.log(`profile cleaned: ${report.profileCleaned}   result file: ${file}`)
+  if (report.profileRetained) console.error(`CLEANUP FAILED: profile retained at ${report.profileRetained} - ${report.cleanupError}`)
   process.exit(exitCode)
 }

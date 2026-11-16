@@ -11,7 +11,9 @@ It never uses a real user profile, signs in to anything, or edits application co
   (override with `BH_EXTENSION_DIR`). Official zip SHA256:
   `88ea0f8af37eafd585fccee07a2ff4ab55dcfc83039c80ba7dcc306425f97f91`.
 - Playwright's full Chromium in `.tools/pw-browsers` (`PLAYWRIGHT_BROWSERS_PATH` defaults to it).
-  If missing: `PLAYWRIGHT_BROWSERS_PATH=../../.tools/pw-browsers npx playwright install chromium`.
+  If missing, from `tests/browser`:
+  - PowerShell: `$env:PLAYWRIGHT_BROWSERS_PATH = "$PWD\..\..\.tools\pw-browsers"; npx playwright install chromium`
+  - POSIX shell: `PLAYWRIGHT_BROWSERS_PATH=../../.tools/pw-browsers npx playwright install chromium`
 - Branded browsers are used from their standard Windows install paths
   (override with `BH_BRAVE_EXE`, `BH_CHROME_EXE`, `BH_EDGE_EXE`).
 
@@ -24,7 +26,16 @@ npm run smoke:brave
 npm run smoke:edge
 npm run smoke:chrome           # expected BLOCKED, see below
 npm run pending                # server capability placeholders, all PENDING
+npm test                       # unit tests for profile cleanup failure handling
 ```
+
+Environment overrides use `$env:NAME = "value"` in PowerShell (e.g.
+`$env:BH_EXTENSION_DIR = "D:\path\to\extension"; npm run smoke:chromium`) and
+`NAME=value npm run ...` in POSIX shells.
+
+Cleanup is strict: the profile is deleted only after the browser is confirmed closed.
+If closing or deleting fails, the run exits 1 with `CLEANUP FAILED: profile retained at <path>`
+(the profile may hold credentials; remove it by hand once the browser is gone).
 
 `node smoke.mjs --browser=<name> [--headed] [--no-rpc]`. Exit codes: 0 pass,
 1 fail, 2 browser not installed (NOT_RUN), 3 extension could not be loaded (BLOCKED).

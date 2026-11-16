@@ -6,6 +6,7 @@
   "type": "module",
   "engines": { "node": ">=20" },
   "scripts": {
+    "test": "node --test test/cleanup.test.mjs",
     "smoke": "node smoke.mjs",
     "smoke:chromium": "node smoke.mjs --browser=chromium",
     "smoke:brave": "node smoke.mjs --browser=brave",

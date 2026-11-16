@@ -126,15 +126,38 @@ export async function launchWithExtension({ browser, headless = true, loadTimeou
     const browserVersion = context.browser()?.version() ?? null
     return { context, profileDir, serviceWorker, extensionId, browserVersion, loadMethod: '--load-extension', resolved }
   } catch (err) {
-    const cleaned = await closeAndClean({ context, profileDir }).catch(() => false)
-    err.profileCleaned = cleaned
+    try {
+      err.profileCleaned = await closeAndClean({ context, profileDir })
+    } catch (cleanupErr) {
+      err.profileCleaned = false
+      err.profileRetained = cleanupErr.profileRetained
+      err.cleanupError = cleanupErr.message
+    }
     throw err
   }
 }
 
-export async function closeAndClean({ context, profileDir }) {
-  if (context) await withTimeout(context.close(), 20000, 'context.close').catch(() => {})
-  return removeProfileDir(profileDir)
+/**
+ * Shut the browser down, then delete its profile. Fails loudly: the profile is deleted
+ * only after the browser is confirmed closed, and any close/delete problem throws an
+ * Error carrying `profileRetained` (the path left on disk; it may contain credentials).
+ * The message holds only the path and the cause, never profile contents.
+ */
+export async function closeAndClean({ context, profileDir }, { closeTimeoutMs = 20000, remove = removeProfileDir } = {}) {
+  const retained = (why, cause) => Object.assign(
+    new Error(`profile RETAINED at ${profileDir}: ${why}`, cause ? { cause } : undefined), { profileRetained: profileDir })
+  if (context) {
+    try {
+      await withTimeout(context.close(), closeTimeoutMs, 'context.close')
+    } catch (e) {
+      throw retained(`browser close failed (${e.message}); it may still be running`, e)
+    }
+    if (context.browser()?.isConnected()) throw retained('browser still connected after close')
+  }
+  let removed
+  try { removed = remove(profileDir) } catch (e) { throw retained(`deletion failed (${e.message})`, e) }
+  if (removed === false) throw retained('deletion incomplete')
+  return true
 }
 
 export function writeResult(name, data) {
