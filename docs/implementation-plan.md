@@ -1,6 +1,6 @@
 # BookmarksSync Implementation Plan
 
-**Goal:** Implement docs/design.md under Codex supervision with Claude Code/Herdr workers.
+**Goal:** Implement docs/design.md through scoped tasks and independently verified milestones.
 **Architecture:** Portable Go executable, embedded React/TypeScript UI, local SQLite, restricted optional maintenance helper.
 **Spec:** docs/design.md is binding. Use mocscreenshots/ as visual references.
 
@@ -12,7 +12,7 @@
 - Tests cover behavior and failure paths; use failing regression tests before behavior fixes.
 
 ## Milestones and acceptance
-- [ ] 1 Foundation: connect remote preserving files; portable Go tooling; Go module, health/readiness/version endpoints, SQLite migrations/store, CLI serve, test/build CI, MIT, README. Verify persistence/reopen, graceful shutdown, JSON errors, Windows and Linux builds.
+- [x] 1 Foundation: connect remote preserving files; portable Go tooling; Go module, health/readiness/version endpoints, SQLite migrations/store, CLI serve, test/build CI, MIT, README. Verify persistence/reopen, graceful shutdown, JSON errors, Windows and Linux builds. Accepted at 9b90baa after independent review and checks; Ubuntu/Windows CI tests passed.
 - [ ] 2 Compatibility: Nextcloud floccus capabilities/bookmark/folder/order/hash/lock APIs, per-connection credentials, roots, permissions and protocol contract tests. Then real browser floccus add/edit/move/delete/order/offline/read-only sharing proof. Stop if client constraints break design.
 - [ ] 3 Identity/API: admin bootstrap, password/passkeys/TOTP/recovery, OIDC linking, private ownership/sharing, revocable sessions/tokens, /api/v1 + OpenAPI. Test isolation/revocation and auth failures.
 - [ ] 4 Workspace/UI: native-style organizer and dashboards matching references; CRUD/multi-select/drag/drop/search/tags/favorites/import/export, duplicates, SSRF-safe link checks, Trash, persisted widgets/theme/branding. Browser/accessibility and negative authorization tests.
@@ -27,7 +27,7 @@
 5. Fresh-host restoration: include secrets/settings/manifest, do not revive obsolete sessions during user-only restore.
 
 ## Worker contract
-Codex writes scoped briefs/reviews/progress to ignored .superpowers/sdd/bookmarksync/. Workers implement only their brief, no subagents, no pushes or deployments, no unrelated settings. Report changed files, test commands/results, concerns; controller independently inspects/runs acceptance checks before advancement. Keep workers persistent through hc for steering. Security prompts require session authorization review, never bypass modes.
+Keep scoped briefs, reviews, and progress in ignored .superpowers/sdd/bookmarksync/. Implementers follow their brief without spawning extra workers, pushing, deploying, or changing unrelated settings. Report changed files, test commands/results, and concerns; independently inspect and run acceptance checks before advancement. Security prompts require session authorization review, never bypass modes.
 
 ## Verification
 Backend: go test ./..., go vet ./..., focused integration suites, Linux/Windows cross-builds. Frontend: typecheck/unit/build and browser workflows. Real floccus separately. CI must not claim unavailable platform checks ran. LXC deployment awaits authorized SSH credentials; local independent work continues.

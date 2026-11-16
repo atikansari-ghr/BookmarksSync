@@ -6,7 +6,7 @@ Approved 2026-11-16. Owner: Atik Ansari. Source: repository planning conversatio
 - Standalone Go server embeds a React/TypeScript UI; local SQLite; approximately 20 users and 10,000 bookmarks/user.
 - Debian systemd, native Proxmox LXC, Docker and native Windows services. Test LXC: 192.168.10.226; credentials/domain not yet supplied.
 - Public MIT repository https://github.com/atikansari-ghr/BookmarksSync. Sole attribution Atik Ansari; git author atikansari <atikansari@ansariz.biz>. Retain third-party notices. No assistant credits.
-- Codex supervises; Claude Code implements via persistent Herdr terminals. Review actual diffs, run independent checks, fix and retest. No worker subagents.
+- Use scoped implementation tasks with independent supervision: review actual diffs, run independent checks, fix and retest.
 
 ## Sync and organization
 - Existing unmodified floccus in desktop Chrome, Edge, Firefox, Brave. Implement required Nextcloud Bookmarks API compatibility without Nextcloud dependency.
