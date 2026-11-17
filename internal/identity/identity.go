@@ -180,8 +180,8 @@ func (s *Service) GetUser(ctx context.Context, username string) (User, error) {
 }
 
 // SetActive enables or disables a user. Disabling is one transaction that also revokes
-// every credential of the user and drops the locks they held: reactivating the user later
-// does not revive any old secret, new credentials must be minted.
+// every app credential, web session and personal API token of the user and drops the
+// locks they held: reactivating the user later does not revive any old secret.
 func (s *Service) SetActive(ctx context.Context, username string, active bool) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -203,6 +203,12 @@ func (s *Service) SetActive(ctx context.Context, username string, active bool) e
 		if _, err := tx.ExecContext(ctx, `UPDATE credentials SET revoked_at = ? WHERE revoked_at IS NULL AND user_id =
 			(SELECT id FROM users WHERE username = ?)`, s.now().UnixMilli(), username); err != nil {
 			return err
+		}
+		for _, table := range []string{"web_sessions", "api_tokens"} {
+			if _, err := tx.ExecContext(ctx, `UPDATE `+table+` SET revoked_at = ? WHERE revoked_at IS NULL AND user_id =
+				(SELECT id FROM users WHERE username = ?)`, s.now().UnixMilli(), username); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit()
