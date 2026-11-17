@@ -100,3 +100,60 @@ func TestDatabasePathIsInsideDataDir(t *testing.T) {
 		t.Errorf("DatabasePath = %q, want %q", got, want)
 	}
 }
+
+func TestPublicURLIsOptionalAndNormalizedToAnOrigin(t *testing.T) {
+	cfg, err := config.Parse(nil, noEnv)
+	if err != nil || cfg.PublicOrigin != "" {
+		t.Fatalf("unset public URL: %+v %v", cfg, err)
+	}
+	cases := map[string]string{
+		"https://Bookmarks.Example.com":      "https://bookmarks.example.com",
+		"https://bookmarks.example.com/":     "https://bookmarks.example.com",
+		"https://bookmarks.example.com:443":  "https://bookmarks.example.com",
+		"https://bookmarks.example.com:8443": "https://bookmarks.example.com:8443",
+		"http://127.0.0.1:8080":              "http://127.0.0.1:8080",
+		"http://localhost:8080":              "http://localhost:8080",
+		"http://[::1]:8080":                  "http://[::1]:8080",
+		"http://localhost:80":                "http://localhost",
+	}
+	for in, want := range cases {
+		cfg, err := config.Parse([]string{"--public-url", in}, noEnv)
+		if err != nil {
+			t.Errorf("%q: %v", in, err)
+			continue
+		}
+		if cfg.PublicOrigin != want {
+			t.Errorf("%q -> %q, want %q", in, cfg.PublicOrigin, want)
+		}
+	}
+	env := func(k string) string {
+		if k == "BOOKMARKSYNC_PUBLIC_URL" {
+			return "https://env.example.com"
+		}
+		return ""
+	}
+	if cfg, err := config.Parse(nil, env); err != nil || cfg.PublicOrigin != "https://env.example.com" {
+		t.Errorf("env public URL: %+v %v", cfg, err)
+	}
+}
+
+func TestInvalidPublicURLIsRejected(t *testing.T) {
+	for _, in := range []string{
+		"http://bookmarks.example.com",       // plain HTTP off loopback
+		"http://192.168.1.5:8080",            // plain HTTP on a LAN address
+		"http://localhost.example.com",       // not loopback
+		"https://bookmarks.example.com/sync", // path
+		"https://bookmarks.example.com?x=1",  // query
+		"https://bookmarks.example.com#frag", // fragment
+		"https://user:pw@bookmarks.example.com",
+		"ftp://bookmarks.example.com",
+		"bookmarks.example.com",
+		"https://",
+		"https://bookmarks.example.com:0",
+		"https://bookmarks.example.com:99999",
+	} {
+		if _, err := config.Parse([]string{"--public-url", in}, noEnv); err == nil {
+			t.Errorf("accepted public URL %q", in)
+		}
+	}
+}

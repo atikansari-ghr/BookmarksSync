@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/atikansari-ghr/BookmarksSync/internal/auth"
 	"github.com/atikansari-ghr/BookmarksSync/internal/bookmarks"
 	"github.com/atikansari-ghr/BookmarksSync/internal/config"
 	"github.com/atikansari-ghr/BookmarksSync/internal/database"
@@ -26,7 +27,7 @@ import (
 const usage = `usage:
   bookmarksync --version
   bookmarksync --help
-  bookmarksync serve [--listen host:port] [--data-dir dir]
+  bookmarksync serve [--listen host:port] [--data-dir dir] [--public-url URL]
 
 administration (all take --data-dir dir; run "<command> --help" for details):
   bookmarksync user create --username NAME --password-stdin [--admin]
@@ -45,10 +46,13 @@ arguments. A credential's secret is printed once on standard output and cannot b
 shown again.
 `
 
-const serveUsage = `usage: bookmarksync serve [--listen host:port] [--data-dir dir]
+const serveUsage = `usage: bookmarksync serve [--listen host:port] [--data-dir dir] [--public-url URL]
 
-  --listen    address to listen on (default 127.0.0.1:8080, env BOOKMARKSYNC_LISTEN)
-  --data-dir  directory for the database (default ./data, env BOOKMARKSYNC_DATA_DIR)
+  --listen      address to listen on (default 127.0.0.1:8080, env BOOKMARKSYNC_LISTEN)
+  --data-dir    directory for the database (default ./data, env BOOKMARKSYNC_DATA_DIR)
+  --public-url  browser origin users reach the server at, e.g. https://bookmarks.example.com
+                (env BOOKMARKSYNC_PUBLIC_URL; https required except loopback). Enables
+                browser sign-in under /api/v1/auth; unset leaves it disabled.
 
 Serves the health endpoints and the floccus-compatible bookmarks API. Put a
 TLS-terminating proxy in front of it for anything other than local testing.
@@ -107,12 +111,28 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	adapter := floccus.New(identity.New(db.SQL()), bookmarks.New(db.SQL()), log)
+	ids := identity.New(db.SQL())
+	adapter := floccus.New(ids, bookmarks.New(db.SQL()), log)
+	register := []func(server.Registrar){adapter.Register}
+	if cfg.PublicOrigin != "" {
+		authH, err := auth.New(auth.Options{Identity: ids, PublicOrigin: cfg.PublicOrigin, Logger: log})
+		if err != nil {
+			_ = ln.Close()
+			return err
+		}
+		register = append(register, authH.Register)
+	} else {
+		log.Warn("browser sign-in disabled: set " + config.EnvPublicURL + " to enable /api/v1/auth")
+	}
 	h := server.NewHandler(server.Options{
-		Version:  version.Current(),
-		Ready:    db,
-		Register: adapter.Register,
-		Logger:   log,
+		Version: version.Current(),
+		Ready:   db,
+		Register: func(r server.Registrar) {
+			for _, reg := range register {
+				reg(r)
+			}
+		},
+		Logger: log,
 	})
 	log.Info("listening", "addr", ln.Addr().String(), "version", version.Current().Version)
 	if err := server.Serve(ctx, ln, h, 15*time.Second); err != nil {
