@@ -220,6 +220,12 @@ func TestOIDCLoginRejectsInvalidIDTokens(t *testing.T) {
 		"multi aud without azp": func(f *oidcfake.Server) {
 			f.Claims = func(c map[string]any) { c["aud"] = []string{oidcClientID, "other"} }
 		},
+		"single aud with other azp": func(f *oidcfake.Server) {
+			f.Claims = func(c map[string]any) { c["aud"] = oidcClientID; c["azp"] = "attacker" }
+		},
+		"single-element aud array with other azp": func(f *oidcfake.Server) {
+			f.Claims = func(c map[string]any) { c["aud"] = []string{oidcClientID}; c["azp"] = "attacker" }
+		},
 		"multi aud with other azp": func(f *oidcfake.Server) {
 			f.Claims = func(c map[string]any) { c["aud"] = []string{oidcClientID, "other"}; c["azp"] = "other" }
 		},
@@ -247,6 +253,14 @@ func TestOIDCLoginRejectsInvalidIDTokens(t *testing.T) {
 				t.Fatalf("got %q with session %v", rec.Header().Get("Location"), sessionCookie(t, rec) != nil)
 			}
 		})
+	}
+	// A single audience with azp naming this client is fine (OIDC Core: when azp is
+	// present it must be the client ID).
+	o1 := newOIDCEnv(t)
+	o1.linkDirect(o1.alice, "sub-alice")
+	o1.fake.Claims = func(c map[string]any) { c["azp"] = oidcClientID }
+	if _, loc := o1.loginAs("sub-alice"); resultOf(loc) != "result=signed_in" {
+		t.Fatalf("single aud with azp=client: %s", resultOf(loc))
 	}
 	// Multiple audiences are fine when azp names this client.
 	o := newOIDCEnv(t)

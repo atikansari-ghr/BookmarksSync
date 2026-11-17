@@ -7,8 +7,9 @@ package auth
 // bound to the browser by a __Host- cookie and, for linking, to the signed-in account
 // and session. The redirect URI is built only from the configured public origin. ID
 // tokens are verified with go-oidc (pinned v3.15.0): signature against the provider's
-// JWKS, exact issuer, audience (and azp when there are several audiences), expiry/nbf
-// with the service clock; the nonce and a non-empty subject are checked here. A link
+// JWKS, exact issuer, audience containing the client ID, expiry/nbf with the service
+// clock. Checked here: the nonce, a non-empty subject, and azp (required with several
+// audiences; whenever present it must equal the client ID, OIDC Core 3.1.3.7). A link
 // is keyed by verified issuer+subject only; accounts are never created or matched by
 // email. Discovery is lazy and cached; every provider call has a deadline. Codes,
 // state, nonce, verifier, tokens, subjects, binding cookies and client secrets are
@@ -412,7 +413,9 @@ func (h *Handler) oidcCallback(w http.ResponseWriter, r *http.Request) {
 	case idt.Subject == "" || len(idt.Subject) > maxSubjectBytes:
 		h.oidcFail(w, r, p, "invalid_request", "subject")
 		return
-	case len(idt.Audience) > 1 && claims.AuthorizedParty != p.cfg.ClientID:
+	// OIDC Core 3.1.3.7: with several audiences azp must be present; whenever azp is
+	// present it must be this client's ID.
+	case (len(idt.Audience) > 1 || claims.AuthorizedParty != "") && claims.AuthorizedParty != p.cfg.ClientID:
 		h.oidcFail(w, r, p, "invalid_request", "azp")
 		return
 	}
