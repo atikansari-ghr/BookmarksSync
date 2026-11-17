@@ -513,6 +513,43 @@ func TestTokensAndConnectionsShowSecretsOnce(t *testing.T) {
 	}
 }
 
+// A share connection's mode may not exceed the live grant: an edit connection on a
+// view-only share is refused and stores nothing, so a later owner upgrade cannot
+// silently make a credential writable that the recipient never could request.
+func TestShareConnectionModeCannotExceedGrant(t *testing.T) {
+	e := newTEnv(t)
+	a, b := e.login(e.alice), e.login(e.bob)
+	other := e.otherFolder(withCookie(a.cookie))
+	view := decode(t, e.do("POST", "/api/v1/shares", map[string]any{"folderId": e.mkFolder(a, other, "View"), "recipient": "bob", "mode": "view"}, a.mods()...))
+	edit := decode(t, e.do("POST", "/api/v1/shares", map[string]any{"folderId": e.mkFolder(a, other, "Edit"), "recipient": "bob", "mode": "edit"}, a.mods()...))
+	countBob := func() int {
+		cs, err := e.ids.ListCredentials(context.Background(), e.bob.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return len(cs)
+	}
+	if rec := e.do("POST", "/api/v1/me/connections", map[string]any{"label": "x", "mode": "edit", "shareId": num(view["id"])}, b.mods()...); rec.Code != 403 || strings.Contains(rec.Body.String(), "secret") {
+		t.Fatalf("edit connection on a view share: %d %s", rec.Code, rec.Body.String())
+	}
+	if n := countBob(); n != 0 {
+		t.Fatalf("refused edit connection stored %d credential rows", n)
+	}
+	if list := decode(t, e.do("GET", "/api/v1/me/connections", nil, withCookie(b.cookie)))["connections"].([]any); len(list) != 0 {
+		t.Fatalf("refused edit connection listed: %v", list)
+	}
+	// The grant still allows a view connection, and an edit grant an edit connection.
+	if rec := e.do("POST", "/api/v1/me/connections", map[string]any{"label": "v", "mode": "view", "shareId": num(view["id"])}, b.mods()...); rec.Code != 201 {
+		t.Fatalf("view connection on a view share: %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := e.do("POST", "/api/v1/me/connections", map[string]any{"label": "e", "mode": "edit", "shareId": num(edit["id"])}, b.mods()...); rec.Code != 201 {
+		t.Fatalf("edit connection on an edit share: %d %s", rec.Code, rec.Body.String())
+	}
+	if n := countBob(); n != 2 {
+		t.Fatalf("credential rows: %d, want 2", n)
+	}
+}
+
 func TestPasswordChangeAndSettings(t *testing.T) {
 	e := newTEnv(t)
 	a := e.login(e.alice)

@@ -181,8 +181,15 @@ func (a *API) serveConnections(w http.ResponseWriter, r *http.Request) bool {
 			kind := identity.KindPrivate
 			if in.ShareID != 0 {
 				kind = identity.KindShare
-				if _, err := a.bm.ShareScopeFor(r.Context(), uid, in.ShareID, in.Mode == identity.ModeEdit); err != nil {
+				sc, err := a.bm.ShareScopeFor(r.Context(), uid, in.ShareID, in.Mode == identity.ModeEdit)
+				if err != nil {
 					writeDomainError(w, err)
+					return true
+				}
+				// The connection's mode may not exceed the live grant. Only the share's
+				// recipient gets this far (anyone else got 404), so 403 leaks nothing.
+				if in.Mode == identity.ModeEdit && !sc.Writable {
+					writeDomainError(w, bookmarks.ErrForbidden)
 					return true
 				}
 			}
