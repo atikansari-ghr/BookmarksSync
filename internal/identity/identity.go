@@ -101,6 +101,16 @@ type Service struct {
 	dummyOnce         sync.Once
 	dummyHashValue    string
 	dummyComputations atomic.Int32
+
+	// beforeIssue, when set (tests only), runs immediately before the statement that
+	// persists a new session or API token, to interleave concurrent account changes.
+	beforeIssue func(context.Context)
+}
+
+func (s *Service) runBeforeIssue(ctx context.Context) {
+	if s.beforeIssue != nil {
+		s.beforeIssue(ctx)
+	}
 }
 
 type Option func(*Service)

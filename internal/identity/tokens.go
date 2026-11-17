@@ -141,17 +141,16 @@ func (s *Service) CreateAPIToken(ctx context.Context, nt NewAPIToken) (APIToken,
 		}
 		expiresArg = nt.ExpiresAt.UnixMilli()
 	}
-	if err := requireActiveUser(ctx, s.db, nt.UserID); err != nil {
-		return APIToken{}, "", err
-	}
 	random, err := newOpaqueSecret()
 	if err != nil {
 		return APIToken{}, "", err
 	}
 	secret := tokenPrefix + random
+	s.runBeforeIssue(ctx)
 	res, err := s.db.ExecContext(ctx, `INSERT INTO api_tokens(user_id, label, secret_hash, scopes, created_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?)`, nt.UserID, nt.Label, hashSecret(secret), joinScopes(scopes), now.UnixMilli(), expiresArg)
-	if err != nil {
+		SELECT ?, ?, ?, ?, ?, ? WHERE `+activeUserSQL,
+		nt.UserID, nt.Label, hashSecret(secret), joinScopes(scopes), now.UnixMilli(), expiresArg, nt.UserID)
+	if err := s.issued(ctx, res, err, nt.UserID); err != nil {
 		return APIToken{}, "", err
 	}
 	id, _ := res.LastInsertId()

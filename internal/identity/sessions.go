@@ -65,13 +65,34 @@ func requireActiveUser(ctx context.Context, q interface {
 	return nil
 }
 
+// activeUserSQL guards an issuing INSERT … SELECT (its last bind parameter is the user
+// id). Checking and inserting in one statement makes issuance atomic with respect to
+// SetActive(false): SQLite serializes the statement against the suspension
+// transaction, so a secret is either issued before suspension (and then revoked by it)
+// or not issued at all.
+const activeUserSQL = `EXISTS (SELECT 1 FROM users WHERE id = ? AND active = 1)`
+
+// issued interprets the result of an activeUserSQL-guarded insert. No inserted row
+// means the user is unknown (ErrNotFound) or inactive (ErrInvalid).
+func (s *Service) issued(ctx context.Context, res sql.Result, err error, userID int64) error {
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 1 {
+		return nil
+	}
+	if err := requireActiveUser(ctx, s.db, userID); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: user is inactive", ErrInvalid) // reactivated after the insert was refused
+}
+
 // CreateSession starts a new web session for an active user and returns the opaque
 // secret once. Only the SHA-256 of the secret is stored. label is a display hint (for
 // example a user-agent summary); it is truncated and made valid UTF-8.
 func (s *Service) CreateSession(ctx context.Context, userID int64, label string) (Session, string, error) {
-	if err := requireActiveUser(ctx, s.db, userID); err != nil {
-		return Session{}, "", err
-	}
 	secret, err := newOpaqueSecret()
 	if err != nil {
 		return Session{}, "", err
@@ -82,11 +103,12 @@ func (s *Service) CreateSession(ctx context.Context, userID int64, label string)
 		CreatedAt: msTime(now), LastSeenAt: msTime(now), AuthenticatedAt: msTime(now),
 		ExpiresAt: msTime(now.Add(SessionAbsoluteTimeout)),
 	}
+	s.runBeforeIssue(ctx)
 	res, err := s.db.ExecContext(ctx, `INSERT INTO web_sessions
 		(user_id, secret_hash, label, created_at, last_seen_at, authenticated_at, expires_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		userID, hashSecret(secret), sess.Label, now.UnixMilli(), now.UnixMilli(), now.UnixMilli(), sess.ExpiresAt.UnixMilli())
-	if err != nil {
+		SELECT ?, ?, ?, ?, ?, ?, ? WHERE `+activeUserSQL,
+		userID, hashSecret(secret), sess.Label, now.UnixMilli(), now.UnixMilli(), now.UnixMilli(), sess.ExpiresAt.UnixMilli(), userID)
+	if err := s.issued(ctx, res, err, userID); err != nil {
 		return Session{}, "", err
 	}
 	sess.ID, _ = res.LastInsertId()
