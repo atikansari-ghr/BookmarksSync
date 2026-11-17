@@ -106,11 +106,13 @@ func TestOwnerRootLockOverlapsRecipientShareLockAndViceVersa(t *testing.T) {
 	is(t, e.svc.AcquireLock(ctx, as), bookmarks.ErrLocked)
 	_, err = e.svc.CreateFolder(ctx, as, aBar, "owner-blocked")
 	is(t, err, bookmarks.ErrLocked)
-	// nested share overlaps its ancestor share; a disjoint sibling share does not
+	// fix round 1: every scope under one owner collection shares one lock key, so a nested
+	// share AND a disjoint sibling share are excluded too (shared records span scopes)
 	is(t, e.svc.AcquireLock(ctx, innerShare), bookmarks.ErrLocked)
-	noErr(t, e.svc.AcquireLock(ctx, otherShare))
+	is(t, e.svc.AcquireLock(ctx, otherShare), bookmarks.ErrLocked)
 	noErr(t, e.svc.ReleaseLock(ctx, ss))
-	is(t, e.svc.AcquireLock(ctx, as), bookmarks.ErrLocked) // otherShare still holds part of the owner's tree
+	noErr(t, e.svc.AcquireLock(ctx, otherShare))
+	is(t, e.svc.AcquireLock(ctx, as), bookmarks.ErrLocked) // otherShare now holds the owner's collection
 }
 
 func TestTwoRecipientsOfTheSameShareSerialize(t *testing.T) {

@@ -291,7 +291,10 @@ func TestShareUpdatesPreserveHiddenPlacementsAndFilterFolders(t *testing.T) {
 	is(t, e.svc.RemovePlacement(ctx, ss, hidden, b.ID), bookmarks.ErrNotFound)
 }
 
-func TestShareScopeCannotRewriteURLOfBookmarkWithHiddenPlacements(t *testing.T) {
+func TestShareScopeURLEditOfRecordWithHiddenPlacementsKeepsThem(t *testing.T) {
+	// Fix round 1 (ruling): an already-visible shared record's URL may be edited through
+	// the share like its title/tags; the hidden placement rows must survive. Detailed
+	// assertions: TestShareScopeMayEditURLOfVisibleRecordAndHiddenPlacementsSurvive.
 	e := newEnv(t)
 	alice, bob := e.user("alice"), e.user("bob")
 	as := e.private(alice, identity.ModeEdit)
@@ -299,11 +302,11 @@ func TestShareScopeCannotRewriteURLOfBookmarkWithHiddenPlacements(t *testing.T) 
 	shared := e.folder(as, aBar, "Shared")
 	b := e.bm(as, "https://both.example/", "Both", shared, aOther)
 	ss, _, _ := e.shared(alice, shared, bob, identity.ModeEdit, identity.ModeEdit)
-	_, err := e.svc.UpdateBookmark(ctx, ss, b.ID, bookmarks.BookmarkUpdate{URL: ptr("https://hijack.example/")})
-	is(t, err, bookmarks.ErrForbidden)
+	_, err := e.svc.UpdateBookmark(ctx, ss, b.ID, bookmarks.BookmarkUpdate{URL: ptr("https://renamed.example/")})
+	noErr(t, err)
 	got, _ := e.svc.GetBookmark(ctx, as, b.ID)
-	if got.URL != "https://both.example/" {
-		t.Errorf("url changed to %s", got.URL)
+	if got.URL != "https://renamed.example/" || len(got.Folders) != 2 {
+		t.Errorf("owner view = %+v", got)
 	}
 	// a bookmark entirely inside the share may change URL
 	only := e.bm(as, "https://only.example/", "Only", shared)

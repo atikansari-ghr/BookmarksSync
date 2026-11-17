@@ -112,13 +112,18 @@ func TestRevokedAndInactiveCredentialsFailImmediatelyOverHTTP(t *testing.T) {
 	r.do(&a, "GET", p, nil).ok(t)
 	noErr(t, r.ids.SetActive(bg, "alice", false))
 	r.do(&a, "GET", p, nil).fail(t, 401)
+	// fix round 1: deactivation revoked the credential; reactivation needs a new one
 	noErr(t, r.ids.SetActive(bg, "alice", true))
-	r.do(&a, "GET", p, nil).ok(t)
-	noErr(t, r.ids.RevokeCredential(bg, a.cred.ID))
 	r.do(&a, "GET", p, nil).fail(t, 401)
-	// a second credential of the same user is unaffected
 	b := r.account("alice", identity.ModeEdit)
 	r.do(&b, "GET", p, nil).ok(t)
+	noErr(t, r.ids.RevokeCredential(bg, b.cred.ID))
+	r.do(&b, "GET", p, nil).fail(t, 401)
+	// a second credential of the same user is unaffected by revoking one
+	c := r.account("alice", identity.ModeEdit)
+	d := r.account("alice", identity.ModeEdit)
+	noErr(t, r.ids.RevokeCredential(bg, c.cred.ID))
+	r.do(&d, "GET", p, nil).ok(t)
 }
 
 func noErr(t *testing.T, err error) {

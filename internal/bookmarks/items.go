@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"unicode/utf8"
 )
@@ -251,6 +252,14 @@ func escapeLike(s string) string {
 }
 
 func (s *Service) ListBookmarks(ctx context.Context, sc Scope, lq ListQuery) ([]Bookmark, error) {
+	if len(lq.Search) > MaxSearchTerms {
+		return nil, invalid("at most %d search terms", MaxSearchTerms)
+	}
+	for _, t := range lq.Search {
+		if len(t) > MaxSearchTermBytes {
+			return nil, invalid("search terms are limited to %d bytes", MaxSearchTermBytes)
+		}
+	}
 	limit, offset := 0, 0
 	switch {
 	case lq.Page == -1:
@@ -365,6 +374,19 @@ func (s *Service) addPlacement(ctx context.Context, tx *sql.Tx, owner, bookmarkI
 	if !errors.Is(err, sql.ErrNoRows) {
 		return false, err
 	}
+	// Invariant: a folder never holds two live placements of records with the same exact
+	// URL. Both records are visible to any caller that can address this folder, so refusing
+	// reveals nothing hidden; silently merging the records would change ids.
+	err = tx.QueryRowContext(ctx, `
+		SELECT 1 FROM placements p JOIN bookmarks b ON b.id = p.bookmark_id
+		WHERE p.folder_id = ?1 AND p.deleted_at IS NULL AND b.deleted_at IS NULL AND b.id <> ?2
+		  AND b.url = (SELECT url FROM bookmarks WHERE id = ?2) LIMIT 1`, folderID, bookmarkID).Scan(&one)
+	if err == nil {
+		return false, errURLInFolder
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return false, err
+	}
 	pos, err := s.nextPosition(ctx, tx, owner, folderID)
 	if err != nil {
 		return false, err
@@ -373,28 +395,35 @@ func (s *Service) addPlacement(ctx context.Context, tx *sql.Tx, owner, bookmarkI
 	return err == nil, err
 }
 
+// errURLInFolder is deliberately generic: it must not reveal which record, folder or title
+// caused the collision (the same text is used for visible and hidden collisions).
+var errURLInFolder = fmt.Errorf("%w: another bookmark with this URL is already in that folder", ErrConflict)
+
 // findVisibleByURL finds the record with this exact URL that is visible in the scope.
-// With several (possible only for the owner, who sees records created by recipients),
-// the one already placed in a target folder wins, else the oldest.
+// Deterministic policy with no candidate cap: the lowest-id record already placed in one of
+// the target folders wins (so a single-folder POST never duplicates a placement), otherwise
+// the lowest-id visible record. Target folders are visible by construction.
 func (s *Service) findVisibleByURL(ctx context.Context, q queryer, sc Scope, url string, targets []int64) (int64, bool, error) {
-	ids, err := s.visibleIDs(ctx, q, sc, url, nil, 100, 0)
-	if err != nil || len(ids) == 0 {
-		return 0, false, err
-	}
-	if len(ids) > 1 && len(targets) > 0 {
-		list, _ := json.Marshal(ids)
+	if len(targets) > 0 {
 		tl, _ := json.Marshal(targets)
 		var id int64
 		err := q.QueryRowContext(ctx, `
-			SELECT bookmark_id FROM placements WHERE deleted_at IS NULL
-			  AND bookmark_id IN (SELECT value FROM json_each(?)) AND folder_id IN (SELECT value FROM json_each(?))
-			ORDER BY bookmark_id LIMIT 1`, string(list), string(tl)).Scan(&id)
+			SELECT b.id FROM bookmarks b
+			WHERE b.owner_id = ? AND b.deleted_at IS NULL AND b.url = ? AND EXISTS (
+				SELECT 1 FROM placements p JOIN folders f ON f.id = p.folder_id
+				WHERE p.bookmark_id = b.id AND p.deleted_at IS NULL AND f.deleted_at IS NULL
+				  AND p.folder_id IN (SELECT value FROM json_each(?)))
+			ORDER BY b.id LIMIT 1`, sc.OwnerID, url, string(tl)).Scan(&id)
 		if err == nil {
 			return id, true, nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return 0, false, err
 		}
+	}
+	ids, err := s.visibleIDs(ctx, q, sc, url, nil, 1, 0)
+	if err != nil || len(ids) == 0 {
+		return 0, false, err
 	}
 	return ids[0], true, nil
 }
@@ -479,21 +508,32 @@ func (s *Service) UpdateBookmark(ctx context.Context, sc Scope, id int64, up Boo
 			}
 		}
 		if up.URL != nil && *up.URL != cur.URL {
-			var total int
-			if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM placements p JOIN folders f ON f.id = p.folder_id WHERE p.bookmark_id = ? AND p.deleted_at IS NULL AND f.deleted_at IS NULL`, id).Scan(&total); err != nil {
-				return err
-			}
-			if total > len(cur.Folders) {
-				return ErrForbidden
-			}
-			others, err := s.visibleIDs(ctx, tx, sc, *up.URL, nil, 100, 0)
+			// A URL edit of an already-visible record applies to every reference of it, like
+			// title and tags, including placements this scope cannot see (their rows stay).
+			// It must not collide with another visible record, nor make another record with
+			// the new URL share a folder (hidden or not) with this one. Both refusals use
+			// the same generic message.
+			others, err := s.visibleIDs(ctx, tx, sc, *up.URL, nil, 2, 0)
 			if err != nil {
 				return err
 			}
 			for _, o := range others {
 				if o != id {
-					return ErrConflict
+					return errURLInFolder
 				}
+			}
+			var one int
+			err = tx.QueryRowContext(ctx, `
+				SELECT 1 FROM placements p
+				JOIN folders f ON f.id = p.folder_id AND f.deleted_at IS NULL
+				JOIN placements p2 ON p2.folder_id = p.folder_id AND p2.deleted_at IS NULL
+				JOIN bookmarks b2 ON b2.id = p2.bookmark_id AND b2.deleted_at IS NULL AND b2.url = ?2 AND b2.id <> ?1
+				WHERE p.bookmark_id = ?1 AND p.deleted_at IS NULL LIMIT 1`, id, *up.URL).Scan(&one)
+			if err == nil {
+				return errURLInFolder
+			}
+			if !errors.Is(err, sql.ErrNoRows) {
+				return err
 			}
 		}
 		now := s.ms()

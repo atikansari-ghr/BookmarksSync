@@ -317,8 +317,17 @@ func TestRevokedAndInactiveCredentialsFailImmediately(t *testing.T) {
 	if err := svc.SetActive(ctx, "alice", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Authenticate(ctx, "alice", secret); err != nil {
-		t.Errorf("reactivated user rejected: %v", err)
+	// fix round 1: deactivation revoked every credential; reactivating does not revive them
+	if _, err := svc.Authenticate(ctx, "alice", secret); !errors.Is(err, identity.ErrUnauthorized) {
+		t.Errorf("credential survived deactivation + reactivation: %v", err)
+	}
+	u, _ := svc.GetUser(ctx, "alice")
+	_, fresh, err := svc.CreateCredential(ctx, identity.NewCredential{UserID: u.ID, Mode: identity.ModeEdit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Authenticate(ctx, "alice", fresh); err != nil {
+		t.Errorf("new credential after reactivation rejected: %v", err)
 	}
 	if err := svc.RevokeCredential(ctx, c.ID); err != nil {
 		t.Fatal(err)
@@ -421,5 +430,72 @@ func TestListCredentialsShowsMetadataButNeverSecrets(t *testing.T) {
 	}
 	if strings.Contains(fmt.Sprintf("%+v", list), strings.Split(secret, ".")[2]) {
 		t.Error("listing contains the secret")
+	}
+}
+
+func TestDeactivationRevokesEveryCredentialOfThatUserOnly(t *testing.T) {
+	ctx := context.Background()
+	db, _ := open(t)
+	svc := newSvc(db)
+	alice, _ := svc.CreateUser(ctx, "alice", goodPassword, false)
+	bob, _ := svc.CreateUser(ctx, "bob", goodPassword, false)
+	_, a1, _ := svc.CreateCredential(ctx, identity.NewCredential{UserID: alice.ID, Mode: identity.ModeEdit})
+	_, a2, _ := svc.CreateCredential(ctx, identity.NewCredential{UserID: alice.ID, Mode: identity.ModeView})
+	_, b1, _ := svc.CreateCredential(ctx, identity.NewCredential{UserID: bob.ID, Mode: identity.ModeEdit})
+	// a lock held by one of alice's credentials must go with it
+	if _, err := db.SQL().ExecContext(ctx, `INSERT INTO locks(credential_id, owner_id, root_folder_id, expires_at) VALUES (1, ?, 0, 99999999999999)`, alice.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.SetActive(ctx, "alice", false); err != nil {
+		t.Fatal(err)
+	}
+	list, err := svc.ListCredentials(ctx, alice.ID)
+	if err != nil || len(list) != 2 {
+		t.Fatalf("list = %v, %v", list, err)
+	}
+	for _, ci := range list {
+		if !ci.Revoked {
+			t.Errorf("credential %d not revoked by deactivation", ci.ID)
+		}
+	}
+	for _, s := range []string{a1, a2} {
+		if _, err := svc.Authenticate(ctx, "alice", s); !errors.Is(err, identity.ErrUnauthorized) {
+			t.Errorf("alice credential still authenticates: %v", err)
+		}
+	}
+	if _, err := svc.Authenticate(ctx, "bob", b1); err != nil {
+		t.Errorf("bob's credential affected: %v", err)
+	}
+	var locks int
+	_ = db.SQL().QueryRowContext(ctx, `SELECT COUNT(*) FROM locks`).Scan(&locks)
+	if locks != 0 {
+		t.Errorf("%d locks survive the revoked credential", locks)
+	}
+	// reactivating revives nothing; a new credential is required
+	if err := svc.SetActive(ctx, "alice", true); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range []string{a1, a2} {
+		if _, err := svc.Authenticate(ctx, "alice", s); !errors.Is(err, identity.ErrUnauthorized) {
+			t.Errorf("old credential revived by reactivation: %v", err)
+		}
+	}
+	bobList, _ := svc.ListCredentials(ctx, bob.ID)
+	if len(bobList) != 1 || bobList[0].Revoked {
+		t.Errorf("bob list = %+v", bobList)
+	}
+}
+
+func TestReactivatingAnAlreadyActiveUserRevokesNothing(t *testing.T) {
+	ctx := context.Background()
+	db, _ := open(t)
+	svc := newSvc(db)
+	_, c, secret := mkUserCred(t, svc, identity.ModeEdit)
+	_ = c
+	if err := svc.SetActive(ctx, "alice", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Authenticate(ctx, "alice", secret); err != nil {
+		t.Errorf("no-op SetActive(true) revoked a credential: %v", err)
 	}
 }

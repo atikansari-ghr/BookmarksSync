@@ -36,15 +36,18 @@ const (
 	MaxImportNodes = 2000
 	MaxImportDepth = 32
 	MaxChildLayers = 1000
-	defaultLockTTL = 5 * time.Minute
-	maxListPageIdx = 1_000_000
-	canonicalBar   = "Bookmarks Bar"
-	canonicalOther = "Other Bookmarks"
-	kindFolder     = "folder"
-	kindBar        = "bar"
-	kindOther      = "other"
-	typeFolder     = "folder"
-	typeBookmark   = "bookmark"
+	// Search bounds keep the LIKE-per-term query cheap (checked before any SQL runs).
+	MaxSearchTerms     = 10
+	MaxSearchTermBytes = 256
+	defaultLockTTL     = 5 * time.Minute
+	maxListPageIdx     = 1_000_000
+	canonicalBar       = "Bookmarks Bar"
+	canonicalOther     = "Other Bookmarks"
+	kindFolder         = "folder"
+	kindBar            = "bar"
+	kindOther          = "other"
+	typeFolder         = "folder"
+	typeBookmark       = "bookmark"
 )
 
 var (
@@ -132,13 +135,45 @@ func (s *Service) write(ctx context.Context, sc Scope, fn func(tx *sql.Tx) error
 		return err
 	}
 	defer tx.Rollback()
+	// The scope was resolved earlier in the request (possibly before a slow body was
+	// read). Re-derive it from committed state inside this transaction, at its start and
+	// again immediately before commit, so a revoke, deactivation, downgrade or trashed
+	// share can never be outrun by a stale Scope. The write lock is held throughout, so
+	// no such change can land between the last check and the commit.
+	if err := s.revalidate(ctx, tx, sc, true); err != nil {
+		return err
+	}
 	if err := s.checkLock(ctx, tx, sc); err != nil {
 		return err
 	}
 	if err := fn(tx); err != nil {
 		return err
 	}
+	if err := s.revalidate(ctx, tx, sc, true); err != nil {
+		return err
+	}
 	return tx.Commit()
+}
+
+// revalidate re-derives the live authority of sc.Holder and refuses the operation if the
+// credential is revoked, its user inactive, its share gone or trashed (identity.ErrUnauthorized),
+// or, when write is true, if the live grant/credential no longer allows writing (ErrForbidden).
+// Scopes without a Holder (internal callers such as the CLI) have no credential to check.
+func (s *Service) revalidate(ctx context.Context, q queryer, sc Scope, write bool) error {
+	if sc.Holder == 0 {
+		return nil
+	}
+	live, _, err := s.liveScope(ctx, q, sc.Holder)
+	if err != nil {
+		return err
+	}
+	if live.OwnerID != sc.OwnerID || live.RootFolderID != sc.RootFolderID {
+		return identity.ErrUnauthorized
+	}
+	if write && !live.Writable {
+		return fmt.Errorf("%w: read-only scope", ErrForbidden)
+	}
+	return nil
 }
 
 // EnsureCollection creates the canonical Bookmarks Bar / Other Bookmarks roots for
@@ -166,38 +201,69 @@ func (s *Service) EnsureCollection(ctx context.Context, ownerID int64) error {
 // a share credential needs a current grant to this very user on a live folder.
 // Granting, downgrading or revoking therefore applies on the next request.
 func (s *Service) ResolveScope(ctx context.Context, p identity.Principal) (Scope, error) {
-	switch p.Kind {
-	case identity.KindPrivate:
-		if err := s.EnsureCollection(ctx, p.User.ID); err != nil {
+	sc, userID, err := s.liveScope(ctx, s.db, p.CredentialID)
+	if err != nil {
+		return Scope{}, err
+	}
+	if userID != p.User.ID {
+		return Scope{}, identity.ErrUnauthorized // a credential cannot be replayed by another user
+	}
+	if sc.RootFolderID == 0 {
+		if err := s.EnsureCollection(ctx, sc.OwnerID); err != nil {
 			return Scope{}, err
 		}
-		return Scope{OwnerID: p.User.ID, Writable: p.Mode == identity.ModeEdit, Holder: p.CredentialID}, nil
+	}
+	return sc, nil
+}
+
+// liveScope derives the scope a credential has right now from committed state: the
+// credential must be unrevoked and its user active; a share credential also needs its
+// grant to exist for this very user on a live folder. The effective right is the lower of
+// grant and credential. It also returns the credential's user id.
+func (s *Service) liveScope(ctx context.Context, q queryer, credID int64) (Scope, int64, error) {
+	var userID int64
+	var kind, credMode string
+	var shareID, revoked sql.NullInt64
+	var active int
+	err := q.QueryRowContext(ctx, `
+		SELECT c.user_id, c.kind, c.share_id, c.mode, c.revoked_at, u.active
+		FROM credentials c JOIN users u ON u.id = c.user_id WHERE c.id = ?`, credID).
+		Scan(&userID, &kind, &shareID, &credMode, &revoked, &active)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Scope{}, 0, identity.ErrUnauthorized
+	}
+	if err != nil {
+		return Scope{}, 0, err
+	}
+	if revoked.Valid || active != 1 {
+		return Scope{}, 0, identity.ErrUnauthorized
+	}
+	switch identity.Kind(kind) {
+	case identity.KindPrivate:
+		return Scope{OwnerID: userID, Writable: credMode == string(identity.ModeEdit), Holder: credID}, userID, nil
 	case identity.KindShare:
 		var owner, folder, recipient int64
-		var mode string
+		var grant string
 		var folderDeleted sql.NullInt64
-		var active int
-		err := s.db.QueryRowContext(ctx, `
-			SELECT sh.owner_id, sh.folder_id, sh.recipient_id, sh.mode, f.deleted_at, u.active
-			FROM shares sh
-			JOIN folders f ON f.id = sh.folder_id
-			JOIN users u ON u.id = sh.recipient_id
-			WHERE sh.id = ?`, p.ShareID).Scan(&owner, &folder, &recipient, &mode, &folderDeleted, &active)
+		err := q.QueryRowContext(ctx, `
+			SELECT sh.owner_id, sh.folder_id, sh.recipient_id, sh.mode, f.deleted_at
+			FROM shares sh JOIN folders f ON f.id = sh.folder_id WHERE sh.id = ?`, shareID.Int64).
+			Scan(&owner, &folder, &recipient, &grant, &folderDeleted)
 		if errors.Is(err, sql.ErrNoRows) {
-			return Scope{}, identity.ErrUnauthorized
+			return Scope{}, 0, identity.ErrUnauthorized
 		}
 		if err != nil {
-			return Scope{}, err
+			return Scope{}, 0, err
 		}
-		if recipient != p.User.ID || folderDeleted.Valid || active != 1 {
-			return Scope{}, identity.ErrUnauthorized
+		if recipient != userID || folderDeleted.Valid {
+			return Scope{}, 0, identity.ErrUnauthorized
 		}
 		return Scope{
-			OwnerID: owner, RootFolderID: folder, Holder: p.CredentialID,
-			Writable: mode == string(identity.ModeEdit) && p.Mode == identity.ModeEdit,
-		}, nil
+			OwnerID: owner, RootFolderID: folder, Holder: credID,
+			Writable: grant == string(identity.ModeEdit) && credMode == string(identity.ModeEdit),
+		}, userID, nil
 	}
-	return Scope{}, identity.ErrUnauthorized
+	return Scope{}, 0, identity.ErrUnauthorized
 }
 
 func validTitle(kind, s string) error {

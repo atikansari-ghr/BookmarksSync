@@ -51,7 +51,11 @@ come from separate AUTOINCREMENT sequences and are never reused.
 * The **website password never works for floccus**. App secrets are separate, per
   device, random (256 bits), stored only as a SHA-256 hash, compared in constant time,
   and shown **once** by the CLI. Revoking a credential, deactivating the user, revoking
-  or trashing the share a credential is bound to all take effect on the next request.
+  or trashing the share a credential is bound to all take effect on the next request, and
+  every write re-checks the live credential, user and grant inside its own transaction (a
+  revoke or downgrade that lands while a request body is still arriving wins).
+  **Deactivating a user revokes all of their credentials in the same transaction** (and drops
+  their locks); reactivating the user does not revive them, new credentials must be created.
 * Failures are a generic `401 {"status":"error","data":["unauthorized"]}`, identical for
   unknown user, wrong secret, revoked and inactive. No `WWW-Authenticate` header is sent
   (floccus supplies credentials itself and a challenge could trigger a browser prompt).
@@ -94,10 +98,14 @@ the server host with the same `--data-dir`.
 
 ## Locking
 
-One lock per credential, keyed by the **physical scope** it covers: the owner's whole
-collection, or a shared folder subtree. Overlapping scopes exclude each other (an owner's
-private lock vs. a recipient's share lock, nested shares, two recipients of one share);
-unrelated users never interact.
+One lock per credential, keyed by the **owner collection** it touches. A bookmark record can
+be placed in several shared folders and in the owner's private tree, so a write through one
+scope can change what a sibling scope sees; every scope under the same owner therefore
+serialises (the owner's own sync, every recipient of any of that owner's shares, sibling
+shares included). **Reduced parallelism is the price:** two recipients of two different
+shared folders of one owner cannot sync at the same moment (the second gets 423 and floccus
+retries). Different owners never interact. Revoking a credential or deactivating a user
+releases the lock they held.
 
 * `POST lock` takes or renews (TTL 5 minutes; floccus renews every 2 minutes). Another
   credential's overlapping, unexpired lock gives **423**.
@@ -119,8 +127,19 @@ unrelated users never interact.
   inherits or changes the private title, tags or placements (controller ruling). The owner
   then sees two records for X. Once a record is visible to a share, its title/URL/tags are
   shared across its known placements; updates through the share never remove or modify
-  placements outside the share and `folders[]` stays filtered. Changing the URL of a
-  record that also has hidden placements is refused (403).
+  placements outside the share and `folders[]` stays filtered. **Editing the URL of an
+  already-visible shared record is allowed** and, exactly like its title and tags, **affects
+  every reference to that record, including placements the share cannot see** (those rows are
+  kept, only the record's URL changes).
+* **A folder never holds two live placements of the same exact URL.** Single-folder POSTs
+  (all that stock floccus sends) resolve to the record already placed in that folder, else the
+  lowest-id visible record, with no candidate cap. Operations that would put a second record
+  with the same URL into one folder are refused with an explicit **409** and write nothing:
+  a PUT/POST adding a placement to a folder that already holds another record with that URL
+  (only reachable by an owner who sees both records after a cross-scope collision), and a URL
+  edit that would collide with a visible record or with a record in any folder (hidden or not)
+  of the edited record. The 409 text is generic and never names hidden titles or folders; it
+  does reveal one bit (a collision exists), and records are never merged silently.
 * **Titles and URLs are never normalised.** Empty titles, leading/trailing whitespace and
   URL case/trailing slashes round-trip byte for byte (floccus hashes what it sent).
 * Accepted URL schemes: `http`, `https`, `ftp`, `ftps`, `file`, `javascript`. Anything else

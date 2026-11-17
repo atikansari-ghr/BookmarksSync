@@ -14,6 +14,8 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -92,6 +94,13 @@ type Service struct {
 	mem  uint32 // KiB
 	iter uint32
 	par  uint8
+
+	// dummyHash equalises VerifyPassword work for unknown users. It is computed lazily,
+	// exactly once per service (so it matches that service's own Argon2id cost) and is
+	// immutable afterwards, so concurrent logins never race on it.
+	dummyOnce         sync.Once
+	dummyHashValue    string
+	dummyComputations atomic.Int32
 }
 
 type Option func(*Service)
@@ -170,21 +179,43 @@ func (s *Service) GetUser(ctx context.Context, username string) (User, error) {
 	return u, nil
 }
 
-// SetActive enables or disables a user. Disabled users fail every authentication
-// immediately because credentials are checked against the live row.
+// SetActive enables or disables a user. Disabling is one transaction that also revokes
+// every credential of the user and drops the locks they held: reactivating the user later
+// does not revive any old secret, new credentials must be minted.
 func (s *Service) SetActive(ctx context.Context, username string, active bool) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE users SET active = ? WHERE username = ?`, b2i(active), username)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE users SET active = ? WHERE username = ?`, b2i(active), username)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	return nil
+	if !active {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM locks WHERE credential_id IN
+			(SELECT c.id FROM credentials c JOIN users u ON u.id = c.user_id WHERE u.username = ?)`, username); err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE credentials SET revoked_at = ? WHERE revoked_at IS NULL AND user_id =
+			(SELECT id FROM users WHERE username = ?)`, s.now().UnixMilli(), username); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
-// dummyHash lets VerifyPassword spend comparable time for unknown users.
-var dummyHash string
+// dummy returns the per-service hash used to equalise work for unknown users.
+func (s *Service) dummy() string {
+	s.dummyOnce.Do(func() {
+		s.dummyComputations.Add(1)
+		s.dummyHashValue, _ = s.hashPassword("dummy password for timing")
+	})
+	return s.dummyHashValue
+}
 
 // VerifyPassword checks an interactive password. Never use it for floccus auth.
 func (s *Service) VerifyPassword(ctx context.Context, username, password string) (User, error) {
@@ -194,10 +225,7 @@ func (s *Service) VerifyPassword(ctx context.Context, username, password string)
 	err := s.db.QueryRowContext(ctx, `SELECT id, username, is_admin, active, password_hash FROM users WHERE username = ?`, username).
 		Scan(&u.ID, &u.Username, &admin, &active, &hash)
 	if errors.Is(err, sql.ErrNoRows) {
-		if dummyHash == "" {
-			dummyHash, _ = s.hashPassword("dummy password for timing")
-		}
-		verifyHash(dummyHash, password)
+		verifyHash(s.dummy(), password)
 		return User{}, ErrUnauthorized
 	}
 	if err != nil {
@@ -293,16 +321,27 @@ func hashSecret(randPart string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// RevokeCredential permanently disables a credential. Revoking twice is a no-op.
+// RevokeCredential permanently disables a credential and drops the lock it held.
+// Revoking twice is a no-op.
 func (s *Service) RevokeCredential(ctx context.Context, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 	var exists int
-	if err := s.db.QueryRowContext(ctx, `SELECT 1 FROM credentials WHERE id = ?`, id).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM credentials WHERE id = ?`, id).Scan(&exists); errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	} else if err != nil {
 		return err
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE credentials SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, s.now().UnixMilli(), id)
-	return err
+	if _, err := tx.ExecContext(ctx, `UPDATE credentials SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL`, s.now().UnixMilli(), id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM locks WHERE credential_id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // zeroHash stands in for the stored hash when the credential id is unknown so that

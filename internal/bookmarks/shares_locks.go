@@ -118,45 +118,19 @@ func (s *Service) FindShare(ctx context.Context, ownerID, folderID, recipientID 
 
 // ---- locks --------------------------------------------------------------
 
-// overlaps reports whether two physical scopes (0 = the owner's whole collection,
-// else a folder subtree) intersect.
-func (s *Service) overlaps(ctx context.Context, q queryer, a, b int64) (bool, error) {
-	if a == 0 || b == 0 || a == b {
-		return true, nil
-	}
-	if in, err := s.isWithin(ctx, q, a, b); err != nil || in {
-		return in, err
-	}
-	return s.isWithin(ctx, q, b, a)
-}
-
-// conflictingLock reports whether another credential holds an unexpired lock whose
-// physical scope overlaps sc.
+// conflictingLock reports whether another credential holds an unexpired lock on the same
+// owner collection. The lock key is the owner id alone: a bookmark record can be placed in
+// several shared subtrees (and the owner's private tree), so a write through one scope can
+// change what a sibling scope sees; serialising everything under one owner is the only
+// scope-independent key that is sound. Different owners never interact.
 func (s *Service) conflictingLock(ctx context.Context, q queryer, sc Scope) (bool, error) {
-	rows, err := q.QueryContext(ctx, `SELECT root_folder_id FROM locks WHERE owner_id = ? AND expires_at > ? AND credential_id <> ?`,
-		sc.OwnerID, s.ms(), sc.Holder)
-	if err != nil {
-		return false, err
+	var one int
+	err := q.QueryRowContext(ctx, `SELECT 1 FROM locks WHERE owner_id = ? AND expires_at > ? AND credential_id <> ? LIMIT 1`,
+		sc.OwnerID, s.ms(), sc.Holder).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
 	}
-	var roots []int64
-	for rows.Next() {
-		var r int64
-		if err := rows.Scan(&r); err != nil {
-			rows.Close()
-			return false, err
-		}
-		roots = append(roots, r)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return false, err
-	}
-	for _, r := range roots {
-		if ov, err := s.overlaps(ctx, q, sc.RootFolderID, r); err != nil || ov {
-			return ov, err
-		}
-	}
-	return false, nil
+	return err == nil, err
 }
 
 func (s *Service) checkLock(ctx context.Context, q queryer, sc Scope) error {
@@ -180,6 +154,9 @@ func (s *Service) AcquireLock(ctx context.Context, sc Scope) error {
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.revalidate(ctx, tx, sc, false); err != nil {
+		return err
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM locks WHERE expires_at <= ?`, s.ms()); err != nil {
 		return err
 	}

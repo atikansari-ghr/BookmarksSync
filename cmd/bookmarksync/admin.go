@@ -61,7 +61,7 @@ var adminGroups = map[string][]adminCmd{
 				fs.BoolVar(&o.admin, "admin", false, "")
 			}, run: userCreate},
 		{name: "list", summary: "list users", setup: func(fs *flag.FlagSet, o *cmdOpts) {}, run: userList},
-		{name: "set-active", summary: "enable or disable a user (disabled users fail every login and credential at once)",
+		{name: "set-active", summary: "enable or disable a user (disabling revokes all their credentials for good; reactivation needs new ones)",
 			flags: "  --username NAME   the user\n  --active=true|false\n",
 			setup: func(fs *flag.FlagSet, o *cmdOpts) {
 				fs.StringVar(&o.username, "username", "", "")
