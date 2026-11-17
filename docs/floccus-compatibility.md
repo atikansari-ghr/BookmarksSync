@@ -38,9 +38,16 @@ response contains a `ticket` field.
 | `POST folder/{id}/import` | Multipart field `bm_import`, Netscape HTML, parsed with a real HTML5 parser. Appends to the folder and returns only the imported tree. At most 2000 items, 32 levels, 1 MiB. URLs are stored only; nothing is fetched or executed. All-or-nothing. |
 | `POST/DELETE lock` | Scope lock, see below. |
 
-Ids are numeric (`-1` is the root). Numbers and numeric strings are accepted in paths
-and JSON; anything else (`1.5`, `1e3`, `abc`, ...) is a 400. Folder ids and bookmark ids
-come from separate AUTOINCREMENT sequences and are never reused.
+Folder and bookmark ids use distinct wire conventions. `-1` is the virtual root; every
+concrete Floccus folder id is negative (`wire = -(internal id + 1)`). For example, internal
+folder `1` is sent as `-2`. Bookmark ids remain positive and unchanged. Folder ids in paths
+and folder-valued JSON fields must be canonical negative integers; malformed values such as
+`-0`, `-02`, `1.5`, `1e3` or `abc` return 400. Bookmark IDs keep their existing positive
+form. SQLite and CLI folder IDs remain positive, so do not copy a CLI `--folder-id` value
+into a Floccus request.
+
+Folder items at a scope root report `parent_folder: 0` because they have no concrete parent;
+zero is not a usable folder ID in a request.
 
 `POST index.php/login/v2` (Login Flow v2) is **not implemented**; see "Setting up a floccus profile".
 
@@ -70,7 +77,8 @@ folder**, and is `view` or `edit`.
 * Private scope: root `-1` contains the canonical, undeletable `Bookmarks Bar` and
   `Other Bookmarks` folders (and any extra top-level folders, e.g. Firefox's extra roots).
   Incoming shares are **never** mounted here.
-* Share scope: `-1` is the shared folder; the real folder id is accepted as an alias.
+* Share scope: `-1` is the shared folder; its concrete negative Floccus folder id is accepted
+  as an alias. The CLI continues to use the positive internal folder id.
   Only that subtree is visible. A bookmark placed directly in it reports `folders: [-1]`.
 * `view` credentials (or view grants) get 403 `read-only share or credential` on every
   content write. They may still take and release the lock, which is all a floccus
@@ -121,6 +129,17 @@ releases the lock they held.
   such duplicates before syncing (`filterOutDuplicatesInTheSameFolder`), so they stay
   local. Placements of one URL in *different* folders are preserved as separate placements
   of one bookmark record.
+* **Delete-only same-folder duplicate resolution:** stock floccus 5.13.0 was tested in
+  Chrome, Edge, Brave and Firefox. When a user moves one same-URL bookmark into a folder
+  already containing another copy, floccus sends a DELETE for the old placement and does
+  not tell the server whether this was a move or an intentional deletion. If that DELETE
+  removes the source's last live placement and exactly one same-URL record remains visible
+  to the caller, the source title and tags replace the survivor's metadata before the
+  source is trashed. The survivor's id and placements stay unchanged. An intentional
+  deletion of the last placement can therefore update the other copy. No merge occurs when
+  the source still has placements, no survivor exists, more than one visible survivor
+  exists, or a candidate is hidden from the caller. This latest-wins behavior is limited to
+  the caller's visible scope.
 * **Duplicate matching only considers visible records.** One record per exact URL is
   maintained within what a credential can see. If an owner holds a private bookmark X
   and a share recipient POSTs X, the recipient gets a **separate** record: it never learns,
@@ -141,11 +160,12 @@ releases the lock they held.
   is never consulted:** a URL present only in a folder hidden from the writer behaves exactly
   like a fresh URL (success, same response). Scoped exception: that can leave a duplicate
   inside a hidden folder; the owner sees it and resolves it in the planned duplicate-review
-  feature. Observable client behavior (**not verified in a browser**): stock floccus is
-  lookup-first, so after a cross-scope collision an *owner* whose sync picks one of the two
-  visible records and tries to add it to the other's folder gets 409, which floccus reports as
-  a sync error for that move; the collision case is therefore **not** claimed to sync cleanly.
-  Recipients and the stock single-folder flows are unaffected.
+  feature. An explicit API PUT that adds a record to a folder already holding another visible
+  same-URL record returns 409 without changing either record. In real-browser testing, stock
+  floccus did not send that PUT for the native move: it sent only the DELETE described above.
+  The tested native sync completed, and the latest source title/tags reached the sole visible
+  survivor. Cross-scope recipient records remain separate and hidden metadata is never
+  consulted.
 * **Titles and URLs are never normalised.** Empty titles, leading/trailing whitespace and
   URL case/trailing slashes round-trip byte for byte (floccus hashes what it sent).
 * Accepted URL schemes: `http`, `https`, `ftp`, `ftps`, `file`, `javascript`. Anything else

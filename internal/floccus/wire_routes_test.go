@@ -38,6 +38,10 @@ func walkFolders(items []any, visit func(m map[string]any)) {
 func TestCanonicalRootsAndNestedFoldersAreNegativeOnTheWire(t *testing.T) {
 	r := newRig(t)
 	a := r.account("alice", identity.ModeEdit)
+	rootItem := r.do(&a, "GET", R+"/folder/-1", nil).ok(t).item()
+	if num(rootItem["id"]) != -1 || num(rootItem["parent_folder"]) != 0 {
+		t.Fatalf("virtual root item = %v, want id -1 and parent_folder 0", rootItem)
+	}
 
 	top := r.do(&a, "GET", R+"/folder/-1/children?layers=1", nil).ok(t).data()
 	if len(top) != 2 || num(asMap(top[0])["id"]) != -2 || num(asMap(top[1])["id"]) != -3 {
@@ -346,6 +350,10 @@ func TestShareScopeWireIDsStayIsolatedAndAliasTheRoot(t *testing.T) {
 	secret := r.mkFolder(alice, other, "Secret")
 	r.mkBookmark(alice, "https://s.example/", "s", sub)
 	bc := r.shareAccount(alice, internalOf(shared), bob, identity.ModeEdit, identity.ModeEdit)
+	shareRootItem := r.do(&bc, "GET", R+"/folder/-1", nil).ok(t).item()
+	if num(shareRootItem["id"]) != -1 || num(shareRootItem["parent_folder"]) != 0 {
+		t.Fatalf("share root item = %v, want id -1 and parent_folder 0", shareRootItem)
+	}
 
 	// the share root is -1; its children are wire; the real folder wire id is an accepted alias
 	root := r.do(&bc, "GET", R+"/folder/-1/children?layers=-1", nil).ok(t).data()

@@ -21,7 +21,7 @@ import { REPO_ROOT, EXTENSION_DIR, EXPECTED_EXTENSION_VERSION, writeResult, TOOL
 import {
   sanitizeDeep, sanitize, parseRequestLog, summarizeRequests, makeRunRoot, removeRunRoot, runCleanupSteps, Recorder,
   parseSecretFromCliStdout, assessSync, guardedRunRemoval, detectIdNamespaceCollision, startRecordingProxy, stripTree, pickLoopbackPort, findGo, startProcessServer, runCommand, treeEquals, apiClient, serverTree,
-  dirContains, REST
+  dirContains, REST, wireFolderIdToInternal
 } from './lib/server-sync.mjs'
 import { BROWSERS, prerequisite, openBrowser } from './lib/browser-session.mjs'
 
@@ -354,10 +354,11 @@ async function runBrowser(name, ctx) {
       const top = (await alice.get('/folder/-1/children?layers=1')).json.data
       const srvBar = at(top, ['Bookmarks Bar']).id, srvOther = at(top, ['Other Bookmarks']).id
       const S = (await alice.post('/folder', { parent_folder: srvBar, title: 'h-shared' })).json.item.id
+      const SInternal = wireFolderIdToInternal(S)
       const F1 = (await alice.post('/folder', { parent_folder: srvOther, title: 'h-hidden' })).json.item.id
       const priv = (await alice.post('/bookmark', { url: X, title: 'ALICE-PRIVATE-TITLE', folders: [F1], tags: ['alice-secret-tag'] })).json.item
-      await must(['share', 'grant', '--owner', 'alice', '--folder-id', String(S), '--user', 'bob', '--mode', 'edit'])
-      const secBob = await mkCred('bob', 'edit', ['--share-owner', 'alice', '--share-folder', String(S)])
+      await must(['share', 'grant', '--owner', 'alice', '--folder-id', String(SInternal), '--user', 'bob', '--mode', 'edit'])
+      const secBob = await mkCred('bob', 'edit', ['--share-owner', 'alice', '--share-folder', String(SInternal)])
       const bob = apiClient(base, 'bob', secBob)
       const bobFolder = await B.native.createFolder(Br.otherId, 'bob-share')
       await B.native.build(bobFolder, [{ title: 'BOB-TITLE', url: X }])
@@ -391,17 +392,22 @@ async function runBrowser(name, ctx) {
         const xNative = await A.native.find(hiddenNative, ['ALICE-PRIVATE-TITLE'])
         if (xNative) { await A.native.move(xNative, { parentId: sharedNative }); moved = xNative }
       }
+      const ownerTraceMark = proxy ? proxy.records().length : 0
       const rm = await doSync(A, acctA, { strategy: 'default' })
       const mine = summarizeRequests(requests().slice(mk), credA)
       const srvX = (await alice.get(`/bookmark?page=-1&url=${encodeURIComponent(X)}`)).json?.data ?? []
       const dupInFolder = (() => { const c = {}; for (const r of srvX) for (const f of r.folders) c[f] = (c[f] ?? 0) + 1; return Object.values(c).some(n => n > 1) })()
+      const latestRecordRetained = srvX.length === 1 && srvX[0].title === 'ALICE-PRIVATE-TITLE' &&
+        srvX[0].tags?.includes('alice-secret-tag') && srvX[0].folders?.includes(S)
       info.extensionCollision = {
         preSyncError: errText(ra), movedNativeX: !!moved, postMoveDone: rm.done, postMoveError: errText(rm),
         owner409s: mine.entries.filter(e => e.status === 409).map(e => `${e.method} ${e.path.replace(REST, '')}`),
-        serverRecordsForX: srvX.length, sameFolderDuplicate: dupInFolder
+        serverRecordsForX: srvX.length, sameFolderDuplicate: dupInFolder, latestRecordRetained,
+        serverRecordsAfterMove: srvX.map(r => ({ id: r.id, title: r.title, tags: r.tags, folders: r.folders })),
+        requestTrace: proxy ? proxy.records().slice(ownerTraceMark).map(r => ({ method: r.method, path: r.path.replace(REST, ''), status: r.status, requestBody: r.requestBody, responseBody: r.responseBody })) : undefined
       }
       const postMove = assessSync({ res: rm, entries: rm.evidence.entries, expect: 'success' })
-      if (moved && synced(ra) && postMove.ok && !dupInFolder) rec.pass(tag('owner profile A (stock floccus) moves one collided X next to the other: completed sync with request evidence, no same-folder duplicate on the server; behavior recorded'), JSON.stringify(info.extensionCollision).slice(0, 400))
+      if (moved && synced(ra) && postMove.ok && !dupInFolder && latestRecordRetained) rec.pass(tag('owner profile A moves one collided X next to the other: latest moved bookmark wins with title/tags retained, no same-folder duplicate'), JSON.stringify(info.extensionCollision).slice(0, 400))
       else rec.fail(tag('owner extension collision flow'), `moved=${!!moved} preSync=${synced(ra)} postMove=${postMove.reasons.join('; ') || 'ok'} ${JSON.stringify(info.extensionCollision).slice(0, 300)}`)
     }
 

@@ -22,7 +22,7 @@
 ## Review focus
 1. Offline browser cache following restore: test normal automatic continuation; document accepted risk.
 2. Read-only shares: locally editable browser UI must never grant server writes or stall unrelated private profiles.
-3. Equal URLs in different folders: preserve intentional placement; URL collision checks are limited to the caller-visible scope to protect private data. Hidden-scope collisions remain separate records and can surface in owner duplicate review. A visible same-folder conflict returns 409 rather than merging record IDs; this rare stock-floccus lookup-first move may report a sync error and must stay explicit in compatibility docs/tests.
+3. Equal URLs in different folders: preserve intentional placements; URL collision checks are limited to the caller-visible scope to protect private data. Hidden-scope collisions remain separate records and can surface in owner duplicate review. Explicit visible same-folder placement conflicts return 409. Stock floccus 5.13.0 instead resolves a same-folder move with a DELETE-only flow; when it removes the source's last placement and exactly one same-URL record remains visible, copy the source title/tags to that survivor before trashing the source. Do not merge hidden data or guess among multiple visible survivors; test this in all supported browsers.
 4. Proxy chains/private IP classification: no remote visitor bypass through a tunnel's private socket.
 5. Fresh-host restoration: include secrets/settings/manifest, do not revive obsolete sessions during user-only restore.
 

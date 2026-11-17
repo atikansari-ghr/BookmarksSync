@@ -17,6 +17,13 @@ export const SYNC_ROOT = path.join(TOOLS_DIR, 'server-sync')
 const RUN_MARKER = '.bookmarksync-server-sync-run'
 export const REST = '/index.php/apps/bookmarks/public/rest/v2'
 
+// The Floccus protocol puts concrete folder IDs in a negative namespace. CLI share
+// provisioning uses the positive internal/database ID, so translate only at that boundary.
+export function wireFolderIdToInternal(id) {
+  if (!Number.isSafeInteger(id) || id >= -1) throw new TypeError('expected a concrete folder ID in the negative wire namespace')
+  return -id - 1
+}
+
 // ---- sanitising ------------------------------------------------------------
 
 /** Redact known secrets, any bms1 app token and Basic authorization values from text. */

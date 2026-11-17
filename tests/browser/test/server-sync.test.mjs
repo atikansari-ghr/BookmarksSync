@@ -6,6 +6,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import net from 'node:net'
+import * as serverSync from '../lib/server-sync.mjs'
 import {
   sanitize, sanitizeDeep, parseRequestLog, summarizeRequests, makeRunRoot, removeRunRoot,
   runCleanupSteps, classify, Recorder, parseSecretFromCliStdout, pickLoopbackPort, findGo,
@@ -14,6 +15,17 @@ import {
 
 const SECRET = 'bms1.7.' + 'A'.repeat(43)
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bh-ss-'))
+
+test('wire folder IDs convert to positive CLI IDs without accepting virtual or invalid IDs', () => {
+  const convert = serverSync.wireFolderIdToInternal
+  assert.equal(typeof convert, 'function')
+  assert.equal(convert(-2), 1)
+  assert.equal(convert(-3), 2)
+  assert.throws(() => convert(-1), /concrete folder/i)
+  for (const value of [0, 1, -0, -1.5, NaN, Infinity, Number.MIN_SAFE_INTEGER - 1]) {
+    assert.throws(() => convert(value), /negative wire namespace/i)
+  }
+})
 
 test('sanitize removes known secrets, bms1 tokens and Basic authorization values', () => {
   const secret2 = 'p@ss-word-value'
