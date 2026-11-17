@@ -70,7 +70,7 @@ func TestBlockedBodyThenShareRevokedWritesNothing(t *testing.T) {
 	shared := r.mkFolder(alice, bar, "Shared")
 	bc := r.shareAccount(alice, shared, bob, identity.ModeEdit, identity.ModeEdit)
 	res := r.blockedPOST(&bc, R+"/bookmark", staleBody1, staleBody2, func() {
-		noErr(t, r.svc.RevokeShare(bg, alice.user.ID, shared, bob.ID))
+		noErr(t, r.svc.RevokeShare(bg, alice.user.ID, internalOf(shared), bob.ID))
 	})
 	res.fail(t, 401)
 	r.assertNoStale(alice)
@@ -84,7 +84,7 @@ func TestBlockedBodyThenShareDowngradedWritesNothing(t *testing.T) {
 	shared := r.mkFolder(alice, bar, "Shared")
 	bc := r.shareAccount(alice, shared, bob, identity.ModeEdit, identity.ModeEdit)
 	res := r.blockedPOST(&bc, R+"/bookmark", staleBody1, staleBody2, func() {
-		_, err := r.svc.GrantShare(bg, alice.user.ID, shared, bob.ID, identity.ModeView)
+		_, err := r.svc.GrantShare(bg, alice.user.ID, internalOf(shared), bob.ID, identity.ModeView)
 		noErr(t, err)
 	})
 	res.fail(t, 403)

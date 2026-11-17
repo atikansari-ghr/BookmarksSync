@@ -22,18 +22,22 @@ func isJS(u string) bool { return len(u) >= 11 && strings.EqualFold(u[:11], "jav
 
 // For javascript: bookmarks, `target` carries the code, which floccus reads as
 // `item.target || item.url`. The URL is stored and echoed only, never executed.
-func toBookmarkJSON(b bookmarks.Bookmark) bookmarkJSON {
-	out := bookmarkJSON{ID: b.ID, URL: b.URL, Title: b.Title, Description: "", Tags: b.Tags, Folders: b.Folders}
+func toBookmarkJSON(b bookmarks.Bookmark) (bookmarkJSON, error) {
+	out := bookmarkJSON{ID: b.ID, URL: b.URL, Title: b.Title, Description: "", Tags: b.Tags, Folders: make([]int64, 0, len(b.Folders))}
 	if isJS(b.URL) {
 		out.Target = b.URL
 	}
 	if out.Tags == nil {
 		out.Tags = []string{}
 	}
-	if out.Folders == nil {
-		out.Folders = []int64{}
+	for _, f := range b.Folders {
+		w, err := folderOut(f)
+		if err != nil {
+			return bookmarkJSON{}, err
+		}
+		out.Folders = append(out.Folders, w)
 	}
-	return out
+	return out, nil
 }
 
 type nodeJSON struct {
@@ -45,7 +49,8 @@ type nodeJSON struct {
 	Children *[]nodeJSON `json:"children,omitempty"`
 }
 
-func toNodes(ns []bookmarks.Node) []nodeJSON {
+// toNodes serialises a tree: folder ids are wire ids, bookmark ids are unchanged.
+func toNodes(ns []bookmarks.Node) ([]nodeJSON, error) {
 	out := make([]nodeJSON, 0, len(ns))
 	for _, n := range ns {
 		j := nodeJSON{Type: n.Type, ID: n.ID, Title: n.Title}
@@ -54,14 +59,23 @@ func toNodes(ns []bookmarks.Node) []nodeJSON {
 			if isJS(n.URL) {
 				j.Target = n.URL
 			}
+		} else {
+			w, err := folderOut(n.ID)
+			if err != nil {
+				return nil, err
+			}
+			j.ID = w
 		}
 		if n.Loaded {
-			kids := toNodes(n.Children)
+			kids, err := toNodes(n.Children)
+			if err != nil {
+				return nil, err
+			}
 			j.Children = &kids
 		}
 		out = append(out, j)
 	}
-	return out
+	return out, nil
 }
 
 type folderListJSON struct {
@@ -70,21 +84,60 @@ type folderListJSON struct {
 	Children *[]folderListJSON `json:"children,omitempty"`
 }
 
-func toFolderList(ns []bookmarks.Node) []folderListJSON {
+func toFolderList(ns []bookmarks.Node) ([]folderListJSON, error) {
 	out := make([]folderListJSON, 0, len(ns))
 	for _, n := range ns {
-		j := folderListJSON{ID: n.ID, Title: n.Title}
+		w, err := folderOut(n.ID)
+		if err != nil {
+			return nil, err
+		}
+		j := folderListJSON{ID: w, Title: n.Title}
 		if n.Loaded {
-			kids := toFolderList(n.Children)
+			kids, err := toFolderList(n.Children)
+			if err != nil {
+				return nil, err
+			}
 			j.Children = &kids
 		}
 		out = append(out, j)
 	}
-	return out
+	return out, nil
 }
 
-func folderItem(f bookmarks.Folder) map[string]any {
-	return map[string]any{"id": f.ID, "title": f.Title, "parent_folder": f.ParentID}
+// folderItem is the create/update/get response. parent_folder is 0 for the virtual root and the share
+// root (which have no parent in scope); every other value is a wire folder id.
+func folderItem(f bookmarks.Folder) (map[string]any, error) {
+	id, err := folderOut(f.ID)
+	if err != nil {
+		return nil, err
+	}
+	parent := int64(0)
+	if f.ParentID != 0 {
+		if parent, err = folderOut(f.ParentID); err != nil {
+			return nil, err
+		}
+	}
+	return map[string]any{"id": id, "title": f.Title, "parent_folder": parent}, nil
+}
+
+// respondBookmark / respondFolder serialise at the wire boundary; a value that cannot be expressed
+// without leaking a positive folder id is an internal error, never a silently wrong response.
+func (a *Adapter) respondBookmark(c *call, b bookmarks.Bookmark) {
+	j, err := toBookmarkJSON(b)
+	if err != nil {
+		a.internal(c.w, err)
+		return
+	}
+	success(c.w, map[string]any{"item": j})
+}
+
+func (a *Adapter) respondFolder(c *call, f bookmarks.Folder) {
+	item, err := folderItem(f)
+	if err != nil {
+		a.internal(c.w, err)
+		return
+	}
+	success(c.w, map[string]any{"item": item})
 }
 
 // ---- bookmarks ----------------------------------------------------------
@@ -112,16 +165,21 @@ func (a *Adapter) listBookmarks(c *call) {
 	}
 	out := make([]bookmarkJSON, 0, len(list))
 	for _, b := range list {
-		out = append(out, toBookmarkJSON(b))
+		j, err := toBookmarkJSON(b)
+		if err != nil {
+			a.internal(c.w, err)
+			return
+		}
+		out = append(out, j)
 	}
 	success(c.w, map[string]any{"data": out})
 }
 
 type bookmarkBody struct {
-	URL     *string   `json:"url"`
-	Title   *string   `json:"title"`
-	Folders *[]flexID `json:"folders"`
-	Tags    *[]string `json:"tags"`
+	URL     *string         `json:"url"`
+	Title   *string         `json:"title"`
+	Folders *[]flexFolderID `json:"folders"`
+	Tags    *[]string       `json:"tags"`
 }
 
 func (a *Adapter) createBookmark(c *call) {
@@ -138,14 +196,14 @@ func (a *Adapter) createBookmark(c *call) {
 		in.Title = *body.Title
 	}
 	if body.Folders != nil {
-		in.Folders = ids(*body.Folders)
+		in.Folders = folderIDs(*body.Folders)
 	}
 	b, err := a.svc.CreateBookmark(c.r.Context(), c.sc, in)
 	if err != nil {
 		a.fail(c.w, err)
 		return
 	}
-	success(c.w, map[string]any{"item": toBookmarkJSON(b)})
+	a.respondBookmark(c, b)
 }
 
 func (a *Adapter) getBookmark(c *call) {
@@ -158,7 +216,7 @@ func (a *Adapter) getBookmark(c *call) {
 		a.fail(c.w, err)
 		return
 	}
-	success(c.w, map[string]any{"item": toBookmarkJSON(b)})
+	a.respondBookmark(c, b)
 }
 
 func (a *Adapter) updateBookmark(c *call) {
@@ -172,7 +230,7 @@ func (a *Adapter) updateBookmark(c *call) {
 	}
 	up := bookmarks.BookmarkUpdate{URL: body.URL, Title: body.Title, Tags: body.Tags}
 	if body.Folders != nil {
-		f := ids(*body.Folders)
+		f := folderIDs(*body.Folders)
 		up.Folders = &f
 	}
 	b, err := a.svc.UpdateBookmark(c.r.Context(), c.sc, id, up)
@@ -180,7 +238,7 @@ func (a *Adapter) updateBookmark(c *call) {
 		a.fail(c.w, err)
 		return
 	}
-	success(c.w, map[string]any{"item": toBookmarkJSON(b)})
+	a.respondBookmark(c, b)
 }
 
 func (a *Adapter) deleteBookmark(c *call) {
@@ -196,7 +254,7 @@ func (a *Adapter) deleteBookmark(c *call) {
 }
 
 func (a *Adapter) removePlacement(c *call) {
-	folder, ok := c.idParam(0)
+	folder, ok := c.folderParam(0)
 	if !ok {
 		return
 	}
@@ -246,7 +304,7 @@ func (a *Adapter) folderTree(c *call) {
 	q := c.r.URL.Query()
 	root := int64(-1)
 	if v := q.Get("root"); v != "" {
-		id, ok := parseID(v)
+		id, ok := folderWireToInternal(v)
 		if !ok {
 			a.badRequest(c.w, "invalid root")
 			return
@@ -262,12 +320,17 @@ func (a *Adapter) folderTree(c *call) {
 		a.fail(c.w, err)
 		return
 	}
-	success(c.w, map[string]any{"data": toFolderList(ns)})
+	list, err := toFolderList(ns)
+	if err != nil {
+		a.internal(c.w, err)
+		return
+	}
+	success(c.w, map[string]any{"data": list})
 }
 
 type folderBody struct {
-	Parent *flexID `json:"parent_folder"`
-	Title  *string `json:"title"`
+	Parent *flexFolderID `json:"parent_folder"`
+	Title  *string       `json:"title"`
 }
 
 func (a *Adapter) createFolder(c *call) {
@@ -288,11 +351,11 @@ func (a *Adapter) createFolder(c *call) {
 		a.fail(c.w, err)
 		return
 	}
-	success(c.w, map[string]any{"item": folderItem(f)})
+	a.respondFolder(c, f)
 }
 
 func (a *Adapter) getFolder(c *call) {
-	id, ok := c.idParam(0)
+	id, ok := c.folderParam(0)
 	if !ok {
 		return
 	}
@@ -301,11 +364,11 @@ func (a *Adapter) getFolder(c *call) {
 		a.fail(c.w, err)
 		return
 	}
-	success(c.w, map[string]any{"item": folderItem(f)})
+	a.respondFolder(c, f)
 }
 
 func (a *Adapter) updateFolder(c *call) {
-	id, ok := c.idParam(0)
+	id, ok := c.folderParam(0)
 	if !ok {
 		return
 	}
@@ -323,11 +386,11 @@ func (a *Adapter) updateFolder(c *call) {
 		a.fail(c.w, err)
 		return
 	}
-	success(c.w, map[string]any{"item": folderItem(f)})
+	a.respondFolder(c, f)
 }
 
 func (a *Adapter) deleteFolder(c *call) {
-	id, ok := c.idParam(0)
+	id, ok := c.folderParam(0)
 	if !ok {
 		return
 	}
@@ -339,7 +402,7 @@ func (a *Adapter) deleteFolder(c *call) {
 }
 
 func (a *Adapter) folderChildren(c *call) {
-	id, ok := c.idParam(0)
+	id, ok := c.folderParam(0)
 	if !ok {
 		return
 	}
@@ -352,13 +415,18 @@ func (a *Adapter) folderChildren(c *call) {
 		a.fail(c.w, err)
 		return
 	}
-	success(c.w, map[string]any{"data": toNodes(ns)})
+	nodes, err := toNodes(ns)
+	if err != nil {
+		a.internal(c.w, err)
+		return
+	}
+	success(c.w, map[string]any{"data": nodes})
 }
 
 // folderHash serves the sha256 title+url hash. Anything else (other functions, tag
 // fields) is refused; floccus then falls back to its "changed" sentinel.
 func (a *Adapter) folderHash(c *call) {
-	id, ok := c.idParam(0)
+	id, ok := c.folderParam(0)
 	if !ok {
 		return
 	}
@@ -380,14 +448,14 @@ func (a *Adapter) folderHash(c *call) {
 }
 
 func (a *Adapter) childOrder(c *call) {
-	id, ok := c.idParam(0)
+	id, ok := c.folderParam(0)
 	if !ok {
 		return
 	}
 	var body struct {
 		Data *[]struct {
-			ID   *flexID `json:"id"`
-			Type string  `json:"type"`
+			ID   *flexRawID `json:"id"`
+			Type string     `json:"type"`
 		} `json:"data"`
 	}
 	if !c.decode(&body) {
@@ -403,7 +471,25 @@ func (a *Adapter) childOrder(c *call) {
 			a.badRequest(c.w, "every entry needs an id")
 			return
 		}
-		refs = append(refs, bookmarks.ChildRef{Type: d.Type, ID: int64(*d.ID)})
+		// Folder entries carry wire folder ids; bookmark entries (and any other type, which the service
+		// rejects) keep the bookmark id form. The declared type decides how the id is read.
+		var cid int64
+		if d.Type == "folder" {
+			fid, ok := folderWireToInternal(string(*d.ID))
+			if !ok {
+				a.badRequest(c.w, "invalid folder id")
+				return
+			}
+			cid = fid
+		} else {
+			bid, ok := parseID(string(*d.ID))
+			if !ok {
+				a.badRequest(c.w, "invalid id")
+				return
+			}
+			cid = bid
+		}
+		refs = append(refs, bookmarks.ChildRef{Type: d.Type, ID: cid})
 	}
 	if err := a.svc.SetChildOrder(c.r.Context(), c.sc, id, refs); err != nil {
 		a.fail(c.w, err)

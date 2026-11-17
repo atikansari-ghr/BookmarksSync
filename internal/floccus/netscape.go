@@ -16,7 +16,7 @@ import (
 const maxImportBytes = 1 << 20
 
 func (a *Adapter) importFolder(c *call) {
-	id, ok := c.idParam(0)
+	id, ok := c.folderParam(0)
 	if !ok {
 		return
 	}
@@ -56,7 +56,12 @@ func (a *Adapter) importFolder(c *call) {
 		a.fail(c.w, err)
 		return
 	}
-	success(c.w, map[string]any{"data": toNodes(out)})
+	imported, err := toNodes(out)
+	if err != nil {
+		a.internal(c.w, err)
+		return
+	}
+	success(c.w, map[string]any{"data": imported})
 }
 
 func (a *Adapter) importReadError(c *call, err error) {

@@ -143,7 +143,7 @@ func TestImportEndpointCreatesNestedTreeAndReturnsOnlyImported(t *testing.T) {
 		t.Errorf("empty imported folder must carry children: [] %v", empty)
 	}
 	for _, it := range d {
-		if num(it.(map[string]any)["id"]) <= 0 {
+		if num(it.(map[string]any)["id"]) == 0 {
 			t.Errorf("no id: %v", it)
 		}
 	}
@@ -180,7 +180,7 @@ func TestImportEndpointIsTransactionalAndBounded(t *testing.T) {
 	if res := r.multipart(&a, R+"/folder/"+idStr(target)+"/import", "bm_import", "u.html", "<DL><p>"+huge); res.status != 413 && res.status != 400 {
 		t.Errorf("oversized upload: %d", res.status)
 	}
-	r.multipart(&a, R+"/folder/987654/import", "bm_import", "u.html", floccusHTML).fail(t, 404)
+	r.multipart(&a, R+"/folder/"+idStr(wireOf(987654))+"/import", "bm_import", "u.html", floccusHTML).fail(t, 404)
 	if dump(t, r, a) != before {
 		t.Error("a failed import left data behind")
 	}

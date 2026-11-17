@@ -118,33 +118,96 @@ func parseID(s string) (int64, bool) {
 	return n, err == nil
 }
 
-// flexID accepts a JSON number or numeric string, as floccus sends both (the root
-// is -1 or "-1"). Anything else (floats, exponents, junk, booleans) is an error.
-type flexID int64
-
-func (f *flexID) UnmarshalJSON(b []byte) error {
+// idText returns the textual form of a JSON id: the digits of a number, or the contents of a string.
+// Anything else (objects, arrays, booleans, null) is not an id.
+func idText(b []byte) (string, error) {
 	s := strings.TrimSpace(string(b))
 	if strings.HasPrefix(s, `"`) {
 		var str string
 		if err := json.Unmarshal(b, &str); err != nil {
-			return err
+			return "", err
 		}
-		s = str
+		return str, nil
 	}
-	n, ok := parseID(s)
+	if s == "" || !(s[0] == '-' || (s[0] >= '0' && s[0] <= '9')) {
+		return "", errors.New("invalid id")
+	}
+	return s, nil
+}
+
+// flexFolderID is a folder reference in a JSON body as floccus sends it: a wire folder id as a number
+// or numeric string. It is stored in the domain's scope-relative form: bookmarks.RootID (-1) for the
+// virtual root, otherwise the positive internal folder id. Positive and malformed ids are errors.
+type flexFolderID int64
+
+func (f *flexFolderID) UnmarshalJSON(b []byte) error {
+	s, err := idText(b)
+	if err != nil {
+		return err
+	}
+	id, ok := folderWireToInternal(s)
 	if !ok {
-		return errors.New("invalid id")
+		return errors.New("invalid folder id")
 	}
-	*f = flexID(n)
+	*f = flexFolderID(id)
 	return nil
 }
 
-func ids(in []flexID) []int64 {
+func folderIDs(in []flexFolderID) []int64 {
 	out := make([]int64, len(in))
 	for i, v := range in {
 		out[i] = int64(v)
 	}
 	return out
+}
+
+// flexRawID keeps a JSON id as text so it can be interpreted by the entry's declared type
+// (child-order entries mix folder and bookmark ids).
+type flexRawID string
+
+func (f *flexRawID) UnmarshalJSON(b []byte) error {
+	s, err := idText(b)
+	if err != nil {
+		return err
+	}
+	*f = flexRawID(s)
+	return nil
+}
+
+// folderWireToInternal parses a wire folder id (path, query or text) into the domain's scope-relative
+// form: bookmarks.RootID for -1, otherwise the positive internal id.
+func folderWireToInternal(s string) (int64, bool) {
+	ref, err := parseWireFolder(s)
+	if err != nil {
+		return 0, false
+	}
+	if ref.IsRoot() {
+		return bookmarks.RootID, true
+	}
+	id, err := ref.Concrete()
+	return id, err == nil
+}
+
+// folderOut turns a domain folder id into its wire form: the root alias stays -1, a concrete folder
+// becomes negative. Any other value would put a positive folder id on the wire, so it is an error.
+func folderOut(id int64) (int64, error) {
+	if id == bookmarks.RootID {
+		return -1, nil
+	}
+	ref, err := folderRefFromInternal(id)
+	if err != nil {
+		return 0, err
+	}
+	return ref.Wire(), nil
+}
+
+// folderParam reads the folder id of path parameter i; invalid or positive ids are a 400.
+func (c *call) folderParam(i int) (int64, bool) {
+	id, ok := folderWireToInternal(c.params[i])
+	if !ok {
+		c.a.badRequest(c.w, "invalid folder id")
+	}
+	return id, ok
 }
 
 func (c *call) idParam(i int) (int64, bool) {

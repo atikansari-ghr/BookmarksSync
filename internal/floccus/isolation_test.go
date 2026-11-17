@@ -187,15 +187,15 @@ func TestShareDowngradeAndRevokeApplyImmediately(t *testing.T) {
 	bc := r.shareAccount(alice, shared, bob, identity.ModeEdit, identity.ModeEdit)
 	r.do(&bc, "POST", R+"/folder", map[string]any{"parent_folder": -1, "title": "ok"}).ok(t)
 
-	_, err := r.svc.GrantShare(bg, alice.user.ID, shared, bob.ID, identity.ModeView) // downgrade
+	_, err := r.svc.GrantShare(bg, alice.user.ID, internalOf(shared), bob.ID, identity.ModeView) // downgrade
 	noErr(t, err)
 	r.do(&bc, "POST", R+"/folder", map[string]any{"parent_folder": -1, "title": "nope"}).fail(t, 403)
 	r.do(&bc, "GET", R+"/folder/-1/children?layers=1", nil).ok(t)
-	_, err = r.svc.GrantShare(bg, alice.user.ID, shared, bob.ID, identity.ModeEdit) // upgrade back
+	_, err = r.svc.GrantShare(bg, alice.user.ID, internalOf(shared), bob.ID, identity.ModeEdit) // upgrade back
 	noErr(t, err)
 	r.do(&bc, "POST", R+"/folder", map[string]any{"parent_folder": -1, "title": "again"}).ok(t)
 
-	noErr(t, r.svc.RevokeShare(bg, alice.user.ID, shared, bob.ID))
+	noErr(t, r.svc.RevokeShare(bg, alice.user.ID, internalOf(shared), bob.ID))
 	r.do(&bc, "GET", R+"/folder/-1/children?layers=1", nil).fail(t, 401)
 	r.do(&bc, "POST", R+"/lock", nil).fail(t, 401)
 

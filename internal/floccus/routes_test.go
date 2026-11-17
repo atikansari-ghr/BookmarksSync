@@ -36,7 +36,7 @@ func TestFolderLifecycleOverWire(t *testing.T) {
 	}
 	created := r.do(&a, "POST", R+"/folder", map[string]any{"parent_folder": bar, "title": "News <&> \"x\""}).ok(t).item()
 	id := num(created["id"])
-	if created["title"] != "News <&> \"x\"" || id <= 0 {
+	if created["title"] != "News <&> \"x\"" || id >= -1 {
 		t.Fatalf("created = %v", created)
 	}
 	// rename + move (PUT), parent as string id
@@ -174,7 +174,7 @@ func TestBookmarkLifecycleOverWire(t *testing.T) {
 	r.do(&a, "POST", R+"/bookmark", map[string]any{"url": "chrome://settings", "title": "x", "folders": []int64{bar}}).fail(t, 400)
 	r.do(&a, "POST", R+"/bookmark", map[string]any{"url": "https://ok.example/", "title": "x", "folders": []int64{}}).fail(t, 400)
 	r.do(&a, "POST", R+"/bookmark", map[string]any{"url": "https://ok.example/", "title": "x", "folders": []int64{-1}}).fail(t, 400)
-	r.do(&a, "POST", R+"/bookmark", map[string]any{"url": "https://ok.example/", "title": "x", "folders": []int64{987654}}).fail(t, 404)
+	r.do(&a, "POST", R+"/bookmark", map[string]any{"url": "https://ok.example/", "title": "x", "folders": []int64{wireOf(987654)}}).fail(t, 404)
 }
 
 func TestSameURLInTwoFoldersIsOneRecordOverWire(t *testing.T) {
@@ -201,7 +201,7 @@ func TestTagsOmittedByClientArePreserved(t *testing.T) {
 	r := newRig(t)
 	a := r.account("alice", identity.ModeEdit)
 	bar, other := r.roots(a)
-	b, err := r.svc.CreateBookmark(bg, a.scope, bookmarksInput("https://t.example/", "t", []int64{bar}, []string{"server", "tag"}))
+	b, err := r.svc.CreateBookmark(bg, a.scope, bookmarksInput("https://t.example/", "t", []int64{internalOf(bar)}, []string{"server", "tag"}))
 	noErr(t, err)
 	// floccus (no tag sync) PUTs the server's own tags back, or omits them entirely
 	r.do(&a, "PUT", R+"/bookmark/"+idStr(b.ID), map[string]any{"url": "https://t.example/", "title": "t2", "folders": []int64{bar, other}}).ok(t)

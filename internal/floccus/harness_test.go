@@ -109,6 +109,9 @@ func (r *rig) credFor(u identity.User, nc identity.NewCredential) account {
 // shareAccount grants folder to recipient and returns a share-bound credential.
 func (r *rig) shareAccount(owner account, folder int64, recipient identity.User, grant, credMode identity.Mode) account {
 	r.t.Helper()
+	if folder < 0 { // callers hold wire folder ids; the service takes the internal row id
+		folder = -folder - 1
+	}
 	sh, err := r.svc.GrantShare(bg, owner.user.ID, folder, recipient.ID, grant)
 	if err != nil {
 		r.t.Fatal(err)
