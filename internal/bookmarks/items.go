@@ -583,7 +583,8 @@ func (s *Service) RemovePlacement(ctx context.Context, sc Scope, folderID, bookm
 		if f.virtual {
 			return ErrNotFound
 		}
-		if _, err := s.getVisible(ctx, tx, sc, bookmarkID); err != nil {
+		src, err := s.getVisible(ctx, tx, sc, bookmarkID)
+		if err != nil {
 			return err
 		}
 		now := s.ms()
@@ -594,8 +595,47 @@ func (s *Service) RemovePlacement(ctx context.Context, sc Scope, folderID, bookm
 		if n, _ := res.RowsAffected(); n == 0 {
 			return ErrNotFound
 		}
+		if err := s.mergeIntoSoleVisibleDuplicate(ctx, tx, sc, src, now); err != nil {
+			return err
+		}
 		return s.trashOrphanedBookmarks(ctx, tx, now)
 	})
+}
+
+// mergeIntoSoleVisibleDuplicate preserves the metadata of a record whose last placement was
+// just removed: stock floccus resolves a same-folder duplicate by deleting one copy without
+// saying whether it was a move, so the title and tags of the removed copy win on the single
+// remaining copy. Deliberately narrow (approved policy): it only acts when the source has no
+// live placement anywhere (hidden scopes included) and exactly one other record with the exact
+// URL is visible to this caller's scope. Candidates are found with the scope-visible query only,
+// so records hidden from the caller are never inspected; with several visible candidates nothing
+// is guessed. The survivor keeps its id and placements.
+func (s *Service) mergeIntoSoleVisibleDuplicate(ctx context.Context, tx *sql.Tx, sc Scope, src Bookmark, now int64) error {
+	var one int
+	err := tx.QueryRowContext(ctx, `SELECT 1 FROM placements WHERE bookmark_id = ? AND deleted_at IS NULL LIMIT 1`, src.ID).Scan(&one)
+	if err == nil {
+		return nil // still placed somewhere: not an orphan
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	ids, err := s.visibleIDs(ctx, tx, sc, src.URL, nil, 3, 0)
+	if err != nil {
+		return err
+	}
+	var survivors []int64
+	for _, id := range ids {
+		if id != src.ID {
+			survivors = append(survivors, id)
+		}
+	}
+	if len(survivors) != 1 {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE bookmarks SET title = ?, updated_at = ? WHERE id = ?`, src.Title, now, survivors[0]); err != nil {
+		return err
+	}
+	return s.setTags(ctx, tx, survivors[0], src.Tags)
 }
 
 // DeleteBookmark removes every placement visible in the scope; placements outside the
