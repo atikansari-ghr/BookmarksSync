@@ -223,6 +223,9 @@ func (s *Service) BeginPasskeyRegistration(ctx context.Context, userID, sessionI
 	if sessionID == 0 {
 		return Ceremony{}, fmt.Errorf("%w: a session is required", ErrInvalid)
 	}
+	if err := s.requireLiveSession(ctx, s.db, userID, sessionID); err != nil {
+		return Ceremony{}, err
+	}
 	if err := s.ensureUserHandle(ctx, userID); err != nil {
 		return Ceremony{}, err
 	}
@@ -246,10 +249,20 @@ func backupFlagsValid(be, bs bool) bool { return be || !bs }
 
 // FinishPasskeyRegistration verifies the authenticator's response to the ceremony
 // flowID, which must belong to exactly this user and session, and stores the passkey.
-// The flow is consumed even if verification fails. On success the user's other
-// sessions are revoked (authenticator change). Ceremony failures are ErrUnauthorized;
-// a credential already registered anywhere is ErrExists.
-func (s *Service) FinishPasskeyRegistration(ctx context.Context, userID, sessionID int64, flowID, name string, response []byte) (Passkey, error) {
+// The flow is consumed even if verification fails. It is an authenticator change: the
+// passkey is stored, the acting session rotated and the user's other sessions revoked in
+// one transaction. Ceremony failures and a dead acting session are ErrUnauthorized
+// (nothing stored); a credential already registered anywhere is ErrExists.
+func (s *Service) FinishPasskeyRegistration(ctx context.Context, userID, sessionID int64, flowID, name string, response []byte) (Passkey, SessionRotation, error) {
+	var rot SessionRotation
+	pk, err := s.finishPasskeyRegistration(ctx, userID, sessionID, flowID, name, response, &rot)
+	if err != nil {
+		return Passkey{}, SessionRotation{}, err
+	}
+	return pk, rot, nil
+}
+
+func (s *Service) finishPasskeyRegistration(ctx context.Context, userID, sessionID int64, flowID, name string, response []byte, rot *SessionRotation) (Passkey, error) {
 	if err := s.requireRP(); err != nil {
 		return Passkey{}, err
 	}
@@ -312,7 +325,7 @@ func (s *Service) FinishPasskeyRegistration(ctx context.Context, userID, session
 		return Passkey{}, err
 	}
 	id, _ := res.LastInsertId()
-	if err := s.revokeOtherSessions(ctx, tx, userID, sessionID); err != nil {
+	if *rot, err = s.rotateActingSession(ctx, tx, userID, sessionID); err != nil {
 		return Passkey{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -448,26 +461,31 @@ func (s *Service) RenamePasskey(ctx context.Context, userID, passkeyID int64, na
 	return nil
 }
 
-// DeletePasskey removes one of the user's passkeys and revokes the user's other
-// sessions except keepSessionID. ErrNotFound for anyone else's passkey. The caller must
-// have verified recent reauthentication.
-func (s *Service) DeletePasskey(ctx context.Context, userID, passkeyID, keepSessionID int64) error {
+// DeletePasskey removes one of the user's passkeys. It is an authenticator change: in
+// the same transaction the acting session is rotated and the user's other sessions are
+// revoked. ErrNotFound for anyone else's passkey; ErrUnauthorized (nothing deleted) if
+// the acting session is not live. The caller must have verified recent reauthentication.
+func (s *Service) DeletePasskey(ctx context.Context, userID, passkeyID, sessionID int64) (SessionRotation, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return SessionRotation{}, err
 	}
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx, `DELETE FROM webauthn_credentials WHERE id = ? AND user_id = ?`, passkeyID, userID)
 	if err != nil {
-		return err
+		return SessionRotation{}, err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return ErrNotFound
+		return SessionRotation{}, ErrNotFound
 	}
-	if err := s.revokeOtherSessions(ctx, tx, userID, keepSessionID); err != nil {
-		return err
+	rot, err := s.rotateActingSession(ctx, tx, userID, sessionID)
+	if err != nil {
+		return SessionRotation{}, err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return SessionRotation{}, err
+	}
+	return rot, nil
 }
 
 // PasskeysEnabled reports whether a relying party is configured.

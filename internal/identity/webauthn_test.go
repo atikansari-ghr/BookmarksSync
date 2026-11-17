@@ -59,7 +59,7 @@ func (e *passkeyEnv) register(t *testing.T, a *webauthntest.Authenticator, u ide
 	if err != nil {
 		t.Fatal(err)
 	}
-	pk, err := e.svc.FinishPasskeyRegistration(ctx, u.ID, sess.ID, c.FlowID, "Laptop", resp)
+	pk, _, err := e.svc.FinishPasskeyRegistration(ctx, u.ID, sess.ID, c.FlowID, "Laptop", resp)
 	if err != nil {
 		t.Fatalf("finish registration: %v", err)
 	}
@@ -223,10 +223,10 @@ func TestPasskeyChallengeIsSingleUse(t *testing.T) {
 	// Registration flows are single use as well.
 	r, _ := e.svc.BeginPasskeyRegistration(ctx, e.alice.ID, e.aliceSess.ID)
 	reg, _, _ := a.Register(r.Options, webauthntest.Overrides{})
-	if _, err := e.svc.FinishPasskeyRegistration(ctx, e.alice.ID, e.aliceSess.ID, r.FlowID, "Two", reg); err != nil {
+	if _, _, err := e.svc.FinishPasskeyRegistration(ctx, e.alice.ID, e.aliceSess.ID, r.FlowID, "Two", reg); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.svc.FinishPasskeyRegistration(ctx, e.alice.ID, e.aliceSess.ID, r.FlowID, "Two", reg); !errors.Is(err, identity.ErrUnauthorized) {
+	if _, _, err := e.svc.FinishPasskeyRegistration(ctx, e.alice.ID, e.aliceSess.ID, r.FlowID, "Two", reg); !errors.Is(err, identity.ErrUnauthorized) {
 		t.Fatalf("registration flow reused: %v", err)
 	}
 	// Expired flows fail.
@@ -284,7 +284,7 @@ func TestPasskeyOriginAndRPBinding(t *testing.T) {
 		t.Run("register "+name, func(t *testing.T) {
 			c, _ := e.svc.BeginPasskeyRegistration(ctx, e.alice.ID, e.aliceSess.ID)
 			resp, _, _ := a.Register(c.Options, o)
-			if _, err := e.svc.FinishPasskeyRegistration(ctx, e.alice.ID, e.aliceSess.ID, c.FlowID, "x", resp); !errors.Is(err, identity.ErrUnauthorized) {
+			if _, _, err := e.svc.FinishPasskeyRegistration(ctx, e.alice.ID, e.aliceSess.ID, c.FlowID, "x", resp); !errors.Is(err, identity.ErrUnauthorized) {
 				t.Fatalf("registration accepted: %v", err)
 			}
 		})
@@ -298,7 +298,7 @@ func TestPasskeyRequiresUserVerification(t *testing.T) {
 	noUV.UV = false
 	c, _ := e.svc.BeginPasskeyRegistration(ctx, e.alice.ID, e.aliceSess.ID)
 	resp, _, _ := noUV.Register(c.Options, webauthntest.Overrides{})
-	if _, err := e.svc.FinishPasskeyRegistration(ctx, e.alice.ID, e.aliceSess.ID, c.FlowID, "x", resp); !errors.Is(err, identity.ErrUnauthorized) {
+	if _, _, err := e.svc.FinishPasskeyRegistration(ctx, e.alice.ID, e.aliceSess.ID, c.FlowID, "x", resp); !errors.Is(err, identity.ErrUnauthorized) {
 		t.Fatalf("registration without UV accepted: %v", err)
 	}
 	a := webauthntest.New(rpOrigin)
@@ -316,15 +316,15 @@ func TestPasskeyRegistrationIsBoundToTheAccountAndSession(t *testing.T) {
 	c, _ := e.svc.BeginPasskeyRegistration(ctx, e.alice.ID, e.aliceSess.ID)
 	resp, _, _ := a.Register(c.Options, webauthntest.Overrides{})
 	// Bob cannot finish alice's ceremony, and another alice session cannot either.
-	if _, err := e.svc.FinishPasskeyRegistration(ctx, e.bob.ID, e.bobSess.ID, c.FlowID, "x", resp); !errors.Is(err, identity.ErrUnauthorized) {
+	if _, _, err := e.svc.FinishPasskeyRegistration(ctx, e.bob.ID, e.bobSess.ID, c.FlowID, "x", resp); !errors.Is(err, identity.ErrUnauthorized) {
 		t.Fatalf("other account finished the ceremony: %v", err)
 	}
 	other, _, _ := e.svc.CreateSession(ctx, e.alice.ID, "other")
-	if _, err := e.svc.FinishPasskeyRegistration(ctx, e.alice.ID, other.ID, c.FlowID, "x", resp); !errors.Is(err, identity.ErrUnauthorized) {
+	if _, _, err := e.svc.FinishPasskeyRegistration(ctx, e.alice.ID, other.ID, c.FlowID, "x", resp); !errors.Is(err, identity.ErrUnauthorized) {
 		t.Fatalf("another session finished the ceremony: %v", err)
 	}
 	// A mismatched attempt does not burn the owner's ceremony.
-	if _, err := e.svc.FinishPasskeyRegistration(ctx, e.alice.ID, e.aliceSess.ID, c.FlowID, "Mine", resp); err != nil {
+	if _, _, err := e.svc.FinishPasskeyRegistration(ctx, e.alice.ID, e.aliceSess.ID, c.FlowID, "Mine", resp); err != nil {
 		t.Fatalf("owner could not finish after foreign attempts: %v", err)
 	}
 	if list, _ := e.svc.ListPasskeys(ctx, e.bob.ID); len(list) != 0 {
@@ -346,7 +346,7 @@ func TestPasskeyRegistrationRevokesOtherSessions(t *testing.T) {
 		t.Fatal("the registering session was revoked")
 	}
 	_, other2, _ := e.svc.CreateSession(ctx, e.alice.ID, "other2")
-	if err := e.svc.DeletePasskey(ctx, e.alice.ID, pk.ID, e.aliceSess.ID); err != nil {
+	if _, err := e.svc.DeletePasskey(ctx, e.alice.ID, pk.ID, e.aliceSess.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := e.svc.ResolveSession(ctx, other2); !errors.Is(err, identity.ErrUnauthorized) {
@@ -378,7 +378,7 @@ func TestPasskeyOwnershipOnLogin(t *testing.T) {
 	if err := e.svc.RenamePasskey(context.Background(), e.bob.ID, list[0].ID, "pwned"); !errors.Is(err, identity.ErrNotFound) {
 		t.Fatalf("bob renamed alice's passkey: %v", err)
 	}
-	if err := e.svc.DeletePasskey(context.Background(), e.bob.ID, list[0].ID, e.bobSess.ID); !errors.Is(err, identity.ErrNotFound) {
+	if _, err := e.svc.DeletePasskey(context.Background(), e.bob.ID, list[0].ID, e.bobSess.ID); !errors.Is(err, identity.ErrNotFound) {
 		t.Fatalf("bob deleted alice's passkey: %v", err)
 	}
 	if err := e.svc.RenamePasskey(context.Background(), e.alice.ID, list[0].ID, "Phone"); err != nil {
@@ -456,7 +456,7 @@ func TestPasskeyBackupFlagConsistency(t *testing.T) {
 	flags := protocol.FlagUserPresent | protocol.FlagUserVerified | protocol.FlagBackupState | protocol.FlagAttestedCredentialData
 	c, _ := e.svc.BeginPasskeyRegistration(context.Background(), e.bob.ID, e.bobSess.ID)
 	resp, _, _ := b.Register(c.Options, webauthntest.Overrides{Flags: &flags})
-	if _, err := e.svc.FinishPasskeyRegistration(context.Background(), e.bob.ID, e.bobSess.ID, c.FlowID, "x", resp); !errors.Is(err, identity.ErrUnauthorized) {
+	if _, _, err := e.svc.FinishPasskeyRegistration(context.Background(), e.bob.ID, e.bobSess.ID, c.FlowID, "x", resp); !errors.Is(err, identity.ErrUnauthorized) {
 		t.Fatalf("registration with BS=1 BE=0 accepted: %v", err)
 	}
 }
@@ -484,7 +484,7 @@ func TestPasskeyCompletionRequiresAnActiveAccount(t *testing.T) {
 	if err := e.svc.SetActive(ctx, "alice", false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.svc.FinishPasskeyRegistration(ctx, e.alice.ID, sess.ID, r.FlowID, "x", reg); !errors.Is(err, identity.ErrUnauthorized) {
+	if _, _, err := e.svc.FinishPasskeyRegistration(ctx, e.alice.ID, sess.ID, r.FlowID, "x", reg); !errors.Is(err, identity.ErrUnauthorized) {
 		t.Fatalf("suspended user registered a passkey: %v", err)
 	}
 	if _, err := e.svc.BeginPasskeyRegistration(ctx, e.alice.ID, sess.ID); err == nil {
@@ -504,7 +504,7 @@ func TestDuplicateCredentialIsRejected(t *testing.T) {
 	if _, err := e.db.SQL().Exec(`UPDATE webauthn_credentials SET credential_id = ? WHERE user_id = ?`, newCred.ID, e.alice.ID); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.svc.FinishPasskeyRegistration(ctx, e.bob.ID, e.bobSess.ID, c.FlowID, "x", resp); !errors.Is(err, identity.ErrExists) {
+	if _, _, err := e.svc.FinishPasskeyRegistration(ctx, e.bob.ID, e.bobSess.ID, c.FlowID, "x", resp); !errors.Is(err, identity.ErrExists) {
 		t.Fatalf("duplicate credential id: %v", err)
 	}
 	_ = cred

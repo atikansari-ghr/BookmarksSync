@@ -4,7 +4,9 @@ package auth
 // login endpoints that run before a session exists require the exact configured Origin;
 // every other route runs behind RequireSession (cookie, exact Origin and CSRF for
 // unsafe methods), and adding or removing an authenticator also requires a recent
-// (re)authentication. Flow handles, TOTP seeds, codes and recovery codes are never
+// (re)authentication. Authenticator changes (TOTP confirm/disable, recovery-code
+// regeneration, passkey add/remove) revoke the user's other sessions and rotate the
+// acting session: the response sets a fresh cookie and returns the new csrfToken. Flow handles, TOTP seeds, codes and recovery codes are never
 // logged.
 
 import (
@@ -25,20 +27,20 @@ type Factors interface {
 	PasskeysEnabled() bool
 	TOTPStatus(ctx context.Context, userID int64) (identity.TOTPStatus, error)
 	BeginTOTPEnrollment(ctx context.Context, userID int64) (identity.TOTPEnrollment, error)
-	ConfirmTOTPEnrollment(ctx context.Context, userID, keepSessionID int64, code string) ([]string, error)
+	ConfirmTOTPEnrollment(ctx context.Context, userID, sessionID int64, code string) ([]string, identity.SessionRotation, error)
 	VerifyTOTP(ctx context.Context, userID int64, code string) error
 	ConsumeRecoveryCode(ctx context.Context, userID int64, code string) error
-	DisableTOTP(ctx context.Context, userID, keepSessionID int64) error
-	RegenerateRecoveryCodes(ctx context.Context, userID int64) ([]string, error)
+	DisableTOTP(ctx context.Context, userID, sessionID int64) (identity.SessionRotation, error)
+	RegenerateRecoveryCodes(ctx context.Context, userID, sessionID int64) ([]string, identity.SessionRotation, error)
 	BeginSecondFactor(ctx context.Context, userID int64) (identity.SecondFactorFlow, error)
 	CompleteSecondFactor(ctx context.Context, flowID string, proof identity.SecondFactorProof) (identity.User, error)
 	BeginPasskeyRegistration(ctx context.Context, userID, sessionID int64) (identity.Ceremony, error)
-	FinishPasskeyRegistration(ctx context.Context, userID, sessionID int64, flowID, name string, response []byte) (identity.Passkey, error)
+	FinishPasskeyRegistration(ctx context.Context, userID, sessionID int64, flowID, name string, response []byte) (identity.Passkey, identity.SessionRotation, error)
 	BeginPasskeyLogin(ctx context.Context) (identity.Ceremony, error)
 	FinishPasskeyLogin(ctx context.Context, flowID string, response []byte) (identity.User, error)
 	ListPasskeys(ctx context.Context, userID int64) ([]identity.Passkey, error)
 	RenamePasskey(ctx context.Context, userID, passkeyID int64, name string) error
-	DeletePasskey(ctx context.Context, userID, passkeyID, keepSessionID int64) error
+	DeletePasskey(ctx context.Context, userID, passkeyID, sessionID int64) (identity.SessionRotation, error)
 }
 
 const (
@@ -239,6 +241,24 @@ func (h *Handler) reserveProof(w http.ResponseWriter, r *http.Request) *Reservat
 	return res
 }
 
+// rotated applies an authenticator change's session rotation to the response: the
+// acting session's fresh secret goes into a new cookie, and the matching CSRF token is
+// returned for the body. The pre-change cookie and CSRF token no longer work.
+func (h *Handler) rotated(w http.ResponseWriter, rot identity.SessionRotation) (string, bool) {
+	if rot.Secret == "" {
+		h.internal(w, "rotate session", errors.New("authenticator change returned no rotated session"))
+		return "", false
+	}
+	h.setCookie(w, rot.Session, rot.Secret)
+	return csrfToken(rot.Secret), true
+}
+
+// sessionGone answers a change refused because the acting session died meanwhile.
+func (h *Handler) sessionGone(w http.ResponseWriter) {
+	h.clearCookie(w)
+	server.WriteError(w, http.StatusUnauthorized, "unauthenticated", "sign-in required")
+}
+
 func writeInvalidCode(w http.ResponseWriter) {
 	server.WriteError(w, http.StatusUnauthorized, "invalid_code", "invalid or expired verification code")
 }
@@ -256,7 +276,7 @@ func (h *Handler) totpConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer res.Cancel()
-	codes, err := h.factors.ConfirmTOTPEnrollment(r.Context(), st.user.ID, st.sess.ID, req.Code)
+	codes, rot, err := h.factors.ConfirmTOTPEnrollment(r.Context(), st.user.ID, st.sess.ID, req.Code)
 	switch {
 	case errors.Is(err, identity.ErrUnauthorized):
 		res.Fail()
@@ -271,8 +291,12 @@ func (h *Handler) totpConfirm(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res.Success()
+	tok, ok := h.rotated(w, rot)
+	if !ok {
+		return
+	}
 	h.log.Info("auth totp enabled", "user_id", st.user.ID, "session_id", st.sess.ID)
-	server.WriteJSON(w, http.StatusOK, map[string]any{"recoveryCodes": codes})
+	server.WriteJSON(w, http.StatusOK, map[string]any{"recoveryCodes": codes, "csrfToken": tok})
 }
 
 // checkProof verifies exactly one of a TOTP code or a recovery code for the session's
@@ -320,16 +344,24 @@ func (h *Handler) totpDisable(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) || !h.checkProof(w, r, req.Code, req.RecoveryCode) {
 		return
 	}
-	if err := h.factors.DisableTOTP(r.Context(), st.user.ID, st.sess.ID); err != nil {
-		if errors.Is(err, identity.ErrNotFound) {
-			server.WriteError(w, http.StatusNotFound, "not_found", "no authenticator app is enabled")
-			return
-		}
+	rot, err := h.factors.DisableTOTP(r.Context(), st.user.ID, st.sess.ID)
+	switch {
+	case errors.Is(err, identity.ErrNotFound):
+		server.WriteError(w, http.StatusNotFound, "not_found", "no authenticator app is enabled")
+		return
+	case errors.Is(err, identity.ErrUnauthorized):
+		h.sessionGone(w)
+		return
+	case err != nil:
 		h.internal(w, "disable totp", err)
 		return
 	}
+	tok, ok := h.rotated(w, rot)
+	if !ok {
+		return
+	}
 	h.log.Info("auth totp disabled", "user_id", st.user.ID, "session_id", st.sess.ID)
-	w.WriteHeader(http.StatusNoContent)
+	server.WriteJSON(w, http.StatusOK, map[string]any{"csrfToken": tok})
 }
 
 func (h *Handler) regenerateRecoveryCodes(w http.ResponseWriter, r *http.Request) {
@@ -340,17 +372,24 @@ func (h *Handler) regenerateRecoveryCodes(w http.ResponseWriter, r *http.Request
 	if !decodeBody(w, r, &req) || !h.checkProof(w, r, req.Code, "") {
 		return
 	}
-	codes, err := h.factors.RegenerateRecoveryCodes(r.Context(), st.user.ID)
-	if err != nil {
-		if errors.Is(err, identity.ErrNotFound) {
-			server.WriteError(w, http.StatusNotFound, "not_found", "no authenticator app is enabled")
-			return
-		}
+	codes, rot, err := h.factors.RegenerateRecoveryCodes(r.Context(), st.user.ID, st.sess.ID)
+	switch {
+	case errors.Is(err, identity.ErrNotFound):
+		server.WriteError(w, http.StatusNotFound, "not_found", "no authenticator app is enabled")
+		return
+	case errors.Is(err, identity.ErrUnauthorized):
+		h.sessionGone(w)
+		return
+	case err != nil:
 		h.internal(w, "regenerate recovery codes", err)
 		return
 	}
-	h.log.Info("auth recovery codes regenerated", "user_id", st.user.ID)
-	server.WriteJSON(w, http.StatusOK, map[string]any{"recoveryCodes": codes})
+	tok, ok := h.rotated(w, rot)
+	if !ok {
+		return
+	}
+	h.log.Info("auth recovery codes regenerated", "user_id", st.user.ID, "session_id", st.sess.ID)
+	server.WriteJSON(w, http.StatusOK, map[string]any{"recoveryCodes": codes, "csrfToken": tok})
 }
 
 func writeCeremony(w http.ResponseWriter, c identity.Ceremony) {
@@ -459,7 +498,7 @@ func (h *Handler) passkeyRegisterFinish(w http.ResponseWriter, r *http.Request) 
 	if !decodeBodyLimit(w, r, &req, maxCeremonyBodyBytes) {
 		return
 	}
-	pk, err := h.factors.FinishPasskeyRegistration(r.Context(), st.user.ID, st.sess.ID, req.FlowID, req.Name, req.Credential)
+	pk, rot, err := h.factors.FinishPasskeyRegistration(r.Context(), st.user.ID, st.sess.ID, req.FlowID, req.Name, req.Credential)
 	switch {
 	case errors.Is(err, identity.ErrUnauthorized):
 		h.log.Info("auth passkey registration failed", "user_id", st.user.ID)
@@ -475,8 +514,12 @@ func (h *Handler) passkeyRegisterFinish(w http.ResponseWriter, r *http.Request) 
 		h.internal(w, "finish passkey registration", err)
 		return
 	}
+	tok, ok := h.rotated(w, rot)
+	if !ok {
+		return
+	}
 	h.log.Info("auth passkey added", "user_id", st.user.ID, "passkey_id", pk.ID, "session_id", st.sess.ID)
-	server.WriteJSON(w, http.StatusCreated, toPasskeyJSON(pk))
+	server.WriteJSON(w, http.StatusCreated, map[string]any{"passkey": toPasskeyJSON(pk), "csrfToken": tok})
 }
 
 func passkeyID(w http.ResponseWriter, r *http.Request) (int64, bool) {
@@ -518,13 +561,22 @@ func (h *Handler) deletePasskey(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	switch err := h.factors.DeletePasskey(r.Context(), st.user.ID, id, st.sess.ID); {
+	rot, err := h.factors.DeletePasskey(r.Context(), st.user.ID, id, st.sess.ID)
+	switch {
 	case errors.Is(err, identity.ErrNotFound):
 		server.WriteError(w, http.StatusNotFound, "not_found", "passkey not found")
+		return
+	case errors.Is(err, identity.ErrUnauthorized):
+		h.sessionGone(w)
+		return
 	case err != nil:
 		h.internal(w, "delete passkey", err)
-	default:
-		h.log.Info("auth passkey removed", "user_id", st.user.ID, "passkey_id", id, "session_id", st.sess.ID)
-		w.WriteHeader(http.StatusNoContent)
+		return
 	}
+	tok, ok := h.rotated(w, rot)
+	if !ok {
+		return
+	}
+	h.log.Info("auth passkey removed", "user_id", st.user.ID, "passkey_id", id, "session_id", st.sess.ID)
+	server.WriteJSON(w, http.StatusOK, map[string]any{"csrfToken": tok})
 }

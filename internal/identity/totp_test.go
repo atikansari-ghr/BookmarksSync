@@ -72,7 +72,7 @@ func (e *factorEnv) enrollTOTP(t *testing.T, u identity.User) (string, []string)
 	if err != nil {
 		t.Fatal(err)
 	}
-	codes, err := e.svc.ConfirmTOTPEnrollment(ctx, u.ID, 0, testTOTP(t, enr.Secret, e.clock.Now()))
+	codes, _, err := e.svc.ConfirmTOTPEnrollment(ctx, u.ID, 0, testTOTP(t, enr.Secret, e.clock.Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +110,7 @@ func TestTOTPEnrollmentProvisioningURIAndPendingState(t *testing.T) {
 		t.Fatalf("pending seed verified a login code: %v", err)
 	}
 	// A wrong confirmation code does not enable it.
-	if _, err := e.svc.ConfirmTOTPEnrollment(ctx, e.alice.ID, 0, "000000"); !errors.Is(err, identity.ErrUnauthorized) {
+	if _, _, err := e.svc.ConfirmTOTPEnrollment(ctx, e.alice.ID, 0, "000000"); !errors.Is(err, identity.ErrUnauthorized) {
 		t.Fatalf("wrong confirmation code: %v", err)
 	}
 	// Restarting enrollment replaces the pending seed.
@@ -118,10 +118,10 @@ func TestTOTPEnrollmentProvisioningURIAndPendingState(t *testing.T) {
 	if err != nil || enr2.Secret == enr.Secret {
 		t.Fatalf("re-enrollment = %+v, %v", enr2, err)
 	}
-	if _, err := e.svc.ConfirmTOTPEnrollment(ctx, e.alice.ID, 0, testTOTP(t, enr.Secret, e.clock.Now())); !errors.Is(err, identity.ErrUnauthorized) {
+	if _, _, err := e.svc.ConfirmTOTPEnrollment(ctx, e.alice.ID, 0, testTOTP(t, enr.Secret, e.clock.Now())); !errors.Is(err, identity.ErrUnauthorized) {
 		t.Fatalf("replaced seed confirmed enrollment: %v", err)
 	}
-	codes, err := e.svc.ConfirmTOTPEnrollment(ctx, e.alice.ID, 0, testTOTP(t, enr2.Secret, e.clock.Now()))
+	codes, _, err := e.svc.ConfirmTOTPEnrollment(ctx, e.alice.ID, 0, testTOTP(t, enr2.Secret, e.clock.Now()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestPendingTOTPEnrollmentExpires(t *testing.T) {
 		t.Fatal(err)
 	}
 	e.clock.Advance(identity.TOTPEnrollmentTTL + time.Second)
-	if _, err := e.svc.ConfirmTOTPEnrollment(ctx, e.alice.ID, 0, testTOTP(t, enr.Secret, e.clock.Now())); !errors.Is(err, identity.ErrUnauthorized) {
+	if _, _, err := e.svc.ConfirmTOTPEnrollment(ctx, e.alice.ID, 0, testTOTP(t, enr.Secret, e.clock.Now())); !errors.Is(err, identity.ErrUnauthorized) {
 		t.Fatalf("expired enrollment confirmed: %v", err)
 	}
 }
@@ -302,7 +302,7 @@ func TestRecoveryCodesAreHashedAndSingleUse(t *testing.T) {
 		t.Fatalf("remaining = %d", st.RecoveryCodesRemaining)
 	}
 	// Regeneration invalidates every earlier code.
-	fresh, err := e.svc.RegenerateRecoveryCodes(ctx, e.alice.ID)
+	fresh, _, err := e.svc.RegenerateRecoveryCodes(ctx, e.alice.ID, 0)
 	if err != nil || len(fresh) != identity.RecoveryCodeCount {
 		t.Fatalf("regenerate = %d codes, %v", len(fresh), err)
 	}
@@ -313,7 +313,7 @@ func TestRecoveryCodesAreHashedAndSingleUse(t *testing.T) {
 		t.Fatal(err)
 	}
 	// Recovery codes require an enabled TOTP factor.
-	if _, err := e.svc.RegenerateRecoveryCodes(ctx, e.bob.ID); !errors.Is(err, identity.ErrNotFound) {
+	if _, _, err := e.svc.RegenerateRecoveryCodes(ctx, e.bob.ID, 0); !errors.Is(err, identity.ErrNotFound) {
 		t.Fatalf("regenerate without TOTP: %v", err)
 	}
 }
@@ -344,7 +344,7 @@ func TestTOTPChangesRevokeOtherSessions(t *testing.T) {
 	_, other, _ := e.svc.CreateSession(ctx, e.alice.ID, "other")
 	_, bobs, _ := e.svc.CreateSession(ctx, e.bob.ID, "bob")
 	enr, _ := e.svc.BeginTOTPEnrollment(ctx, e.alice.ID)
-	if _, err := e.svc.ConfirmTOTPEnrollment(ctx, e.alice.ID, keep.ID, testTOTP(t, enr.Secret, e.clock.Now())); err != nil {
+	if _, _, err := e.svc.ConfirmTOTPEnrollment(ctx, e.alice.ID, keep.ID, testTOTP(t, enr.Secret, e.clock.Now())); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := e.svc.ResolveSession(ctx, other); !errors.Is(err, identity.ErrUnauthorized) {
@@ -354,7 +354,7 @@ func TestTOTPChangesRevokeOtherSessions(t *testing.T) {
 		t.Fatalf("bob's session affected: %v", err)
 	}
 	_, other2, _ := e.svc.CreateSession(ctx, e.alice.ID, "other2")
-	if err := e.svc.DisableTOTP(ctx, e.alice.ID, keep.ID); err != nil {
+	if _, err := e.svc.DisableTOTP(ctx, e.alice.ID, keep.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := e.svc.ResolveSession(ctx, other2); !errors.Is(err, identity.ErrUnauthorized) {
@@ -368,7 +368,7 @@ func TestTOTPChangesRevokeOtherSessions(t *testing.T) {
 	if st, _ := e.svc.TOTPStatus(ctx, e.alice.ID); st.Enabled {
 		t.Fatal("still enabled")
 	}
-	if err := e.svc.DisableTOTP(ctx, e.alice.ID, keep.ID); !errors.Is(err, identity.ErrNotFound) {
+	if _, err := e.svc.DisableTOTP(ctx, e.alice.ID, keep.ID); !errors.Is(err, identity.ErrNotFound) {
 		t.Fatalf("disabling twice: %v", err)
 	}
 }

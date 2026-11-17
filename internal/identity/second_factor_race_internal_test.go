@@ -34,7 +34,7 @@ func TestConcurrentWrongSecondFactorProofsCannotExceedMaxAttempts(t *testing.T) 
 			t.Fatal(err)
 		}
 		seed, _ := b32.DecodeString(enr.Secret)
-		if _, err := s.ConfirmTOTPEnrollment(ctx, u.ID, 0, hotp(seed, uint64(totpStep(now)), TOTPDigits)); err != nil {
+		if _, _, err := s.ConfirmTOTPEnrollment(ctx, u.ID, 0, hotp(seed, uint64(totpStep(now)), TOTPDigits)); err != nil {
 			t.Fatal(err)
 		}
 		now = now.Add(TOTPPeriod)

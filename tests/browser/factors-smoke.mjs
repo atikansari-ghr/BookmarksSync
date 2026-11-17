@@ -79,6 +79,24 @@ async function main() {
       return { status: r.status, json }
     }, [method, url, body, csrf])
 
+    // Authenticator changes rotate the acting session: the response carries a new CSRF
+    // token (and a new HttpOnly cookie); the pre-change token must be refused while the
+    // rotated session keeps working.
+    const rotatedSession = async (res, what) => {
+      const old = csrf
+      const fresh = res.json && res.json.csrfToken
+      const alive = (await api('GET', '/api/v1/auth/session')).status
+      const ok = Boolean(fresh) && fresh !== old && alive === 200
+      // DELETE /sessions/0 is a harmless CSRF-checked mutation: 403 = token refused,
+      // 404 = token accepted (no such session).
+      const staleRejected = (await api('DELETE', '/api/v1/auth/sessions/0', undefined, old)).status === 403
+      const freshAccepted = (await api('DELETE', '/api/v1/auth/sessions/0', undefined, fresh)).status === 404
+      const pass = ok && staleRejected && freshAccepted
+      record(`${what} rotates the session (new CSRF token, old one refused)`, pass ? 'PASS' : 'FAIL', `session ${alive}, stale ${staleRejected}, fresh ${freshAccepted}`)
+      if (pass) csrf = fresh
+      return pass
+    }
+
     let r = await api('POST', '/api/v1/auth/login', { username: 'factor-smoke', password })
     if (r.status !== 200) { record('password login', 'FAIL', `status ${r.status}`); return 1 }
     let csrf = r.json.csrfToken
@@ -99,6 +117,7 @@ async function main() {
     const { credentials } = await cdp.send('WebAuthn.getCredentials', { authenticatorId })
     if (credentials.length !== 1 || !credentials[0].isResidentCredential) { record('resident credential stored', 'FAIL'); return 1 }
     record('passkey registration (virtual authenticator, resident key, UV)', 'PASS')
+    if (!(await rotatedSession(r, 'passkey registration'))) return 1
 
     r = await api('POST', '/api/v1/auth/logout', undefined, csrf)
     if (r.status !== 204 || (await api('GET', '/api/v1/auth/session')).status !== 401) { record('logout', 'FAIL'); return 1 }
@@ -129,6 +148,7 @@ async function main() {
     if (r.status !== 200 || r.json.recoveryCodes.length !== 10) { record('totp confirm', 'FAIL', `status ${r.status}`); return 1 }
     r.json.recoveryCodes.forEach(c => secrets.push(c))
     record('totp enrollment and confirmation', 'PASS')
+    if (!(await rotatedSession(r, 'totp confirmation'))) return 1
     await api('POST', '/api/v1/auth/logout', undefined, csrf)
 
     r = await api('POST', '/api/v1/auth/login', { username: 'factor-smoke', password })

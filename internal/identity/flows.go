@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -28,6 +29,14 @@ var ErrTooManyFlows = errors.New("too many pending authentication flows")
 type querier interface {
 	ExecContext(context.Context, string, ...any) (sql.Result, error)
 	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+// SessionRotation is the acting session after an authenticator change: the same
+// session (same ID, authenticated_at and expiry) with a fresh secret, returned once.
+// Zero when no acting session was given.
+type SessionRotation struct {
+	Session Session
+	Secret  string
 }
 
 type flowRow struct {
@@ -134,10 +143,47 @@ func (s *Service) userByID(ctx context.Context, q querier, userID int64) (User, 
 	return u, nil
 }
 
-// revokeOtherSessions revokes the user's sessions except keepSessionID (0 keeps none),
-// after an authenticator change.
-func (s *Service) revokeOtherSessions(ctx context.Context, q querier, userID, keepSessionID int64) error {
-	_, err := q.ExecContext(ctx, `UPDATE web_sessions SET revoked_at = ?
-		WHERE user_id = ? AND id <> ? AND revoked_at IS NULL`, s.now().UnixMilli(), userID, keepSessionID)
+// rotateActingSession is the session side of an authenticator change, run inside the
+// change's transaction: the acting session (sessionID, which must be a live session of
+// userID, else ErrUnauthorized and the caller rolls back) gets a fresh secret, and every
+// other session of the user is revoked. authenticated_at and the absolute expiry are
+// unchanged: rotation is not a new authentication. sessionID 0 (no acting session, e.g.
+// an operator action) revokes every session and returns a zero rotation.
+func (s *Service) rotateActingSession(ctx context.Context, q querier, userID, sessionID int64) (SessionRotation, error) {
+	var rot SessionRotation
+	now := s.now().UnixMilli()
+	if sessionID != 0 {
+		fresh, err := newOpaqueSecret()
+		if err != nil {
+			return SessionRotation{}, err
+		}
+		row := q.QueryRowContext(ctx, `UPDATE web_sessions AS ws SET secret_hash = ?4, last_seen_at = ?1
+			WHERE ws.id = ?3 AND ws.user_id = ?5 AND `+liveSessionSQL+`
+			RETURNING `+strings.ReplaceAll(sessionCols, "ws.", ""),
+			now, SessionIdleTimeout.Milliseconds(), sessionID, hashSecret(fresh), userID)
+		sess, err := scanSession(row)
+		if errors.Is(err, sql.ErrNoRows) {
+			return SessionRotation{}, ErrUnauthorized
+		}
+		if err != nil {
+			return SessionRotation{}, err
+		}
+		rot = SessionRotation{Session: sess, Secret: fresh}
+	}
+	if _, err := q.ExecContext(ctx, `UPDATE web_sessions SET revoked_at = ?
+		WHERE user_id = ? AND id <> ? AND revoked_at IS NULL`, now, userID, sessionID); err != nil {
+		return SessionRotation{}, err
+	}
+	return rot, nil
+}
+
+// requireLiveSession returns ErrUnauthorized unless sessionID is a live session of userID.
+func (s *Service) requireLiveSession(ctx context.Context, q querier, userID, sessionID int64) error {
+	var one int
+	err := q.QueryRowContext(ctx, `SELECT 1 FROM web_sessions ws WHERE ws.id = ?3 AND ws.user_id = ?4 AND `+liveSessionSQL,
+		s.now().UnixMilli(), SessionIdleTimeout.Milliseconds(), sessionID, userID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrUnauthorized
+	}
 	return err
 }

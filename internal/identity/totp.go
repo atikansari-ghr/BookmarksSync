@@ -160,16 +160,27 @@ func (s *Service) BeginTOTPEnrollment(ctx context.Context, userID int64) (TOTPEn
 	return TOTPEnrollment{Secret: secret, URI: uri}, nil
 }
 
-// ConfirmTOTPEnrollment enables a pending seed after a valid code, issues fresh
-// recovery codes (returned once) and revokes the user's other sessions except
-// keepSessionID. A wrong code or an expired pending enrollment is ErrUnauthorized.
-func (s *Service) ConfirmTOTPEnrollment(ctx context.Context, userID, keepSessionID int64, code string) ([]string, error) {
+// ConfirmTOTPEnrollment enables a pending seed after a valid code and issues fresh
+// recovery codes (returned once). It is an authenticator change: in the same
+// transaction the acting session sessionID is rotated (see rotateActingSession) and the
+// user's other sessions are revoked. A wrong code, an expired pending enrollment or a
+// dead acting session is ErrUnauthorized and changes nothing.
+func (s *Service) ConfirmTOTPEnrollment(ctx context.Context, userID, sessionID int64, code string) ([]string, SessionRotation, error) {
+	codes, rot, err := s.confirmTOTPEnrollment(ctx, userID, sessionID, code)
+	if err != nil {
+		return nil, SessionRotation{}, err
+	}
+	return codes, rot, nil
+}
+
+func (s *Service) confirmTOTPEnrollment(ctx context.Context, userID, sessionID int64, code string) ([]string, SessionRotation, error) {
+	var none SessionRotation
 	if err := s.requireBox(); err != nil {
-		return nil, err
+		return nil, none, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, none, err
 	}
 	defer tx.Rollback()
 	var ct []byte
@@ -177,38 +188,39 @@ func (s *Service) ConfirmTOTPEnrollment(ctx context.Context, userID, keepSession
 	err = tx.QueryRowContext(ctx, `SELECT seed_ciphertext, created_at FROM totp_secrets
 		WHERE user_id = ? AND confirmed_at IS NULL`, userID).Scan(&ct, &created)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrUnauthorized
+		return nil, none, ErrUnauthorized
 	}
 	if err != nil {
-		return nil, err
+		return nil, none, err
 	}
 	now := s.now()
 	if !now.Before(time.UnixMilli(created).Add(TOTPEnrollmentTTL)) {
-		return nil, ErrUnauthorized
+		return nil, none, ErrUnauthorized
 	}
 	if ok, err := isActive(ctx, tx, userID); err != nil || !ok {
-		return nil, errors.Join(ErrUnauthorized, err)
+		return nil, none, errors.Join(ErrUnauthorized, err)
 	}
 	seed, err := s.box.open(ct, totpBinding(userID))
 	if err != nil {
-		return nil, fmt.Errorf("%w: cannot decrypt TOTP seed", ErrUnauthorized)
+		return nil, none, fmt.Errorf("%w: cannot decrypt TOTP seed", ErrUnauthorized)
 	}
 	step, ok := matchStep(seed, now, code, -1<<62)
 	if !ok {
-		return nil, ErrUnauthorized
+		return nil, none, ErrUnauthorized
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE totp_secrets SET confirmed_at = ?, last_used_step = ?
 		WHERE user_id = ? AND confirmed_at IS NULL`, now.UnixMilli(), step, userID); err != nil {
-		return nil, err
+		return nil, none, err
 	}
 	codes, err := s.replaceRecoveryCodes(ctx, tx, userID)
 	if err != nil {
-		return nil, err
+		return nil, none, err
 	}
-	if err := s.revokeOtherSessions(ctx, tx, userID, keepSessionID); err != nil {
-		return nil, err
+	rot, err := s.rotateActingSession(ctx, tx, userID, sessionID)
+	if err != nil {
+		return nil, none, err
 	}
-	return codes, tx.Commit()
+	return codes, rot, tx.Commit()
 }
 
 // VerifyTOTP accepts a code for an active user's enabled TOTP once. Any failure,
@@ -349,56 +361,72 @@ func (s *Service) TOTPStatus(ctx context.Context, userID int64) (TOTPStatus, err
 	return st, nil
 }
 
-// DisableTOTP removes the seed and recovery codes and revokes the user's other
-// sessions except keepSessionID. ErrNotFound if TOTP is not enabled. The caller must
-// have verified recent reauthentication and a current proof.
-func (s *Service) DisableTOTP(ctx context.Context, userID, keepSessionID int64) error {
+// DisableTOTP removes the seed and recovery codes. It is an authenticator change: in
+// the same transaction the acting session is rotated and the user's other sessions are
+// revoked. ErrNotFound if TOTP is not enabled; ErrUnauthorized (nothing changed) if the
+// acting session is not live. The caller must have verified recent reauthentication and
+// a current proof.
+func (s *Service) DisableTOTP(ctx context.Context, userID, sessionID int64) (SessionRotation, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return SessionRotation{}, err
 	}
 	defer tx.Rollback()
 	res, err := tx.ExecContext(ctx, `DELETE FROM totp_secrets WHERE user_id = ? AND confirmed_at IS NOT NULL`, userID)
 	if err != nil {
-		return err
+		return SessionRotation{}, err
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
-		return ErrNotFound
+		return SessionRotation{}, ErrNotFound
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM recovery_codes WHERE user_id = ?`, userID); err != nil {
-		return err
+		return SessionRotation{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_flows WHERE user_id = ? AND kind = ?`, userID, flowSecondFactor); err != nil {
-		return err
+		return SessionRotation{}, err
 	}
-	if err := s.revokeOtherSessions(ctx, tx, userID, keepSessionID); err != nil {
-		return err
+	rot, err := s.rotateActingSession(ctx, tx, userID, sessionID)
+	if err != nil {
+		return SessionRotation{}, err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return SessionRotation{}, err
+	}
+	return rot, nil
 }
 
 // RegenerateRecoveryCodes replaces every recovery code and returns the new ones once.
-// ErrNotFound if TOTP is not enabled.
-func (s *Service) RegenerateRecoveryCodes(ctx context.Context, userID int64) ([]string, error) {
+// Replacing recovery codes is an authenticator change: in the same transaction the
+// acting session is rotated and the user's other sessions are revoked. ErrNotFound if
+// TOTP is not enabled; ErrUnauthorized (nothing changed) if the acting session is not
+// live.
+func (s *Service) RegenerateRecoveryCodes(ctx context.Context, userID, sessionID int64) ([]string, SessionRotation, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, SessionRotation{}, err
 	}
 	defer tx.Rollback()
 	var one int
 	err = tx.QueryRowContext(ctx, `SELECT 1 FROM totp_secrets t JOIN users u ON u.id = t.user_id
 		WHERE t.user_id = ? AND t.confirmed_at IS NOT NULL AND u.active = 1`, userID).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, ErrNotFound
+		return nil, SessionRotation{}, ErrNotFound
 	}
 	if err != nil {
-		return nil, err
+		return nil, SessionRotation{}, err
 	}
 	codes, err := s.replaceRecoveryCodes(ctx, tx, userID)
 	if err != nil {
-		return nil, err
+		return nil, SessionRotation{}, err
 	}
-	return codes, tx.Commit()
+	rot, err := s.rotateActingSession(ctx, tx, userID, sessionID)
+	if err != nil {
+		return nil, SessionRotation{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, SessionRotation{}, err
+	}
+	return codes, rot, nil
 }
 
 // SecondFactorFlow is a pending password+TOTP login. Its ID is shown once to the

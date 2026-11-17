@@ -57,7 +57,7 @@ func (e *env) enableTOTP(user identity.User) (string, []string) {
 	if err != nil {
 		e.t.Fatal(err)
 	}
-	codes, err := e.ids.ConfirmTOTPEnrollment(ctx, user.ID, 0, totpCode(e.t, enr.Secret, e.clock.Now()))
+	codes, _, err := e.ids.ConfirmTOTPEnrollment(ctx, user.ID, 0, totpCode(e.t, enr.Secret, e.clock.Now()))
 	if err != nil {
 		e.t.Fatal(err)
 	}
@@ -273,9 +273,11 @@ func TestTOTPEnrollmentOverHTTP(t *testing.T) {
 	if len(codes) != identity.RecoveryCodeCount {
 		t.Fatalf("recovery codes = %v", codes)
 	}
-	// Enabling a factor revokes the user's other sessions but keeps this one.
-	if e.sessionStatus(other) != http.StatusUnauthorized || e.sessionStatus(cookie) != http.StatusOK {
-		t.Fatal("authenticator change did not revoke exactly the other sessions")
+	// Enabling a factor revokes the other sessions and rotates this one.
+	old := cookie
+	cookie, csrf = rotated(t, rec, old)
+	if e.sessionStatus(other) != http.StatusUnauthorized || e.sessionStatus(old) != http.StatusUnauthorized || e.sessionStatus(cookie) != http.StatusOK {
+		t.Fatal("authenticator change did not revoke other sessions and rotate this one")
 	}
 	rec = e.do("GET", "/api/v1/auth/totp", nil, withCookie(cookie))
 	if st := decode(t, rec); rec.Code != http.StatusOK || st["enabled"] != true || st["recoveryCodesRemaining"] != float64(10) || st["secret"] != nil {
@@ -320,6 +322,8 @@ func TestTOTPDisableAndRegenerateRequireRecentAuthAndProof(t *testing.T) {
 	if rec.Code != http.StatusOK || len(decode(t, rec)["recoveryCodes"].([]any)) != identity.RecoveryCodeCount {
 		t.Fatalf("regenerate: %d %s", rec.Code, rec.Body.String())
 	}
+	cookie, csrf = rotated(t, rec, cookie)
+	auth = []reqMod{withCookie(cookie), withCSRF(csrf)}
 	e.clock.Advance(auth_ReauthPlus())
 	if rec := e.do("POST", "/api/v1/auth/totp/disable", map[string]string{"code": totpCode(t, secret, e.clock.Now())}, auth...); rec.Code != http.StatusForbidden || errCode(t, rec) != "reauthentication_required" {
 		t.Fatalf("stale disable: %d", rec.Code)
@@ -327,7 +331,7 @@ func TestTOTPDisableAndRegenerateRequireRecentAuthAndProof(t *testing.T) {
 	rec = e.do("POST", "/api/v1/auth/reauthenticate", map[string]string{"password": alicePass}, auth...)
 	cookie, csrf = sessionCookie(t, rec).Value, decode(t, rec)["csrfToken"].(string)
 	rec = e.do("POST", "/api/v1/auth/totp/disable", map[string]string{"code": totpCode(t, secret, e.clock.Now())}, withCookie(cookie), withCSRF(csrf))
-	if rec.Code != http.StatusNoContent {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("disable: %d %s", rec.Code, rec.Body.String())
 	}
 	// Password-only login is back.
@@ -391,6 +395,10 @@ func TestPasskeyRegistrationAndLoginOverHTTP(t *testing.T) {
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("register finish: %d %s", rec.Code, rec.Body.String())
 	}
+	if pk, _ := decode(t, rec)["passkey"].(map[string]any); pk["name"] != "Laptop" {
+		t.Fatalf("register finish body = %s", rec.Body.String())
+	}
+	cookie, csrf = rotated(t, rec, cookie)
 	if e.sessionStatus(other) != http.StatusUnauthorized {
 		t.Fatal("adding a passkey did not revoke other sessions")
 	}
@@ -477,9 +485,11 @@ func TestPasskeyRegistrationRequiresRecentAuthCSRFAndOrigin(t *testing.T) {
 func TestPasskeyManagementIsOwnerScopedAndRemovalNeedsRecentAuth(t *testing.T) {
 	e := newFactorEnv(t)
 	cookie, csrf := e.login("alice", alicePass)
-	if rec := e.passkeyRegister(webauthntest.New(origin), cookie, csrf); rec.Code != http.StatusCreated {
-		t.Fatal(rec.Body.String())
+	reg := e.passkeyRegister(webauthntest.New(origin), cookie, csrf)
+	if reg.Code != http.StatusCreated {
+		t.Fatal(reg.Body.String())
 	}
+	cookie, csrf = rotated(t, reg, cookie)
 	id := int64(decode(t, e.do("GET", "/api/v1/auth/passkeys", nil, withCookie(cookie)))["passkeys"].([]any)[0].(map[string]any)["id"].(float64))
 	path := fmt.Sprintf("/api/v1/auth/passkeys/%d", id)
 	bc, bcsrf := e.login("bob", bobPass)
@@ -504,7 +514,7 @@ func TestPasskeyManagementIsOwnerScopedAndRemovalNeedsRecentAuth(t *testing.T) {
 	}
 	rec := e.do("POST", "/api/v1/auth/reauthenticate", map[string]string{"password": alicePass}, withCookie(cookie), withCSRF(csrf))
 	cookie, csrf = sessionCookie(t, rec).Value, decode(t, rec)["csrfToken"].(string)
-	if rec := e.do("DELETE", path, nil, withCookie(cookie), withCSRF(csrf)); rec.Code != http.StatusNoContent {
+	if rec := e.do("DELETE", path, nil, withCookie(cookie), withCSRF(csrf)); rec.Code != http.StatusOK {
 		t.Fatalf("delete: %d %s", rec.Code, rec.Body.String())
 	}
 }
@@ -539,4 +549,118 @@ func TestFactorResponsesAreNeverStored(t *testing.T) {
 			t.Errorf("%s (%d): Cache-Control = %q", name, rec.Code, rec.Header().Get("Cache-Control"))
 		}
 	}
+}
+
+// rotated returns the fresh session cookie and CSRF token from an authenticator-change
+// response, after checking that both are present and the cookie changed.
+func rotated(t *testing.T, rec *httptest.ResponseRecorder, oldCookie string) (string, string) {
+	t.Helper()
+	c := sessionCookie(t, rec)
+	if c == nil || c.Value == "" || c.Value == oldCookie || !c.HttpOnly || !c.Secure || c.SameSite != http.SameSiteLaxMode || c.Path != "/" {
+		t.Fatalf("no rotated hardened session cookie: %+v", c)
+	}
+	tok, _ := decode(t, rec)["csrfToken"].(string)
+	if tok == "" {
+		t.Fatalf("no rotated csrfToken in %s", rec.Body.String())
+	}
+	return c.Value, tok
+}
+
+// Every authenticator change over HTTP revokes the other sessions, rotates the acting
+// session (fresh cookie and CSRF token in the response) and leaves it usable, including
+// for a further recent-auth mutation; the pre-change cookie and token stop working.
+func TestAuthenticatorChangesOverHTTPRotateTheActingSession(t *testing.T) {
+	type step struct {
+		name   string
+		setup  func(e *env) any
+		change func(e *env, state any, cookie, csrf string) *httptest.ResponseRecorder
+		status int
+	}
+	steps := []step{
+		{"confirm TOTP", func(e *env) any { return nil }, func(e *env, _ any, cookie, csrf string) *httptest.ResponseRecorder {
+			rec := e.do("POST", "/api/v1/auth/totp/enroll", nil, withCookie(cookie), withCSRF(csrf))
+			secret, _ := decode(e.t, rec)["secret"].(string)
+			return e.do("POST", "/api/v1/auth/totp/confirm", map[string]string{"code": totpCode(e.t, secret, e.clock.Now())}, withCookie(cookie), withCSRF(csrf))
+		}, http.StatusOK},
+		{"disable TOTP", func(e *env) any {
+			s, _ := e.enableTOTP(e.alice)
+			return s
+		}, func(e *env, s any, cookie, csrf string) *httptest.ResponseRecorder {
+			return e.do("POST", "/api/v1/auth/totp/disable", map[string]string{"code": totpCode(e.t, s.(string), e.clock.Now())}, withCookie(cookie), withCSRF(csrf))
+		}, http.StatusOK},
+		{"regenerate recovery codes", func(e *env) any {
+			s, _ := e.enableTOTP(e.alice)
+			return s
+		}, func(e *env, s any, cookie, csrf string) *httptest.ResponseRecorder {
+			return e.do("POST", "/api/v1/auth/recovery-codes", map[string]string{"code": totpCode(e.t, s.(string), e.clock.Now())}, withCookie(cookie), withCSRF(csrf))
+		}, http.StatusOK},
+		{"register passkey", func(e *env) any { return nil }, func(e *env, _ any, cookie, csrf string) *httptest.ResponseRecorder {
+			return e.passkeyRegister(webauthntest.New(origin), cookie, csrf)
+		}, http.StatusCreated},
+		{"delete passkey", func(e *env) any {
+			c, k := e.login("alice", alicePass)
+			reg := e.passkeyRegister(webauthntest.New(origin), c, k)
+			pk, _ := decode(e.t, reg)["passkey"].(map[string]any)
+			id, _ := pk["id"].(float64)
+			if id == 0 {
+				e.t.Fatalf("setup register: %d %s", reg.Code, reg.Body.String())
+			}
+			return int64(id)
+		}, func(e *env, id any, cookie, csrf string) *httptest.ResponseRecorder {
+			return e.do("DELETE", fmt.Sprintf("/api/v1/auth/passkeys/%d", id.(int64)), nil, withCookie(cookie), withCSRF(csrf))
+		}, http.StatusOK},
+	}
+	for _, st := range steps {
+		t.Run(st.name, func(t *testing.T) {
+			e := newFactorEnv(t)
+			state := st.setup(e)
+			secret, _ := state.(string)
+			other, _ := e.aliceSession(secret)
+			bob, _ := e.login("bob", bobPass)
+			cookie, csrf := e.aliceSession(secret)
+			rec := st.change(e, state, cookie, csrf)
+			if rec.Code != st.status {
+				t.Fatalf("change: %d %s", rec.Code, rec.Body.String())
+			}
+			fresh, tok := rotated(t, rec, cookie)
+			if tok == csrf {
+				t.Fatal("CSRF token not rotated")
+			}
+			if e.sessionStatus(other) != http.StatusUnauthorized {
+				t.Fatal("other session survived")
+			}
+			if e.sessionStatus(bob) != http.StatusOK {
+				t.Fatal("another user's session was affected")
+			}
+			if e.sessionStatus(cookie) != http.StatusUnauthorized {
+				t.Fatal("pre-change cookie still works")
+			}
+			if rec := e.do("POST", "/api/v1/test/sensitive", nil, withCookie(fresh), withCSRF(csrf)); rec.Code != http.StatusForbidden {
+				t.Fatalf("pre-change CSRF token accepted: %d", rec.Code)
+			}
+			// Still recently authenticated (rotation keeps authenticated_at); the fresh token works.
+			if rec := e.do("POST", "/api/v1/test/sensitive", nil, withCookie(fresh), withCSRF(tok)); rec.Code != http.StatusOK {
+				t.Fatalf("rotated session cannot mutate: %d %s", rec.Code, rec.Body.String())
+			}
+			if strings.Contains(e.logs.String(), fresh) {
+				t.Fatal("rotated secret logged")
+			}
+		})
+	}
+}
+
+// aliceSession signs alice in, completing the TOTP step when secret is set, and moves
+// the clock to the next TOTP step so the code used here is not replayed later.
+func (e *env) aliceSession(secret string) (string, string) {
+	e.t.Helper()
+	if secret == "" {
+		return e.login("alice", alicePass)
+	}
+	flow := e.pendingLogin("alice", alicePass)
+	rec := e.do("POST", "/api/v1/auth/login/second-factor", map[string]string{"flowId": flow, "code": totpCode(e.t, secret, e.clock.Now())})
+	if rec.Code != http.StatusOK {
+		e.t.Fatalf("second factor: %d %s", rec.Code, rec.Body.String())
+	}
+	e.clock.Advance(30 * time.Second)
+	return sessionCookie(e.t, rec).Value, decode(e.t, rec)["csrfToken"].(string)
 }
