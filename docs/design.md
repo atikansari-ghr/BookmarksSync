@@ -2,6 +2,10 @@
 
 Approved 2026-11-16. Owner: Atik Ansari. Source: repository planning conversation.
 
+Milestone designs refine this specification without replacing it:
+- [Identity and API](design/identity-api.md), approved 2026-11-17. Its operator and user guide is [docs/authentication.md](authentication.md), and its API contract is [api/openapi.yaml](../api/openapi.yaml).
+- [Floccus compatibility status](floccus-compatibility.md) records the compatibility gate evidence.
+
 ## Architecture and delivery
 - Standalone Go server embeds a React/TypeScript UI; local SQLite; approximately 20 users and 10,000 bookmarks/user.
 - Debian systemd, native Proxmox LXC, Docker and native Windows services. Test LXC: 192.168.10.226; credentials/domain not yet supplied.

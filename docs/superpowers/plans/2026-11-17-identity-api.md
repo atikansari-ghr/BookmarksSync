@@ -64,11 +64,11 @@
 
 **Interfaces:** Support discoverable passkey login and authenticated add/rename/remove flows. Use WebAuthn relying-party ID/origin from `BOOKMARKSYNC_PUBLIC_URL`. TOTP enrollment displays a provisioning URI and confirmation code; recovery codes are displayed once and consumed once. A pending password+TOTP challenge is short-lived and cannot access normal routes.
 
-- [ ] Write tests for WebAuthn origin/RP/challenge binding, challenge reuse, credential ownership, counter handling, TOTP enrollment/verification/replay, recovery-code single use, encrypted TOTP ciphertext, and instance-key creation/permissions on Unix and Windows.
-- [ ] Run factor tests and confirm expected failures.
-- [ ] Implement ceremonies using pinned `go-webauthn/webauthn` v0.18.2; implement standards-based TOTP with encrypted cryptographic seeds and hashed recovery codes. Generate/load an instance AES-GCM key in a private file, apply a restrictive Windows ACL, and fail closed if the key cannot be secured or used.
-- [ ] Exercise passkeys in Playwright with a virtual authenticator; test all service-level replay and mismatch cases.
-- [ ] Run focused, full Go, formatting, vet, and cross-build checks; commit for review.
+- [x] Write tests for WebAuthn origin/RP/challenge binding, challenge reuse, credential ownership, counter handling, TOTP enrollment/verification/replay, recovery-code single use, encrypted TOTP ciphertext, and instance-key creation/permissions on Unix and Windows. (Unix key-permission tests run only on Linux; executed by the CI Ubuntu job, not locally.)
+- [x] Run factor tests and confirm expected failures.
+- [x] Implement ceremonies using pinned `go-webauthn/webauthn` v0.18.2; implement standards-based TOTP with encrypted cryptographic seeds and hashed recovery codes. Generate/load an instance AES-GCM key in a private file, apply a restrictive Windows ACL, and fail closed if the key cannot be secured or used.
+- [x] Exercise passkeys in Playwright with a virtual authenticator; test all service-level replay and mismatch cases.
+- [x] Run focused, full Go, formatting, vet, and cross-build checks; commit for review.
 
 ### Task 4: Google and Authentik OIDC linking and sign-in
 
@@ -76,10 +76,10 @@
 
 **Interfaces:** Operator config supplies Google client ID/secret and Authentik issuer/client ID/secret through environment variables. Expose begin/callback/unlink routes. Use authorization-code flow with PKCE, state, nonce, exact redirect URI, issuer/audience/signature/expiry checks. Persist only provider issuer, verified subject, and non-sensitive display fields. No auto-signup or email-based linking.
 
-- [ ] Write tests with a local fake OIDC provider for state, nonce, PKCE, signature, issuer, audience, expiry, missing/changed subject, duplicate link, unlinked login, reauthentication-required unlink, bounded discovery/callback timeouts, and provider secrets absent from logs.
-- [ ] Run the provider tests and confirm they fail before implementation.
-- [ ] Implement provider discovery and validation using pinned `go-oidc` v3.15.0 and OAuth2 PKCE support. Bind every transaction to a short-lived server-side flow record.
-- [ ] Run focused and full Go tests, vet, formatting, and cross-builds; commit for review.
+- [x] Write tests with a local fake OIDC provider for state, nonce, PKCE, signature, issuer, audience, expiry, missing/changed subject, duplicate link, unlinked login, reauthentication-required unlink, bounded discovery/callback timeouts, and provider secrets absent from logs.
+- [x] Run the provider tests and confirm they fail before implementation.
+- [x] Implement provider discovery and validation using pinned `go-oidc` v3.15.0 and OAuth2 PKCE support. Bind every transaction to a short-lived server-side flow record.
+- [x] Run focused and full Go tests, vet, formatting, and cross-builds; commit for review.
 
 ### Task 5: `/api/v1` user and administrator API with OpenAPI
 
@@ -87,11 +87,11 @@
 
 **Interfaces:** Implement self/profile/settings, bookmarks/folders/search/tags/favorites, shares, Trash, safe Netscape/XBEL import/export, session/token management, and per-user Floccus connection create/list/revoke routes. Admin routes manage accounts, Floccus connections, and supported system settings. Session auth is cookie+CSRF; personal-token auth requires the exact scope for each operation and cannot call admin routes. Admin routes require an active admin web session plus recent reauthentication. Return consistent JSON errors and pagination; show each generated secret only once.
 
-- [ ] Write table-driven route tests for method/path/schema errors, pagination limits, each token scope, ownership, share view/edit permissions, admin role, last-admin protection, deactivated users, and no private data in admin responses.
-- [ ] Add a migration fixture test proving existing users, credentials, bookmarks, and shares remain intact.
-- [ ] Implement handlers through domain services; do not add SQL that bypasses service scoping.
-- [ ] Validate OpenAPI syntax and add a test that every registered `/api/v1` route/method is represented.
-- [ ] Run API integration suite, full Go tests, vet, formatting, builds, and mutation checks for authorization boundaries; commit for review.
+- [x] Write table-driven route tests for method/path/schema errors, pagination limits, each token scope, ownership, share view/edit permissions, admin role, last-admin protection, deactivated users, and no private data in admin responses.
+- [x] Add a migration fixture test proving existing users, credentials, bookmarks, and shares remain intact.
+- [x] Implement handlers through domain services; do not add SQL that bypasses service scoping. Favorites are deferred until the user rules on their storage (no migration 0004 yet).
+- [x] Validate OpenAPI syntax and add a test that every registered `/api/v1` route/method is represented.
+- [x] Run API integration suite, full Go tests, vet, formatting, builds, and mutation checks for authorization boundaries; commit for review.
 
 ### Task 6: Minimal login and account-security interface
 
@@ -99,18 +99,18 @@
 
 **Interfaces:** Pages: split-screen login matching `mocscreenshots/exec-d71e4627-7ef3-4ae3-8bf0-501e95813482.png`, TOTP challenge, passkey sign-in/enrollment, TOTP enrollment, one-time recovery-code display, linked-provider management, active sessions, personal API tokens, and Floccus connection credential management. Use same-origin APIs and CSRF bootstrap; local login uses username, not email; render provider buttons only when configured; use approved app title/tagline, show build version and `© <year> Atik Ansari`; provide administrator-reset guidance instead of a password-reset flow. No dashboard, theme picker, branding editor, or admin dashboard in this task.
 
-- [ ] Write frontend component/flow tests and Playwright tests for login, TOTP, passkey using virtual authenticator, session revoke, OIDC link UI, and token create/revoke. Assert no auth secret reaches `localStorage` or `sessionStorage`.
-- [ ] Run tests to identify missing accessible form states and API/UI contracts.
-- [ ] Implement responsive accessible screens with keyboard navigation and clear factor setup/removal states; build static assets into the Go embed package.
-- [ ] Add CI Node setup, locked dependency install, typecheck, unit/browser tests, and frontend build before Go packaging.
-- [ ] Run frontend checks, Go suite, Linux/Windows builds, local end-to-end auth flow, and commit for review.
+- [x] Write frontend component/flow tests and Playwright tests for login, TOTP, passkey using virtual authenticator, session revoke, OIDC link UI, and token create/revoke. Assert no auth secret reaches `localStorage` or `sessionStorage`.
+- [x] Run tests to identify missing accessible form states and API/UI contracts.
+- [x] Implement responsive accessible screens with keyboard navigation and clear factor setup/removal states; build static assets into the Go embed package.
+- [x] Add CI Node setup, locked dependency install, typecheck, unit/browser tests, and frontend build before Go packaging.
+- [x] Run frontend checks, Go suite, Linux/Windows builds, local end-to-end auth flow, and commit for review. (Independent Task 6 review still pending; see progress ledger.)
 
 ### Task 7: Security documentation and whole-milestone acceptance
 
 **Files:** Update `README.md`, `docs/design.md`, `docs/implementation-plan.md`, add `docs/authentication.md`, update OpenAPI and CI evidence.
 
-- [ ] Document CLI admin bootstrap, HTTPS/public URL configuration, Google/Authentik provider setup, account/factor recovery, API tokens/scopes, session controls, and security limits.
-- [ ] Test a fresh database and an upgraded milestone-2 database; prove existing Floccus credentials and sync remain operational.
-- [ ] Run all CI workflows, Go/Node suites, browser workflows, Linux/Windows builds, and `govulncheck`; record exact results and untested platform cases.
-- [ ] Ask a fresh reviewer to inspect the full milestone diff for auth bypasses, cross-user access, migration safety, and mismatch between OpenAPI and handlers. Fix all Critical/Important findings and rerun affected checks.
-- [ ] Commit only after the review and acceptance checks are clean; do not merge or deploy.
+- [x] Document CLI admin bootstrap, HTTPS/public URL configuration, Google/Authentik provider setup, account/factor recovery, API tokens/scopes, session controls, and security limits. (`docs/authentication.md`, README, design and implementation-plan updates.)
+- [x] Test a fresh database and an upgraded milestone-2 database; prove existing Floccus credentials and sync remain operational. (Go regression over the Floccus wire with the preexisting `bms1` credential; real `b0eab92` binary upgraded to the current binary; fresh-database CLI bootstrap.)
+- [ ] Run all CI workflows, Go/Node suites, browser workflows, Linux/Windows builds, and `govulncheck`; record exact results and untested platform cases. Local CI-equivalents all pass after the go-jose v4.1.4 security bump, as do the UI and factor smokes and the Floccus 4-browser matrix (72/72). Still open: the race detector (NOT_RUN: no local C compiler; CI runs it) and GitHub-hosted CI (NOT_RUN: branch not pushed). See `task-7-report.md`.
+- [ ] Ask a fresh reviewer to inspect the full milestone diff for auth bypasses, cross-user access, migration safety, and mismatch between OpenAPI and handlers. Fix all Critical/Important findings and rerun affected checks. Implementer self-review is done: it fixed the OpenAPI recent-auth drift and the govulncheck finding. A fresh independent review is still open; this task was told not to start extra agents.
+- [ ] Commit only after the review and acceptance checks are clean; do not merge or deploy. Task 7 is committed for controller review, but not merged, pushed or deployed. Milestone acceptance waits for the fresh review and CI.

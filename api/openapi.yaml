@@ -6,6 +6,13 @@ info:
     Authenticated bookmark, account and administrator API. Cookie requests to unsafe
     methods require the exact configured Origin and X-CSRF-Token. Personal tokens are
     accepted only on operations declaring their exact x-token-scope.
+    x-recent-auth marks session operations that return 403 reauthentication_required
+    unless the session (re)authenticated within the last five minutes.
+    Route availability depends on server configuration: every route except /version
+    requires BOOKMARKSYNC_PUBLIC_URL; passkey routes require a public host that is a
+    domain name; /auth/oidc/* routes exist only when at least one provider is
+    configured, and {provider} must name a configured provider. Unavailable routes
+    answer 404.
 servers:
   - url: /api/v1
 components:
@@ -46,22 +53,22 @@ paths:
   /auth/reauthenticate: {post: {operationId: reauthenticate, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
   /auth/login/second-factor: {post: {operationId: completeSecondFactorLogin, security: [], responses: {default: {$ref: '#/components/responses/Error'}}}}
   /auth/totp: {get: {operationId: totpStatus, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
-  /auth/totp/enroll: {post: {operationId: beginTotpEnrollment, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
-  /auth/totp/confirm: {post: {operationId: confirmTotpEnrollment, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
-  /auth/totp/disable: {post: {operationId: disableTotp, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
-  /auth/recovery-codes: {post: {operationId: regenerateRecoveryCodes, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/totp/enroll: {post: {operationId: beginTotpEnrollment, security: [{sessionCookie: []}], x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/totp/confirm: {post: {operationId: confirmTotpEnrollment, security: [{sessionCookie: []}], x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/totp/disable: {post: {operationId: disableTotp, security: [{sessionCookie: []}], x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/recovery-codes: {post: {operationId: regenerateRecoveryCodes, security: [{sessionCookie: []}], x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
   /auth/passkey/login/begin: {post: {operationId: beginPasskeyLogin, security: [], responses: {default: {$ref: '#/components/responses/Error'}}}}
   /auth/passkey/login/finish: {post: {operationId: finishPasskeyLogin, security: [], responses: {default: {$ref: '#/components/responses/Error'}}}}
   /auth/passkeys: {get: {operationId: listPasskeys, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
-  /auth/passkeys/register/begin: {post: {operationId: beginPasskeyRegistration, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
-  /auth/passkeys/register/finish: {post: {operationId: finishPasskeyRegistration, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
-  /auth/passkeys/{id}: {patch: {operationId: renamePasskey, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}, delete: {operationId: deletePasskey, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/passkeys/register/begin: {post: {operationId: beginPasskeyRegistration, security: [{sessionCookie: []}], x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/passkeys/register/finish: {post: {operationId: finishPasskeyRegistration, security: [{sessionCookie: []}], x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/passkeys/{id}: {patch: {operationId: renamePasskey, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}, delete: {operationId: deletePasskey, security: [{sessionCookie: []}], x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
   /auth/oidc/providers: {get: {operationId: listOidcProviders, security: [], responses: {default: {$ref: '#/components/responses/Error'}}}}
   /auth/oidc/{provider}/login: {post: {operationId: beginOidcLogin, security: [], responses: {default: {$ref: '#/components/responses/Error'}}}}
-  /auth/oidc/{provider}/link: {post: {operationId: beginOidcLink, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/oidc/{provider}/link: {post: {operationId: beginOidcLink, security: [{sessionCookie: []}], x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
   /auth/oidc/{provider}/callback: {get: {operationId: finishOidcFlow, security: [], responses: {default: {$ref: '#/components/responses/Error'}}}}
   /auth/oidc/identities: {get: {operationId: listOidcIdentities, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
-  /auth/oidc/identities/{id}: {delete: {operationId: unlinkOidcIdentity, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/oidc/identities/{id}: {delete: {operationId: unlinkOidcIdentity, security: [{sessionCookie: []}], x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
   /me: {get: {operationId: getMe, security: [{sessionCookie: []}, {personalToken: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
   /me/password: {patch: {operationId: changePassword, security: [{sessionCookie: []}], x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
   /me/settings: {get: {operationId: getSettings, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}, patch: {operationId: updateSettings, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}

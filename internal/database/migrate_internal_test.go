@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 	"github.com/atikansari-ghr/BookmarksSync/internal/api"
 	"github.com/atikansari-ghr/BookmarksSync/internal/auth"
 	"github.com/atikansari-ghr/BookmarksSync/internal/bookmarks"
+	"github.com/atikansari-ghr/BookmarksSync/internal/floccus"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
 	_ "modernc.org/sqlite"
@@ -167,6 +170,71 @@ func TestIdentityMigrationUpgradesMilestone2DataIntact(t *testing.T) {
 	item := response.Items[0]
 	if item.URL != "https://example.com/" || item.Title != "Example" || len(item.Tags) != 1 || item.Tags[0] != "work" || len(item.Folders) != 1 || item.Folders[0] != 2 {
 		t.Fatalf("migrated API record = %+v", item)
+	}
+	// Protocol-level Floccus sync with the exact preexisting milestone-2 credential:
+	// HTTP Basic with the bms1 secret whose SHA-256 is stored in fixture credential 1,
+	// against the Nextcloud-Bookmarks-compatible endpoints stock floccus uses.
+	floccusH := server.NewHandler(server.Options{Ready: migrationReady{db}, Register: floccus.New(ids, bookmarks.New(db), nil).Register})
+	const legacySecret = "bms1.1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+	floccusDo := func(method, path, body string) (int, map[string]any) {
+		t.Helper()
+		var rd io.Reader
+		if body != "" {
+			rd = strings.NewReader(body)
+		}
+		req := httptest.NewRequest(method, "https://bookmarks.example.test"+path, rd)
+		req.SetBasicAuth("alice", legacySecret)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		floccusH.ServeHTTP(rec, req)
+		var out map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("%s %s: status %d, non-JSON body %q", method, path, rec.Code, rec.Body.String())
+		}
+		return rec.Code, out
+	}
+	const rest = "/index.php/apps/bookmarks/public/rest/v2"
+	if code, body := floccusDo(http.MethodGet, "/ocs/v2.php/cloud/capabilities", ""); code != http.StatusOK ||
+		!strings.Contains(fmt.Sprint(body), "hash-functions:[sha256]") {
+		t.Fatalf("floccus capabilities with legacy credential: %d %v", code, body)
+	}
+	code, body := floccusDo(http.MethodGet, rest+"/bookmark?page=0&limit=10", "")
+	list, _ := body["data"].([]any)
+	if code != http.StatusOK || body["status"] != "success" || len(list) != 1 {
+		t.Fatalf("floccus bookmark GET with legacy credential: %d %v", code, body)
+	}
+	wire, _ := list[0].(map[string]any)
+	// Internal folder 2 is wire folder -3 (internal n <-> wire -(n+1)).
+	if wire["url"] != "https://example.com/" || wire["title"] != "Example" || fmt.Sprint(wire["tags"]) != "[work]" || fmt.Sprint(wire["folders"]) != "[-3]" {
+		t.Fatalf("floccus wire bookmark after upgrade = %v", wire)
+	}
+	// A sync round: take the lock, write into the existing folder, read the folder
+	// hash, release the lock. The write must persist in the migrated database.
+	if code, body := floccusDo(http.MethodPost, rest+"/lock", ""); code != http.StatusOK {
+		t.Fatalf("floccus lock with legacy credential: %d %v", code, body)
+	}
+	if code, body := floccusDo(http.MethodPost, rest+"/bookmark", `{"url":"https://after-upgrade.example/","title":"After upgrade","folders":[-3]}`); code != http.StatusOK || body["status"] != "success" {
+		t.Fatalf("floccus bookmark create with legacy credential: %d %v", code, body)
+	}
+	if code, body := floccusDo(http.MethodGet, rest+"/folder/-3/hash", ""); code != http.StatusOK || body["status"] != "success" || body["data"] == "" {
+		t.Fatalf("floccus folder hash with legacy credential: %d %v", code, body)
+	}
+	if code, body := floccusDo(http.MethodDelete, rest+"/lock", ""); code != http.StatusOK {
+		t.Fatalf("floccus unlock with legacy credential: %d %v", code, body)
+	}
+	var persisted int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM bookmarks b JOIN placements p ON p.bookmark_id = b.id WHERE b.owner_id = 1 AND b.url = 'https://after-upgrade.example/' AND p.folder_id = 2`).Scan(&persisted); err != nil || persisted != 1 {
+		t.Fatalf("floccus write after upgrade persisted %d rows (%v)", persisted, err)
+	}
+	// A wrong secret for the same credential id is still refused on the wire.
+	req = httptest.NewRequest(http.MethodGet, "https://bookmarks.example.test"+rest+"/bookmark", nil)
+	req.SetBasicAuth("alice", "bms1.1.BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+	rec = httptest.NewRecorder()
+	floccusH.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong secret after upgrade: %d", rec.Code)
 	}
 }
 
