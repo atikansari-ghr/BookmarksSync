@@ -53,10 +53,16 @@ func (c *fakeClock) Advance(d time.Duration) {
 type countingIdentity struct {
 	*identity.Service
 	verifies atomic.Int32
+	// gate, when set before requests start, runs inside VerifyPassword before the
+	// real verification; tests use it to hold requests in flight.
+	gate func()
 }
 
 func (c *countingIdentity) VerifyPassword(ctx context.Context, username, password string) (identity.User, error) {
 	c.verifies.Add(1)
+	if c.gate != nil {
+		c.gate()
+	}
 	return c.Service.VerifyPassword(ctx, username, password)
 }
 
@@ -147,6 +153,12 @@ func withHeader(k, v string) reqMod { return func(r *http.Request) { r.Header.Se
 
 func (e *env) do(method, path string, body any, mods ...reqMod) *httptest.ResponseRecorder {
 	e.t.Helper()
+	return e.serve(e.h, method, path, body, mods...)
+}
+
+// serve sends one request to h with the default origin and peer.
+func (e *env) serve(h http.Handler, method, path string, body any, mods ...reqMod) *httptest.ResponseRecorder {
+	e.t.Helper()
 	var rd io.Reader
 	switch b := body.(type) {
 	case nil:
@@ -169,7 +181,7 @@ func (e *env) do(method, path string, body any, mods ...reqMod) *httptest.Respon
 		m(req)
 	}
 	rec := httptest.NewRecorder()
-	e.h.ServeHTTP(rec, req)
+	h.ServeHTTP(rec, req)
 	return rec
 }
 
@@ -627,47 +639,249 @@ func TestReauthenticationAge(t *testing.T) {
 	}
 }
 
-func TestLoginRateLimitedPerUsernameAndPeer(t *testing.T) {
-	clock := &fakeClock{t: time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)}
-	e := newEnv(t, func(o *auth.Options) {
-		o.Limits = auth.Limits{MaxKeys: 100, Window: 15 * time.Minute, UserFailures: 3, PeerFailures: 5}
-		o.Now = clock.Now
-	})
-	try := func(user, pass, from string) int {
-		return e.do("POST", "/api/v1/auth/login", map[string]string{"username": user, "password": pass}, withPeer(from)).Code
-	}
-	// Per-username: failures from many peers, case/space variants count together.
+func rateLimited(limits auth.Limits) func(*auth.Options) {
+	return func(o *auth.Options) { o.Limits = limits }
+}
+
+func (e *env) tryLogin(user, pass, from string, mods ...reqMod) *httptest.ResponseRecorder {
+	e.t.Helper()
+	m := append([]reqMod{withPeer(from)}, mods...)
+	return e.do("POST", "/api/v1/auth/login", map[string]string{"username": user, "password": pass}, m...)
+}
+
+// Failures against one username from an attacker's address must not lock the account
+// out for its owner at another address; the owner's own failures and the per-peer
+// threshold still apply.
+func TestUsernameFailuresAreScopedToTheDirectPeer(t *testing.T) {
+	e := newEnv(t, rateLimited(auth.Limits{MaxKeys: 100, Window: 15 * time.Minute, UserFailures: 3, PeerFailures: 5}))
+	attacker, owner := "203.0.113.66:4000", "198.51.100.7:5000"
+
 	for i, name := range []string{"alice", "ALICE", " Alice "} {
-		if code := try(name, "wrong password!!", fmt.Sprintf("198.51.100.%d:1", i+1)); code != http.StatusUnauthorized {
-			t.Fatalf("attempt %d: %d", i, code)
+		if rec := e.tryLogin(name, "wrong password!!", attacker); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attacker attempt %d: %d", i, rec.Code)
 		}
 	}
 	before := e.ci.verifies.Load()
-	rec := e.do("POST", "/api/v1/auth/login", map[string]string{"username": "alice", "password": alicePass}, withPeer("198.51.100.99:1"))
+	rec := e.tryLogin("alice", alicePass, attacker)
 	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
-		t.Fatalf("locked username: %d", rec.Code)
+		t.Fatalf("attacker should be blocked for alice (normalized): %d", rec.Code)
+	}
+	// Forwarded headers naming the owner's address change nothing: the key is the
+	// connection's peer.
+	if rec := e.tryLogin("alice", alicePass, attacker, withHeader("X-Forwarded-For", "198.51.100.7"),
+		withHeader("X-Real-IP", "198.51.100.7"), withHeader("Forwarded", "for=198.51.100.7")); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("forwarded headers moved the attacker's key: %d", rec.Code)
 	}
 	if e.ci.verifies.Load() != before {
-		t.Error("rate-limited attempt still did password work")
+		t.Error("rate-limited attempts still did password work")
 	}
-	// Per-peer: one peer spraying many usernames; forwarded headers are ignored.
+
+	if rec := e.tryLogin("alice", alicePass, owner); rec.Code != http.StatusOK {
+		t.Fatalf("remote failures locked the owner out: %d %s", rec.Code, rec.Body.String())
+	}
+
+	// The owner's own failures still block alice from the owner's address.
+	for i := 0; i < 3; i++ {
+		if rec := e.tryLogin("Alice", "wrong password!!", owner); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("owner failure %d: %d", i, rec.Code)
+		}
+	}
+	before = e.ci.verifies.Load()
+	if rec := e.tryLogin("alice", alicePass, owner); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("same-peer failures should block: %d", rec.Code)
+	}
+	if e.ci.verifies.Load() != before {
+		t.Error("blocked attempt did password work")
+	}
+	// Other usernames from that address are still under the peer threshold.
+	if rec := e.tryLogin("bob", bobPass, owner); rec.Code != http.StatusOK {
+		t.Fatalf("bob from owner's address: %d", rec.Code)
+	}
+
+	e.clock.Advance(15*time.Minute + time.Second)
+	if rec := e.tryLogin("alice", alicePass, attacker); rec.Code != http.StatusOK {
+		t.Fatalf("after window: %d", rec.Code)
+	}
+}
+
+func TestPeerFailureThresholdBlocksEveryUsername(t *testing.T) {
+	e := newEnv(t, rateLimited(auth.Limits{MaxKeys: 100, Window: 15 * time.Minute, UserFailures: 3, PeerFailures: 5}))
 	sprayer := "203.0.113.50:4000"
 	for i := 0; i < 5; i++ {
-		try(fmt.Sprintf("user%d", i), "wrong password!!", sprayer)
+		if rec := e.tryLogin(fmt.Sprintf("user%d", i), "wrong password!!", sprayer); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("spray %d: %d", i, rec.Code)
+		}
 	}
-	rec = e.do("POST", "/api/v1/auth/login", map[string]string{"username": "bob", "password": bobPass},
-		withPeer(sprayer), withHeader("X-Forwarded-For", "192.0.2.200"), withHeader("X-Real-IP", "192.0.2.201"))
-	if rec.Code != http.StatusTooManyRequests {
-		t.Fatalf("locked peer: %d", rec.Code)
+	before := e.ci.verifies.Load()
+	rec := e.tryLogin("bob", bobPass, sprayer, withHeader("X-Forwarded-For", "192.0.2.200"), withHeader("X-Real-IP", "192.0.2.201"))
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("peer over threshold: %d", rec.Code)
 	}
-	if code := try("bob", bobPass, "203.0.113.51:4000"); code != http.StatusOK {
-		t.Fatalf("other peer should still log in: %d", code)
+	if e.ci.verifies.Load() != before {
+		t.Error("blocked attempt did password work")
 	}
-	// Window expiry releases both.
-	clock.Advance(15*time.Minute + time.Second)
+	if rec := e.tryLogin("bob", bobPass, "203.0.113.51:4000"); rec.Code != http.StatusOK {
+		t.Fatalf("other peer should still log in: %d", rec.Code)
+	}
 	e.clock.Advance(15*time.Minute + time.Second)
-	if code := try("alice", alicePass, sprayer); code != http.StatusOK {
-		t.Fatalf("after window: %d", code)
+	if rec := e.tryLogin("bob", bobPass, sprayer); rec.Code != http.StatusOK {
+		t.Fatalf("after window: %d", rec.Code)
+	}
+}
+
+func TestSuccessfulLoginsAreNotCountedAsFailures(t *testing.T) {
+	e := newEnv(t, rateLimited(auth.Limits{MaxKeys: 100, Window: 15 * time.Minute, UserFailures: 2, PeerFailures: 3}))
+	for i := 0; i < 6; i++ {
+		if rec := e.tryLogin("alice", alicePass, peer); rec.Code != http.StatusOK {
+			t.Fatalf("successful login %d: %d", i, rec.Code)
+		}
+	}
+	if rec := e.tryLogin("alice", "wrong password!!", peer); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("first failure: %d", rec.Code)
+	}
+	if rec := e.tryLogin("alice", alicePass, peer); rec.Code != http.StatusOK {
+		t.Fatalf("one failure plus successes must not block: %d", rec.Code)
+	}
+}
+
+// holdVerifications makes every VerifyPassword call report on entered and then block
+// until release is called. Cleanup releases and waits for wg before the database closes.
+func (e *env) holdVerifications(wg *sync.WaitGroup) (entered chan struct{}, release func()) {
+	entered = make(chan struct{}, 256)
+	gate := make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(gate) }) }
+	e.ci.gate = func() {
+		entered <- struct{}{}
+		<-gate
+	}
+	e.t.Cleanup(func() { release(); wg.Wait() })
+	return entered, release
+}
+
+// assertConcurrencyCap starts n requests at once while VerifyPassword is held, and
+// proves that exactly limit of them reach it: the rest are refused with 429 while the
+// first limit are still in flight. Released requests must then fail with 401.
+func assertConcurrencyCap(t *testing.T, e *env, n, limit int, send func(i int) int) {
+	t.Helper()
+	var wg sync.WaitGroup
+	entered, release := e.holdVerifications(&wg)
+	results := make(chan int, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results <- send(i)
+		}(i)
+	}
+	inside, refused := 0, 0
+	timeout := time.After(15 * time.Second)
+	for refused < n-limit || inside < limit {
+		select {
+		case <-entered:
+			inside++
+			if inside > limit {
+				t.Fatalf("%d concurrent requests reached VerifyPassword; the limit is %d", inside, limit)
+			}
+		case code := <-results:
+			refused++
+			if code != http.StatusTooManyRequests {
+				t.Fatalf("request finished with %d while %d were held; want 429", code, inside)
+			}
+		case <-timeout:
+			t.Fatalf("timed out with %d in VerifyPassword and %d refused", inside, refused)
+		}
+	}
+	release()
+	for i := 0; i < limit; i++ {
+		select {
+		case code := <-results:
+			if code != http.StatusUnauthorized {
+				t.Errorf("released request: %d, want 401", code)
+			}
+		case <-timeout:
+			t.Fatal("released requests did not finish")
+		}
+	}
+	if got := int(e.ci.verifies.Load()); got != limit {
+		t.Errorf("VerifyPassword calls = %d, want %d", got, limit)
+	}
+}
+
+func TestConcurrentLoginsCannotExceedThePairThreshold(t *testing.T) {
+	e := newEnv(t, rateLimited(auth.Limits{MaxKeys: 100, Window: 15 * time.Minute, UserFailures: 3, PeerFailures: 50}))
+	assertConcurrencyCap(t, e, 12, 3, func(int) int {
+		return e.tryLogin("alice", "wrong password!!", peer).Code
+	})
+	if rec := e.tryLogin("alice", alicePass, peer); rec.Code != http.StatusTooManyRequests {
+		t.Errorf("three recorded failures should block: %d", rec.Code)
+	}
+}
+
+func TestConcurrentLoginsCannotExceedThePeerThreshold(t *testing.T) {
+	e := newEnv(t, rateLimited(auth.Limits{MaxKeys: 100, Window: 15 * time.Minute, UserFailures: 50, PeerFailures: 4}))
+	assertConcurrencyCap(t, e, 12, 4, func(i int) int {
+		return e.tryLogin(fmt.Sprintf("user%d", i), "wrong password!!", peer).Code
+	})
+}
+
+func TestConcurrentReauthenticationCannotExceedTheThreshold(t *testing.T) {
+	e := newEnv(t, rateLimited(auth.Limits{MaxKeys: 100, Window: 15 * time.Minute, UserFailures: 2, PeerFailures: 50}))
+	secret, tok := e.login("alice", alicePass)
+	e.ci.verifies.Store(0)
+	assertConcurrencyCap(t, e, 10, 2, func(int) int {
+		return e.do("POST", "/api/v1/auth/reauthenticate", map[string]string{"password": "wrong password!!"},
+			withCookie(secret), withCSRF(tok)).Code
+	})
+}
+
+func TestLimiterReservationOutcomes(t *testing.T) {
+	clock := &fakeClock{t: time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)}
+	l := auth.NewLimiter(auth.Limits{MaxKeys: 16, Window: time.Minute, UserFailures: 2, PeerFailures: 10}, clock.Now)
+	reserve := func() *auth.Reservation {
+		t.Helper()
+		r, wait := l.Reserve("alice", "10.0.0.1:1")
+		if (r == nil) != (wait > 0) {
+			t.Fatalf("Reserve returned reservation %v with wait %v", r, wait)
+		}
+		return r
+	}
+	a, b := reserve(), reserve()
+	if a == nil || b == nil {
+		t.Fatal("two reservations should fit a threshold of 2")
+	}
+	if reserve() != nil {
+		t.Fatal("a third in-flight reservation exceeded the threshold")
+	}
+	a.Cancel()
+	a.Fail() // finalizing twice is a no-op
+	c := reserve()
+	if c == nil {
+		t.Fatal("cancel did not release capacity")
+	}
+	b.Success()
+	c.Success()
+	for i := 0; i < 5; i++ {
+		r := reserve()
+		if r == nil {
+			t.Fatalf("successes or cancels were counted as failures (round %d)", i)
+		}
+		r.Success()
+	}
+	if n := l.Len(); n != 0 {
+		t.Errorf("tracked keys after only successes = %d, want 0", n)
+	}
+	reserve().Fail()
+	reserve().Fail()
+	if r, wait := l.Reserve("ALICE ", "10.0.0.1:1"); r != nil || wait <= 0 || wait > time.Minute {
+		t.Fatalf("two failures should block the normalized pair: %v %v", r, wait)
+	}
+	if r, _ := l.Reserve("alice", "10.0.0.2:1"); r == nil {
+		t.Fatal("failures from one peer blocked another peer")
+	}
+	clock.Advance(time.Minute + time.Second)
+	if reserve() == nil {
+		t.Fatal("expired window still blocks")
 	}
 }
 
@@ -675,25 +889,159 @@ func TestLimiterStorageIsBounded(t *testing.T) {
 	clock := &fakeClock{t: time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)}
 	l := auth.NewLimiter(auth.Limits{MaxKeys: 16, Window: time.Minute, UserFailures: 3, PeerFailures: 3}, clock.Now)
 	for i := 0; i < 5000; i++ {
-		l.Fail(fmt.Sprintf("user-%d-%s", i, strings.Repeat("x", i%300)), fmt.Sprintf("10.%d.%d.%d:1", i>>16&255, i>>8&255, i&255))
+		r, _ := l.Reserve(fmt.Sprintf("user-%d-%s", i, strings.Repeat("x", i%300)), fmt.Sprintf("10.%d.%d.%d:1", i>>16&255, i>>8&255, i&255))
+		if r == nil {
+			t.Fatalf("flood reservation %d refused", i)
+		}
+		r.Fail()
 		if n := l.Len(); n > 16 {
 			t.Fatalf("tracked keys = %d after %d failures, cap is 16", n, i+1)
 		}
 	}
-	// The most recently failing key is still tracked after the flood.
+	// The most recently failing keys are still tracked after the flood.
 	for i := 0; i < 3; i++ {
-		l.Fail("target", "10.200.0.1:1")
+		r, _ := l.Reserve("target", "10.200.0.1:1")
+		r.Fail()
 	}
-	if ok, _ := l.Allow("target", "10.200.0.2:1"); ok {
-		t.Error("recent username failures were evicted")
+	if r, _ := l.Reserve("TARGET", "10.200.0.1:1"); r != nil {
+		t.Error("recent pair failures were evicted")
 	}
-	if ok, _ := l.Allow("someone", "10.200.0.1:1"); ok {
+	if r, _ := l.Reserve("someone", "10.200.0.1:1"); r != nil {
 		t.Error("recent peer failures were evicted")
 	}
 	clock.Advance(time.Minute + time.Second)
-	if ok, _ := l.Allow("target", "10.200.0.1:1"); !ok {
+	if r, _ := l.Reserve("target", "10.200.0.1:1"); r == nil {
 		t.Error("expired window still blocks")
 	}
+}
+
+// Buckets with reservations still in flight must survive floods and window expiry;
+// when every slot is in flight, new keys are refused rather than evicting them.
+func TestLimiterNeverEvictsInFlightBuckets(t *testing.T) {
+	clock := &fakeClock{t: time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)}
+	l := auth.NewLimiter(auth.Limits{MaxKeys: 4, Window: time.Minute, UserFailures: 1, PeerFailures: 1}, clock.Now)
+	held, _ := l.Reserve("alice", "10.0.0.1:1")
+	if held == nil {
+		t.Fatal("first reservation refused")
+	}
+	for i := 0; i < 200; i++ {
+		r, _ := l.Reserve(fmt.Sprintf("flood-%d", i), fmt.Sprintf("10.1.%d.%d:1", i>>8, i&255))
+		if r == nil {
+			t.Fatalf("flood %d refused although two slots are free", i)
+		}
+		r.Fail()
+		if n := l.Len(); n > 4 {
+			t.Fatalf("tracked keys = %d, cap is 4", n)
+		}
+		if i == 100 {
+			clock.Advance(2 * time.Minute) // in-flight buckets outlive their window too
+		}
+	}
+	if r, _ := l.Reserve("alice", "10.0.0.1:1"); r != nil {
+		t.Fatal("in-flight pair bucket was evicted: a second reservation exceeded the threshold")
+	}
+	if r, _ := l.Reserve("bob", "10.0.0.1:1"); r != nil {
+		t.Fatal("in-flight peer bucket was evicted: a second reservation exceeded the threshold")
+	}
+	held.Fail()
+	if r, _ := l.Reserve("alice", "10.0.0.1:1"); r != nil {
+		t.Fatal("the held reservation's failure was lost")
+	}
+
+	// Fill the table with in-flight reservations: new keys are refused, not evicted.
+	full := auth.NewLimiter(auth.Limits{MaxKeys: 4, Window: time.Minute, UserFailures: 5, PeerFailures: 5}, clock.Now)
+	a, _ := full.Reserve("a", "10.2.0.1:1")
+	b, _ := full.Reserve("b", "10.2.0.2:1")
+	if a == nil || b == nil {
+		t.Fatal("setup reservations refused")
+	}
+	if r, wait := full.Reserve("c", "10.2.0.3:1"); r != nil || wait <= 0 {
+		t.Fatalf("a full in-flight table admitted new keys: %v %v", r, wait)
+	}
+	if again, _ := full.Reserve("a", "10.2.0.1:1"); again == nil {
+		t.Fatal("existing in-flight keys should still admit up to their threshold")
+	} else {
+		again.Cancel()
+	}
+	a.Cancel()
+	if r, _ := full.Reserve("c", "10.2.0.3:1"); r == nil {
+		t.Fatal("finished reservation did not free its slots")
+	}
+	b.Cancel()
+}
+
+// Making room for one key of a reservation must not evict the other key, which would
+// erase that key's failure history (here: the pair bucket outlives its peer bucket).
+func TestLimiterKeepsTheReservingKeysWhenMakingRoom(t *testing.T) {
+	clock := &fakeClock{t: time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)}
+	l := auth.NewLimiter(auth.Limits{MaxKeys: 4, Window: time.Minute, UserFailures: 2, PeerFailures: 10}, clock.Now)
+	fail := func(user, from string) {
+		t.Helper()
+		r, _ := l.Reserve(user, from)
+		if r == nil {
+			t.Fatalf("Reserve(%s, %s) refused", user, from)
+		}
+		r.Fail()
+	}
+	fail("bob", "10.0.0.1:1") // starts the peer window for 10.0.0.1
+	clock.Advance(50 * time.Second)
+	fail("alice", "10.0.0.1:1") // alice's pair window starts later
+	clock.Advance(11 * time.Second)
+	// The peer and bob's pair have expired; alice's pair has one live failure.
+	fail("x", "10.0.0.9:1") // prunes the expired keys
+	fail("y", "10.0.0.9:1") // table is now full; alice's pair is least recently updated
+	fail("alice", "10.0.0.1:1")
+	if r, _ := l.Reserve("alice", "10.0.0.1:1"); r != nil {
+		t.Fatal("alice's earlier failure was evicted while reserving her attempt")
+	}
+}
+
+// The auth handler must mark its own responses no-store, independent of the server's
+// base headers, because they carry session state, CSRF tokens and account details.
+func TestAuthResponsesAreNeverStored(t *testing.T) {
+	e := newEnv(t, rateLimited(auth.Limits{MaxKeys: 100, Window: 15 * time.Minute, UserFailures: 1, PeerFailures: 50}))
+	bare := http.NewServeMux()
+	e.auth.Register(bare)
+	bare.Handle("POST /api/v1/test/sensitive", e.auth.RequireSession(e.auth.RequireRecentAuth(
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusNoContent) }))))
+	check := func(name string, wantStatus int, rec *httptest.ResponseRecorder) {
+		t.Helper()
+		if rec.Code != wantStatus {
+			t.Errorf("%s: status %d, want %d (%s)", name, rec.Code, wantStatus, rec.Body.String())
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("%s: Cache-Control = %q, want no-store", name, got)
+		}
+	}
+	creds := func(u, p string) map[string]string { return map[string]string{"username": u, "password": p} }
+
+	rec := e.serve(bare, "POST", "/api/v1/auth/login", creds("alice", alicePass))
+	check("login success", http.StatusOK, rec)
+	secret := sessionCookie(t, rec).Value
+	tok, _ := decode(t, rec)["csrfToken"].(string)
+	session, csrf := withCookie(secret), withCSRF(tok)
+
+	check("login failure", http.StatusUnauthorized, e.serve(bare, "POST", "/api/v1/auth/login", creds("bob", "wrong password!!"), withPeer("198.51.100.1:1")))
+	check("login rate limited", http.StatusTooManyRequests, e.serve(bare, "POST", "/api/v1/auth/login", creds("bob", bobPass), withPeer("198.51.100.1:1")))
+	check("login cross origin", http.StatusForbidden, e.serve(bare, "POST", "/api/v1/auth/login", creds("alice", alicePass), withOrigin("https://evil.example")))
+	check("login malformed", http.StatusBadRequest, e.serve(bare, "POST", "/api/v1/auth/login", "{nope"))
+	check("session", http.StatusOK, e.serve(bare, "GET", "/api/v1/auth/session", nil, session))
+	check("session anonymous", http.StatusUnauthorized, e.serve(bare, "GET", "/api/v1/auth/session", nil))
+	check("session unknown cookie", http.StatusUnauthorized, e.serve(bare, "GET", "/api/v1/auth/session", nil, withCookie("stale")))
+	check("csrf", http.StatusOK, e.serve(bare, "GET", "/api/v1/auth/csrf", nil, session))
+	check("sessions", http.StatusOK, e.serve(bare, "GET", "/api/v1/auth/sessions", nil, session))
+	check("revoke unknown", http.StatusNotFound, e.serve(bare, "DELETE", "/api/v1/auth/sessions/999999", nil, session, csrf))
+	check("logout without csrf", http.StatusForbidden, e.serve(bare, "POST", "/api/v1/auth/logout", nil, session))
+	e.clock.Advance(6 * time.Minute)
+	check("stale recent auth", http.StatusForbidden, e.serve(bare, "POST", "/api/v1/test/sensitive", nil, session, csrf))
+	check("reauth wrong", http.StatusUnauthorized, e.serve(bare, "POST", "/api/v1/auth/reauthenticate", map[string]string{"password": "nope nope nope"}, session, csrf, withPeer("198.51.100.2:1")))
+	rec = e.serve(bare, "POST", "/api/v1/auth/reauthenticate", map[string]string{"password": alicePass}, session, csrf)
+	check("reauth success", http.StatusOK, rec)
+	secret = sessionCookie(t, rec).Value
+	tok, _ = decode(t, rec)["csrfToken"].(string)
+	session, csrf = withCookie(secret), withCSRF(tok)
+	check("recent auth ok", http.StatusNoContent, e.serve(bare, "POST", "/api/v1/test/sensitive", nil, session, csrf))
+	check("logout", http.StatusNoContent, e.serve(bare, "POST", "/api/v1/auth/logout", nil, session, csrf))
 }
 
 func TestAuditLogsExcludeSecrets(t *testing.T) {

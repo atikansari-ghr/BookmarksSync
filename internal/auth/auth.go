@@ -92,15 +92,24 @@ func New(opts Options) (*Handler, error) {
 		limiter: NewLimiter(opts.Limits, opts.Now)}, nil
 }
 
-// Register adds the /api/v1/auth routes.
+// Register adds the /api/v1/auth routes. Every response, including errors and empty
+// mutations, is marked Cache-Control: no-store by the handler itself.
 func (h *Handler) Register(r server.Registrar) {
-	r.Handle("POST /api/v1/auth/login", http.HandlerFunc(h.login))
+	r.Handle("POST /api/v1/auth/login", noStore(http.HandlerFunc(h.login)))
 	r.Handle("POST /api/v1/auth/logout", h.RequireSession(http.HandlerFunc(h.logout)))
 	r.Handle("GET /api/v1/auth/session", h.RequireSession(http.HandlerFunc(h.current)))
 	r.Handle("GET /api/v1/auth/csrf", h.RequireSession(http.HandlerFunc(h.csrf)))
 	r.Handle("GET /api/v1/auth/sessions", h.RequireSession(http.HandlerFunc(h.listSessions)))
 	r.Handle("DELETE /api/v1/auth/sessions/{id}", h.RequireSession(http.HandlerFunc(h.revokeSession)))
 	r.Handle("POST /api/v1/auth/reauthenticate", h.RequireSession(http.HandlerFunc(h.reauthenticate)))
+}
+
+// noStore forbids caching of personalized or credential-bearing responses.
+func noStore(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		next.ServeHTTP(w, r)
+	})
 }
 
 type ctxKey struct{}
@@ -142,9 +151,11 @@ func csrfToken(secret string) string {
 
 // RequireSession authenticates the request from the session cookie only. For unsafe
 // methods it also requires an exact same-origin Origin header and the session's CSRF
-// token. On success the session is available through FromContext.
+// token. On success the session is available through FromContext. Responses are
+// marked Cache-Control: no-store.
 func (h *Handler) RequireSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
 		unsafe := !safeMethod(r.Method)
 		if unsafe && !h.sameOrigin(r) {
 			server.WriteError(w, http.StatusForbidden, "origin_rejected", "cross-origin request rejected")
@@ -285,11 +296,15 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	if ok, wait := h.limiter.Allow(req.Username, r.RemoteAddr); !ok {
+	// Capacity is reserved before the Argon2id work so concurrent attempts cannot all
+	// pass before earlier failures are recorded.
+	res, wait := h.limiter.Reserve(req.Username, r.RemoteAddr)
+	if res == nil {
 		h.log.Warn("auth login rate limited", "peer", peerKey(r.RemoteAddr))
 		writeRateLimited(w, wait)
 		return
 	}
+	defer res.Cancel() // no-op once finalized; releases capacity on internal errors
 	// VerifyPassword performs Argon2id work for unknown, inactive and wrong-password
 	// accounts alike; every failure gets the same public response.
 	user, err := h.ids.VerifyPassword(r.Context(), req.Username, req.Password)
@@ -298,11 +313,12 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 			h.internal(w, "verify password", err)
 			return
 		}
-		h.limiter.Fail(req.Username, r.RemoteAddr)
+		res.Fail()
 		h.log.Info("auth login failed", "peer", peerKey(r.RemoteAddr))
 		writeInvalidCredentials(w)
 		return
 	}
+	res.Success()
 	sess, secret, err := h.ids.CreateSession(r.Context(), user.ID, r.UserAgent())
 	if err != nil {
 		if errors.Is(err, identity.ErrInvalid) || errors.Is(err, identity.ErrNotFound) {
@@ -393,21 +409,25 @@ func (h *Handler) reauthenticate(w http.ResponseWriter, r *http.Request) {
 	if !decodeBody(w, r, &req) {
 		return
 	}
-	if ok, wait := h.limiter.Allow(st.user.Username, r.RemoteAddr); !ok {
+	res, wait := h.limiter.Reserve(st.user.Username, r.RemoteAddr)
+	if res == nil {
+		h.log.Warn("auth reauthentication rate limited", "user_id", st.user.ID, "peer", peerKey(r.RemoteAddr))
 		writeRateLimited(w, wait)
 		return
 	}
+	defer res.Cancel()
 	user, err := h.ids.VerifyPassword(r.Context(), st.user.Username, req.Password)
 	if err != nil || user.ID != st.user.ID {
 		if err != nil && !errors.Is(err, identity.ErrUnauthorized) {
 			h.internal(w, "verify password", err)
 			return
 		}
-		h.limiter.Fail(st.user.Username, r.RemoteAddr)
+		res.Fail()
 		h.log.Info("auth reauthentication failed", "user_id", st.user.ID, "peer", peerKey(r.RemoteAddr))
 		writeInvalidCredentials(w)
 		return
 	}
+	res.Success()
 	sess, secret, err := h.ids.RotateSession(r.Context(), st.secret)
 	if err != nil {
 		if errors.Is(err, identity.ErrUnauthorized) {
