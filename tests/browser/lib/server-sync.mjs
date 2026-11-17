@@ -401,3 +401,49 @@ export function assessSync({ res, entries, expect }) {
   if (expect === 'rejected403' && !(entries ?? []).some(e => e.status === 403)) reasons.push('no 403 observed from the server')
   return { ok: reasons.length === 0, reasons }
 }
+
+// ---- fix round 2 -----------------------------------------------------------------------------
+
+/**
+ * Start a server through `start` and register its handle. If startup fails with a process that could not
+ * be stopped (processStillRunning), an always-alive pseudo handle is registered before rethrowing, so
+ * guardedRunRemoval refuses to delete data that process may still be using.
+ */
+export async function startRegisteredServer(start, liveServers) {
+  try {
+    const srv = await start()
+    liveServers.push(srv)
+    return srv
+  } catch (e) {
+    if (e && e.processStillRunning) liveServers.push({ pid: e.pid, exited: () => false })
+    throw e
+  }
+}
+
+/** Kill a process by pid and wait until it is really gone (throws if it is still alive after timeoutMs). */
+export async function killPidAndWait(pid, { timeoutMs = 5000 } = {}) {
+  try { process.kill(pid) } catch (e) { if (e.code === 'ESRCH') return }
+  const end = Date.now() + timeoutMs
+  for (;;) {
+    try { process.kill(pid, 0) } catch (e) { if (e.code === 'ESRCH') return }
+    if (Date.now() > end) throw new Error('process ' + pid + ' still alive after ' + timeoutMs + 'ms')
+    await new Promise(r => setTimeout(r, 50))
+  }
+}
+
+/**
+ * Run body; whatever happens (including a failing assertion) kill and await the child whose pid
+ * getPid() returns. Used by tests that deliberately leave a process running.
+ */
+export async function withProcessCleanup(getPid, body) {
+  let bodyError
+  try { return await body() } catch (e) { bodyError = e; throw e } finally {
+    const pid = getPid()
+    if (pid) {
+      try { await killPidAndWait(pid) } catch (ce) {
+        if (bodyError) bodyError.cleanupError = ce.message
+        else throw ce
+      }
+    }
+  }
+}

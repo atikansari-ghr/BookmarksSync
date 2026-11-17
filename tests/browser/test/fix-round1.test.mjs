@@ -7,7 +7,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   startProcessServer, pickLoopbackPort, makeRunRoot, assessSync, guardedRunRemoval, mergeCleanup,
-  detectIdNamespaceCollision
+  detectIdNamespaceCollision, withProcessCleanup
 } from '../lib/server-sync.mjs'
 import { openBrowser } from '../lib/browser-session.mjs'
 
@@ -68,17 +68,19 @@ for (const [name, family] of [['chrome', 'chromium'], ['firefox', 'gecko']]) {
 test('startup failure with an unkillable process reports it, keeps the pid and flags it as still running', async () => {
   const port = await pickLoopbackPort()
   let pid
-  await assert.rejects(startProcessServer({
-    command: process.execPath, args: ['-e', 'setInterval(()=>{},1000)'], env: {}, readyUrl: `http://127.0.0.1:${port}/readyz`,
-    startupTimeoutMs: 400, stopTimeoutMs: 300, terminate: () => {}, onSpawn: p => { pid = p }
-  }), (e) => {
-    assert.equal(e.processStillRunning, true)
-    assert.equal(e.pid, pid)
-    assert.match(e.stopError, /timeout/)
-    assert.match(e.message, /could not be stopped/)
-    return true
+  // the child is deliberately left running by the code under test; it is always killed and awaited here
+  await withProcessCleanup(() => pid, async () => {
+    await assert.rejects(startProcessServer({
+      command: process.execPath, args: ['-e', 'setInterval(()=>{},1000)'], env: {}, readyUrl: `http://127.0.0.1:${port}/readyz`,
+      startupTimeoutMs: 400, stopTimeoutMs: 300, terminate: () => {}, onSpawn: p => { pid = p }
+    }), (e) => {
+      assert.equal(e.processStillRunning, true)
+      assert.equal(e.pid, pid)
+      assert.match(e.stopError, /timeout/)
+      assert.match(e.message, /could not be stopped/)
+      return true
+    })
   })
-  process.kill(pid) // the test cleans up the child it deliberately failed to stop
 })
 
 test('startup failure with a killable process says the process is gone', async () => {
@@ -90,13 +92,15 @@ test('startup failure with a killable process says the process is gone', async (
 
 test('stop() rejects when the process does not exit', async () => {
   const port = await pickLoopbackPort()
-  const srv = await startProcessServer({
-    command: process.execPath, args: ['-e', `require('http').createServer((q,s)=>s.end('ok')).listen(${port},'127.0.0.1')`], env: {},
-    readyUrl: `http://127.0.0.1:${port}/readyz`, stopTimeoutMs: 300, terminate: () => {}
+  let srv
+  await withProcessCleanup(() => srv?.pid, async () => {
+    srv = await startProcessServer({
+      command: process.execPath, args: ['-e', `require('http').createServer((q,s)=>s.end('ok')).listen(${port},'127.0.0.1')`], env: {},
+      readyUrl: `http://127.0.0.1:${port}/readyz`, stopTimeoutMs: 300, terminate: () => {}
+    })
+    await assert.rejects(srv.stop(), /timeout/)
+    assert.equal(srv.exited(), false)
   })
-  await assert.rejects(srv.stop(), /timeout/)
-  assert.equal(srv.exited(), false)
-  process.kill(srv.pid)
 })
 
 test('guardedRunRemoval keeps the run directory (and says where) while any server is not confirmed stopped', async () => {
