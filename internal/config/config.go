@@ -34,6 +34,9 @@ type Config struct {
 	// accepted for browser authentication; Host and forwarded headers are never used.
 	// Empty means browser sign-in is disabled.
 	PublicOrigin string
+	// OIDCProviders are the operator-configured OpenID Connect providers (Google,
+	// Authentik), from environment variables only. They require PublicOrigin.
+	OIDCProviders []OIDCProvider
 }
 
 // Parse builds a Config from defaults, then environment, then flags (flags win).
@@ -66,6 +69,11 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 		}
 		cfg.PublicOrigin = o
 	}
+	providers, err := parseOIDC(getenv, cfg.PublicOrigin)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.OIDCProviders = providers
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}

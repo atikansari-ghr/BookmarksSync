@@ -55,6 +55,15 @@ const serveUsage = `usage: bookmarksync serve [--listen host:port] [--data-dir d
                 browser sign-in under /api/v1/auth (password, TOTP, and passkeys when
                 the host is a domain name); unset leaves it disabled.
 
+OpenID Connect sign-in (requires --public-url; environment variables only, so client
+secrets never appear in process listings):
+  Google:    BOOKMARKSYNC_OIDC_GOOGLE_CLIENT_ID, BOOKMARKSYNC_OIDC_GOOGLE_CLIENT_SECRET
+  Authentik: BOOKMARKSYNC_OIDC_AUTHENTIK_ISSUER, BOOKMARKSYNC_OIDC_AUTHENTIK_CLIENT_ID,
+             BOOKMARKSYNC_OIDC_AUTHENTIK_CLIENT_SECRET
+Register the exact redirect URI <public-url>/api/v1/auth/oidc/<google|authentik>/callback
+with the provider. Users link an identity from their account after reauthenticating;
+accounts are never created or matched by email.
+
 With --public-url set, a private instance key (instance.key) is created in the data
 directory to encrypt TOTP seeds. Include it in every full backup; without it users
 must re-enroll their authenticator apps. Startup fails if it is malformed or not private.
@@ -137,7 +146,13 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 	adapter := floccus.New(ids, bookmarks.New(db.SQL()), log)
 	register := []func(server.Registrar){adapter.Register}
 	if cfg.PublicOrigin != "" {
-		authH, err := auth.New(auth.Options{Identity: ids, Factors: ids, PublicOrigin: cfg.PublicOrigin, Logger: log})
+		var providers []auth.OIDCProvider
+		for _, p := range cfg.OIDCProviders {
+			providers = append(providers, auth.OIDCProvider{ID: p.ID, Name: p.Name, Issuer: p.Issuer, ClientID: p.ClientID, ClientSecret: p.ClientSecret})
+			log.Info("OpenID Connect provider enabled", "provider", p.ID, "callback", cfg.PublicOrigin+"/api/v1/auth/oidc/"+p.ID+"/callback")
+		}
+		authH, err := auth.New(auth.Options{Identity: ids, Factors: ids, PublicOrigin: cfg.PublicOrigin, Logger: log,
+			OIDC: auth.OIDCOptions{Providers: providers, Store: ids}})
 		if err != nil {
 			_ = ln.Close()
 			return err

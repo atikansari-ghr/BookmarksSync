@@ -45,6 +45,17 @@ curl http://127.0.0.1:8080/readyz
 curl http://127.0.0.1:8080/api/v1/version
 ```
 
+### OpenID Connect providers (operators)
+
+Google and Authentik sign-in are configured through environment variables only (there are no flags, so client secrets never appear in process listings). They require `BOOKMARKSYNC_PUBLIC_URL`. A provider is enabled when all of its variables are set; a partial set stops startup.
+
+| Provider | Variables |
+|---|---|
+| Google | `BOOKMARKSYNC_OIDC_GOOGLE_CLIENT_ID`, `BOOKMARKSYNC_OIDC_GOOGLE_CLIENT_SECRET` (issuer `https://accounts.google.com`) |
+| Authentik | `BOOKMARKSYNC_OIDC_AUTHENTIK_ISSUER` (the application's exact issuer URL, HTTPS), `BOOKMARKSYNC_OIDC_AUTHENTIK_CLIENT_ID`, `BOOKMARKSYNC_OIDC_AUTHENTIK_CLIENT_SECRET` |
+
+Register the exact redirect URI `<public URL>/api/v1/auth/oidc/google/callback` or `.../authentik/callback` with the provider (confidential client, authorization code with PKCE). Users link an identity from their signed-in account after reauthenticating; a linked identity is matched only by the provider's verified issuer and subject. Accounts are never created, or matched by email. Accounts with TOTP enabled still complete TOTP after a provider login. The browser pages for these flows are not built yet.
+
 ## Test and build
 
 ```sh

@@ -68,6 +68,11 @@ type Options struct {
 	// only PeerFailures, Window and MaxKeys apply. Zero fields take
 	// DefaultPasskeyBeginLimits.
 	PasskeyBeginLimits Limits
+	// OIDC configures Google/Authentik sign-in and linking (no providers: disabled).
+	OIDC OIDCOptions
+	// OIDCBeginLimits bounds OIDC flows started per direct peer; only PeerFailures,
+	// Window and MaxKeys apply. Zero fields take DefaultOIDCBeginLimits.
+	OIDCBeginLimits Limits
 }
 
 // Handler serves the auth API and provides session middleware for other routes.
@@ -83,6 +88,13 @@ type Handler struct {
 	factorLimiter *Limiter
 	// passkeyBeginLimiter bounds anonymous passkey ceremonies started per direct peer.
 	passkeyBeginLimiter *Limiter
+
+	oidc            map[string]*oidcRP // configured providers by ID
+	oidcOrder       []string           // configuration order, for the public list
+	oidcStore       OIDCStore
+	oidcClient      *http.Client
+	oidcTimeout     time.Duration
+	oidcBeginLimits *Limiter
 }
 
 // New validates opts and returns a Handler.
@@ -105,6 +117,9 @@ func New(opts Options) (*Handler, error) {
 	}
 	h := &Handler{ids: opts.Identity, origin: o, now: opts.Now, log: opts.Logger,
 		limiter: NewLimiter(opts.Limits, opts.Now), factors: opts.Factors}
+	if err := h.configureOIDC(opts); err != nil {
+		return nil, err
+	}
 	if opts.Factors != nil {
 		h.factorLimiter = NewLimiter(factorLimits(opts.FactorLimits), opts.Now)
 		h.passkeyBeginLimiter = NewLimiter(passkeyBeginLimits(opts.PasskeyBeginLimits), opts.Now)
@@ -124,6 +139,9 @@ func (h *Handler) Register(r server.Registrar) {
 	r.Handle("POST /api/v1/auth/reauthenticate", h.RequireSession(http.HandlerFunc(h.reauthenticate)))
 	if h.factors != nil {
 		h.registerFactors(r)
+	}
+	if len(h.oidc) > 0 {
+		h.registerOIDC(r)
 	}
 }
 
@@ -354,7 +372,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 // session, sets the cookie and writes the session state. An account suspended since
 // verification gets the generic invalid-credentials response.
 func (h *Handler) issueSession(w http.ResponseWriter, r *http.Request, user identity.User, event string) {
-	sess, secret, err := h.ids.CreateSession(r.Context(), user.ID, r.UserAgent())
+	sess, secret, err := h.startSession(w, r, user, event)
 	if err != nil {
 		if errors.Is(err, identity.ErrInvalid) || errors.Is(err, identity.ErrNotFound) {
 			// Suspended between verification and issuance.
@@ -365,7 +383,17 @@ func (h *Handler) issueSession(w http.ResponseWriter, r *http.Request, user iden
 		h.internal(w, "create session", err)
 		return
 	}
-	// Never adopt a presented session (fixation); retire it if it is still live.
+	server.WriteJSON(w, http.StatusOK, toState(user, sess, secret))
+}
+
+// startSession creates a fresh session for a verified user (CreateSession re-checks
+// that the account is active), retires any presented session (never adopted:
+// fixation) and sets the cookie. It writes nothing else; the caller answers.
+func (h *Handler) startSession(w http.ResponseWriter, r *http.Request, user identity.User, event string) (identity.Session, string, error) {
+	sess, secret, err := h.ids.CreateSession(r.Context(), user.ID, r.UserAgent())
+	if err != nil {
+		return identity.Session{}, "", err
+	}
 	if c, err := r.Cookie(SessionCookieName); err == nil && c.Value != "" {
 		if old, owner, err := h.ids.ResolveSession(r.Context(), c.Value); err == nil {
 			if err := h.ids.RevokeSession(r.Context(), owner.ID, old.ID); err != nil {
@@ -375,7 +403,7 @@ func (h *Handler) issueSession(w http.ResponseWriter, r *http.Request, user iden
 	}
 	h.log.Info(event, "user_id", user.ID, "session_id", sess.ID, "peer", peerKey(r.RemoteAddr))
 	h.setCookie(w, sess, secret)
-	server.WriteJSON(w, http.StatusOK, toState(user, sess, secret))
+	return sess, secret, nil
 }
 
 func state(r *http.Request) *authState { return r.Context().Value(ctxKey{}).(*authState) }

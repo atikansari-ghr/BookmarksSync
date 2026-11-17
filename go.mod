@@ -3,9 +3,11 @@ module github.com/atikansari-ghr/BookmarksSync
 go 1.27.4
 
 require (
+	github.com/coreos/go-oidc/v3 v3.15.0
 	github.com/go-webauthn/webauthn v0.18.2
 	golang.org/x/crypto v0.59.0
 	golang.org/x/net v0.62.0
+	golang.org/x/oauth2 v0.28.0
 	golang.org/x/sys v0.50.0
 	modernc.org/sqlite v1.62.0
 )
@@ -13,6 +15,7 @@ require (
 require (
 	github.com/dustin/go-humanize v1.1.0 // indirect
 	github.com/fxamacker/cbor/v2 v2.9.4 // indirect
+	github.com/go-jose/go-jose/v4 v4.0.5 // indirect
 	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
 	github.com/go-webauthn/x v0.3.1 // indirect
 	github.com/golang-jwt/jwt/v5 v5.3.1 // indirect

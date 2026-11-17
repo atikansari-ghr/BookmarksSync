@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
+	"github.com/atikansari-ghr/BookmarksSync/internal/oidcfake"
 )
 
 func TestVersionFlagPrintsBuildInfo(t *testing.T) {
@@ -245,5 +246,55 @@ func TestServeWithoutPublicURLCreatesNoInstanceKey(t *testing.T) {
 	stop()
 	if _, err := os.Stat(filepath.Join(dir, identity.InstanceKeyFile)); !os.IsNotExist(err) {
 		t.Fatalf("instance key created with browser sign-in disabled: %v", err)
+	}
+}
+
+func TestServeWiresOIDCProvidersFromTheEnvironment(t *testing.T) {
+	fake := oidcfake.New("client", "wiring-secret-value")
+	defer fake.Close()
+	origin := "http://localhost:1"
+	env := map[string]string{
+		"BOOKMARKSYNC_PUBLIC_URL":                   origin,
+		"BOOKMARKSYNC_OIDC_AUTHENTIK_ISSUER":        fake.Issuer,
+		"BOOKMARKSYNC_OIDC_AUTHENTIK_CLIENT_ID":     "client",
+		"BOOKMARKSYNC_OIDC_AUTHENTIK_CLIENT_SECRET": "wiring-secret-value",
+	}
+	base, stop := startServe(t, env)
+	defer stop()
+	resp, err := http.Get(base + "/api/v1/auth/oidc/providers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `"id":"authentik"`) || strings.Contains(string(body), "wiring-secret-value") {
+		t.Fatalf("providers: %d %s", resp.StatusCode, body)
+	}
+	if n := fake.Discovered(); n != 0 {
+		t.Fatalf("startup contacted the provider (%d discoveries)", n)
+	}
+	if code := request(t, "POST", base+"/api/v1/auth/oidc/authentik/login", origin); code != http.StatusOK {
+		t.Fatalf("oidc login begin: %d", code)
+	}
+}
+
+func TestServeWithoutOIDCConfigurationHasNoOIDCRoutes(t *testing.T) {
+	base, stop := startServe(t, map[string]string{"BOOKMARKSYNC_PUBLIC_URL": "http://localhost:1"})
+	defer stop()
+	if code := request(t, "GET", base+"/api/v1/auth/oidc/providers", ""); code != http.StatusNotFound {
+		t.Fatalf("providers without OIDC: %d", code)
+	}
+}
+
+func TestServeRejectsPartialOIDCConfigurationWithoutLeakingSecrets(t *testing.T) {
+	var errb bytes.Buffer
+	env := map[string]string{
+		"BOOKMARKSYNC_PUBLIC_URL":                "http://localhost:1",
+		"BOOKMARKSYNC_OIDC_GOOGLE_CLIENT_SECRET": "partial-secret-value",
+	}
+	code := run(context.Background(), []string{"serve", "--listen", freePort(t), "--data-dir", t.TempDir()},
+		strings.NewReader(""), io.Discard, &errb, func(k string) string { return env[k] })
+	if code == 0 || !strings.Contains(errb.String(), "BOOKMARKSYNC_OIDC_GOOGLE_CLIENT_ID") || strings.Contains(errb.String(), "partial-secret-value") {
+		t.Fatalf("code %d stderr %q", code, errb.String())
 	}
 }
