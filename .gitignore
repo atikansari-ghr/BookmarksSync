@@ -1,0 +1,17 @@
+.tools/
+.superpowers/
+node_modules/
+web/dist/
+dist/
+data/
+coverage/
+*.log
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+floccus.export.json
+bookmarksync-backup-*
