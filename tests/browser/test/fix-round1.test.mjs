@@ -1,6 +1,6 @@
 // Fix round 1 regressions for the server-sync harness: session init cleanup, live-server data
 // protection, evidence-required sync verdicts, per-profile cleanup aggregation, detector wording.
-import test from 'node:test'
+import test, { after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -11,6 +11,9 @@ import {
 } from '../lib/server-sync.mjs'
 import { openBrowser } from '../lib/browser-session.mjs'
 
+// Backstop: a pid recorded here is killed after the file's tests even if a test forgot or failed to.
+const spawnedPids = []
+after(() => { for (const p of spawnedPids) { try { process.kill(p) } catch {} } })
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bh-fr1-'))
 
 // ---- 1. session initialisation failures must close the owned browser --------------------------
@@ -92,15 +95,32 @@ test('startup failure with a killable process says the process is gone', async (
 
 test('stop() rejects when the process does not exit', async () => {
   const port = await pickLoopbackPort()
-  let srv
-  await withProcessCleanup(() => srv?.pid, async () => {
+  let srv, pid
+  await withProcessCleanup(() => pid, async () => {
     srv = await startProcessServer({
       command: process.execPath, args: ['-e', `require('http').createServer((q,s)=>s.end('ok')).listen(${port},'127.0.0.1')`], env: {},
-      readyUrl: `http://127.0.0.1:${port}/readyz`, stopTimeoutMs: 300, terminate: () => {}
+      readyUrl: `http://127.0.0.1:${port}/readyz`, stopTimeoutMs: 300, terminate: () => {},
+      onSpawn: p => { pid = p; spawnedPids.push(p) }
     })
     await assert.rejects(srv.stop(), /timeout/)
     assert.equal(srv.exited(), false)
   })
+})
+
+// A startup/readiness rejection (with terminate deliberately a no-op) returns no handle, yet the child lives on:
+// cleanup must not depend on the handle. (The pid comes from onSpawn, not from the handle that is never returned.)
+test('startup rejection with a no-op terminate still ends with no child left behind', async () => {
+  const port = await pickLoopbackPort()
+  let srv, pid
+  await assert.rejects(withProcessCleanup(() => pid, async () => {
+    srv = await startProcessServer({
+      command: process.execPath, args: ['-e', 'setInterval(()=>{},1000)'], env: {}, // never becomes ready
+      readyUrl: `http://127.0.0.1:${port}/readyz`, startupTimeoutMs: 300, stopTimeoutMs: 200, terminate: () => {},
+      onSpawn: p => { pid = p; spawnedPids.push(p) }
+    })
+  }), /not ready|could not be stopped/)
+  assert.ok(pid > 0)
+  assert.throws(() => process.kill(pid, 0), 'the child must be gone after withProcessCleanup returned')
 })
 
 test('guardedRunRemoval keeps the run directory (and says where) while any server is not confirmed stopped', async () => {
