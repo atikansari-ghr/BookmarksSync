@@ -47,9 +47,10 @@ const (
 	// maxCeremonyBodyBytes bounds WebAuthn responses (attestation objects can carry
 	// certificate chains).
 	maxCeremonyBodyBytes = 64 << 10
-	// Limiter keys for second-factor attempts. The NUL prefix keeps them disjoint from
-	// any real username.
+	// Limiter keys for second-factor attempts and passkey ceremonies. The NUL prefix
+	// keeps them disjoint from any real username.
 	secondFactorKey  = "\x00second-factor"
+	passkeyBeginKey  = "\x00passkey-begin"
 	factorProofKey   = "\x00factor-proof\x00"
 	accountFactorKey = "\x00account\x00"
 	accountPeer      = "account-wide"
@@ -59,6 +60,27 @@ const (
 // the factor limiter counts per account across all peers.
 func factorLimits(l Limits) Limits {
 	l.PeerFailures = math.MaxInt32
+	return l.withDefaults()
+}
+
+// DefaultPasskeyBeginLimits: each begin stores a pending flow for PasskeyFlowTTL, so a
+// peer may start at most 30 ceremonies per 5 minutes. That bounds one peer's share of
+// the global pending-flow cap (10,000) while leaving ample room for retries.
+var DefaultPasskeyBeginLimits = Limits{MaxKeys: 10000, Window: 5 * time.Minute, PeerFailures: 30}
+
+// passkeyBeginLimits applies DefaultPasskeyBeginLimits to zero fields and disables the
+// per-pair bucket: only the direct peer is counted (peerKey, forwarded headers ignored).
+func passkeyBeginLimits(l Limits) Limits {
+	if l.PeerFailures <= 0 {
+		l.PeerFailures = DefaultPasskeyBeginLimits.PeerFailures
+	}
+	if l.Window <= 0 {
+		l.Window = DefaultPasskeyBeginLimits.Window
+	}
+	if l.MaxKeys <= 0 {
+		l.MaxKeys = DefaultPasskeyBeginLimits.MaxKeys
+	}
+	l.UserFailures = math.MaxInt32
 	return l.withDefaults()
 }
 
@@ -401,6 +423,15 @@ func (h *Handler) passkeyLoginBegin(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, http.StatusForbidden, "origin_rejected", "cross-origin request rejected")
 		return
 	}
+	// Every begin stores a pending flow, so begins are counted per direct peer before
+	// any storage; the global pending-flow cap in identity still applies on top.
+	res, wait := h.passkeyBeginLimiter.Reserve(passkeyBeginKey, r.RemoteAddr)
+	if res == nil {
+		h.log.Warn("auth passkey login begin rate limited", "peer", peerKey(r.RemoteAddr))
+		writeRateLimited(w, wait)
+		return
+	}
+	res.Fail() // counts the begin whatever happens next
 	c, err := h.factors.BeginPasskeyLogin(r.Context())
 	if err != nil {
 		if errors.Is(err, identity.ErrTooManyFlows) {

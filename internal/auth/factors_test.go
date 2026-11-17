@@ -664,3 +664,135 @@ func (e *env) aliceSession(secret string) (string, string) {
 	e.clock.Advance(30 * time.Second)
 	return sessionCookie(e.t, rec).Value, decode(e.t, rec)["csrfToken"].(string)
 }
+
+func (e *env) passkeyBegin(mods ...reqMod) *httptest.ResponseRecorder {
+	e.t.Helper()
+	return e.do("POST", "/api/v1/auth/passkey/login/begin", nil, mods...)
+}
+
+func (e *env) pendingPasskeyLoginFlows() int {
+	e.t.Helper()
+	var n int
+	if err := e.db.SQL().QueryRow(`SELECT count(*) FROM auth_flows WHERE kind = 'webauthn_login' AND consumed_at IS NULL`).Scan(&n); err != nil {
+		e.t.Fatal(err)
+	}
+	return n
+}
+
+// Anonymous passkey ceremonies create server-side flows, so starting them is bounded
+// per direct peer: one client cannot fill the global pending-flow cap and lock every
+// user out of passkey sign-in. Forwarded headers are ignored, like the login limiter.
+func TestPasskeyLoginBeginIsLimitedPerPeer(t *testing.T) {
+	limits := auth.Limits{PeerFailures: 3, Window: 5 * time.Minute}
+	e := newFactorEnv(t, func(o *auth.Options) { o.PasskeyBeginLimits = limits })
+	a := withPeer("198.51.100.7:4000")
+	for i := 0; i < 3; i++ {
+		if rec := e.passkeyBegin(a); rec.Code != http.StatusOK {
+			t.Fatalf("begin %d: %d %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	rec := e.passkeyBegin(a)
+	if rec.Code != http.StatusTooManyRequests || errCode(t, rec) != "rate_limited" || rec.Header().Get("Retry-After") == "" ||
+		rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("4th begin from one peer: %d %v %s", rec.Code, rec.Header(), rec.Body.String())
+	}
+	if n := e.pendingPasskeyLoginFlows(); n != 3 {
+		t.Fatalf("%d pending flows; a refused begin must not create one", n)
+	}
+	// Another port on the same address is the same peer, and forwarded headers cannot
+	// move it to another bucket.
+	for name, mods := range map[string][]reqMod{
+		"other port":       {withPeer("198.51.100.7:5000")},
+		"x-forwarded-for":  {a, withHeader("X-Forwarded-For", "203.0.113.50")},
+		"x-real-ip":        {a, withHeader("X-Real-IP", "203.0.113.50")},
+		"forwarded header": {a, withHeader("Forwarded", "for=203.0.113.50")},
+	} {
+		if rec := e.passkeyBegin(mods...); rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("%s escaped the peer limit: %d", name, rec.Code)
+		}
+	}
+	// A different peer is unaffected.
+	if rec := e.passkeyBegin(withPeer("198.51.100.8:4000")); rec.Code != http.StatusOK {
+		t.Fatalf("other peer: %d", rec.Code)
+	}
+	// IPv6 peers are grouped by /64, as for password attempts.
+	for i := 0; i < 3; i++ {
+		if rec := e.passkeyBegin(withPeer(fmt.Sprintf("[2001:db8::%d]:1", i+1))); rec.Code != http.StatusOK {
+			t.Fatalf("ipv6 begin %d: %d", i, rec.Code)
+		}
+	}
+	if rec := e.passkeyBegin(withPeer("[2001:db8::ffff]:1")); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("same /64 escaped the limit: %d", rec.Code)
+	}
+	if rec := e.passkeyBegin(withPeer("[2001:db8:0:1::1]:1")); rec.Code != http.StatusOK {
+		t.Fatalf("other /64: %d", rec.Code)
+	}
+	// The window expires.
+	e.clock.Advance(limits.Window + time.Second)
+	if rec := e.passkeyBegin(a); rec.Code != http.StatusOK {
+		t.Fatalf("after the window: %d", rec.Code)
+	}
+}
+
+// Missing or malformed RemoteAddr values are keyed exactly like the password limiter
+// does (peerKey): each distinct value is one bounded bucket, and none of them can
+// exhaust another peer's allowance.
+func TestPasskeyLoginBeginLimitWithMissingOrMalformedRemoteAddr(t *testing.T) {
+	e := newFactorEnv(t, func(o *auth.Options) { o.PasskeyBeginLimits = auth.Limits{PeerFailures: 2} })
+	for _, addr := range []string{"", "garbage", "not-an-ip:port", strings.Repeat("x", 200)} {
+		for i := 0; i < 2; i++ {
+			if rec := e.passkeyBegin(withPeer(addr)); rec.Code != http.StatusOK {
+				t.Fatalf("RemoteAddr %.20q begin %d: %d", addr, i, rec.Code)
+			}
+		}
+		if rec := e.passkeyBegin(withPeer(addr)); rec.Code != http.StatusTooManyRequests {
+			t.Fatalf("RemoteAddr %.20q not bounded: %d", addr, rec.Code)
+		}
+	}
+	// Overlong values share the bucket of their first 64 bytes (bounded key size).
+	if rec := e.passkeyBegin(withPeer(strings.Repeat("x", 64) + "different-tail")); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("overlong RemoteAddr got a fresh bucket: %d", rec.Code)
+	}
+	if rec := e.passkeyBegin(withPeer("192.0.2.200:1")); rec.Code != http.StatusOK {
+		t.Fatalf("real peer blocked by malformed ones: %d", rec.Code)
+	}
+}
+
+// The limit applies with default options too (not only when configured).
+func TestPasskeyLoginBeginDefaultPeerLimit(t *testing.T) {
+	e := newFactorEnv(t)
+	limit := auth.DefaultPasskeyBeginLimits.PeerFailures
+	if limit <= 0 || limit > 100 || auth.DefaultPasskeyBeginLimits.Window < identity.PasskeyFlowTTL {
+		t.Fatalf("default passkey begin limits = %+v", auth.DefaultPasskeyBeginLimits)
+	}
+	for i := 0; i < limit; i++ {
+		if rec := e.passkeyBegin(); rec.Code != http.StatusOK {
+			t.Fatalf("begin %d: %d", i, rec.Code)
+		}
+	}
+	if rec := e.passkeyBegin(); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("begin %d from one peer with defaults: %d", limit+1, rec.Code)
+	}
+	if rec := e.passkeyBegin(withPeer("192.0.2.99:1")); rec.Code != http.StatusOK {
+		t.Fatalf("other peer with defaults: %d", rec.Code)
+	}
+}
+
+// The limiter does not replace the global cap: a full table still refuses begins
+// (429) from a fresh peer without creating rows.
+func TestPasskeyLoginBeginKeepsTheGlobalPendingFlowCap(t *testing.T) {
+	e := newFactorEnv(t)
+	if _, err := e.db.SQL().Exec(`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 10000)
+		INSERT INTO auth_flows(flow_hash, kind, data, created_at, expires_at)
+		SELECT printf('filler-%d', i), 'webauthn_login', '{}', ?1, ?2 FROM n`,
+		e.clock.Now().UnixMilli(), e.clock.Now().Add(time.Hour).UnixMilli()); err != nil {
+		t.Fatal(err)
+	}
+	rec := e.passkeyBegin(withPeer("192.0.2.123:1"))
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("begin with a full table: %d", rec.Code)
+	}
+	if n := e.pendingPasskeyLoginFlows(); n != 10000 {
+		t.Fatalf("%d pending flows, want the 10000 fillers only", n)
+	}
+}

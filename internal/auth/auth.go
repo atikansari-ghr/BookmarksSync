@@ -64,6 +64,10 @@ type Options struct {
 	// FactorLimits bounds second-factor failures per account across all peers; only
 	// UserFailures and Window apply. Zero fields take DefaultLimits.
 	FactorLimits Limits
+	// PasskeyBeginLimits bounds anonymous passkey ceremonies started per direct peer;
+	// only PeerFailures, Window and MaxKeys apply. Zero fields take
+	// DefaultPasskeyBeginLimits.
+	PasskeyBeginLimits Limits
 }
 
 // Handler serves the auth API and provides session middleware for other routes.
@@ -77,6 +81,8 @@ type Handler struct {
 	factors Factors
 	// factorLimiter counts second-factor failures per account across peers.
 	factorLimiter *Limiter
+	// passkeyBeginLimiter bounds anonymous passkey ceremonies started per direct peer.
+	passkeyBeginLimiter *Limiter
 }
 
 // New validates opts and returns a Handler.
@@ -101,6 +107,7 @@ func New(opts Options) (*Handler, error) {
 		limiter: NewLimiter(opts.Limits, opts.Now), factors: opts.Factors}
 	if opts.Factors != nil {
 		h.factorLimiter = NewLimiter(factorLimits(opts.FactorLimits), opts.Now)
+		h.passkeyBeginLimiter = NewLimiter(passkeyBeginLimits(opts.PasskeyBeginLimits), opts.Now)
 	}
 	return h, nil
 }
