@@ -173,6 +173,9 @@ func (s *Service) ResetPassword(ctx context.Context, userID int64, newPassword s
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM auth_flows WHERE user_id = ? AND kind = ? AND consumed_at IS NULL`, userID, flowSecondFactor); err != nil {
+		return err
+	}
 	if err := s.revokeSessionsAndTokens(ctx, tx, userID); err != nil {
 		return err
 	}

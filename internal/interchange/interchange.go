@@ -285,7 +285,7 @@ func (p *xbelParser) text() (string, error) {
 				return "", err
 			}
 		case xml.EndElement:
-			return strings.TrimSpace(b.String()), nil
+			return b.String(), nil
 		}
 	}
 }

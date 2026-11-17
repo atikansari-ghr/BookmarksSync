@@ -109,6 +109,21 @@ func TestXBELRoundTrip(t *testing.T) {
 	}
 }
 
+func TestXBELRoundTripPreservesPaddedTitles(t *testing.T) {
+	input := []bookmarks.ExportNode{{Title: "  padded title  ", URL: "https://example.test"}}
+	var buf bytes.Buffer
+	if err := interchange.WriteXBEL(&buf, input); err != nil {
+		t.Fatal(err)
+	}
+	got, err := interchange.ParseXBEL(strings.NewReader(buf.String()), mib)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Title != input[0].Title {
+		t.Fatalf("XBEL title = %q, want exact padded title %q", got[0].Title, input[0].Title)
+	}
+}
+
 func TestXBELParsesCommonDocumentsAndIgnoresUnknownElements(t *testing.T) {
 	in := `<?xml version="1.0"?>
 <xbel version="1.0">

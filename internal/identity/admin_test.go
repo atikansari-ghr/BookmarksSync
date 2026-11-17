@@ -201,6 +201,22 @@ func TestAdminResetsRevokeSessionsAndTokensButNotConnections(t *testing.T) {
 	}
 }
 
+func TestAdminPasswordResetRevokesPendingSecondFactorFlow(t *testing.T) {
+	e := newFactorEnv(t)
+	ctx := context.Background()
+	secret, _ := e.enrollTOTP(t, e.bob)
+	flow, err := e.svc.BeginSecondFactor(ctx, e.bob.ID) // password already verified
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := e.svc.ResetPassword(ctx, e.bob.ID, "an admin chosen password"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.svc.CompleteSecondFactor(ctx, flow.ID, identity.SecondFactorProof{TOTP: testTOTP(t, secret, e.clock.Now())}); !errors.Is(err, identity.ErrUnauthorized) {
+		t.Fatalf("second-factor flow completed after password reset: %v", err)
+	}
+}
+
 func TestRevokeUserCredentialIsScoped(t *testing.T) {
 	e := newFactorEnv(t)
 	ctx := context.Background()
