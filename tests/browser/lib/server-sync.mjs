@@ -185,7 +185,7 @@ const LOG_CAP = 1 << 20
  * Spawn a server process, keep its output in memory (never on disk), wait until readyUrl answers 2xx.
  * On any startup failure the child is killed and awaited before the rejection.
  */
-export async function startProcessServer({ command, args = [], env = {}, cwd, readyUrl, startupTimeoutMs = 30000, secrets = [], onSpawn }) {
+export async function startProcessServer({ command, args = [], env = {}, cwd, readyUrl, startupTimeoutMs = 30000, secrets = [], onSpawn, terminate = killTree, stopTimeoutMs = 8000 }) {
   const child = spawn(command, args, { cwd, env: { ...baseEnv(), ...env }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
   let buf = ''
   const take = d => { buf += d.toString(); if (buf.length > LOG_CAP) buf = buf.slice(-LOG_CAP) }
@@ -196,8 +196,8 @@ export async function startProcessServer({ command, args = [], env = {}, cwd, re
   if (onSpawn) onSpawn(child.pid)
   const stop = async () => {
     if (exited) return
-    killTree(child)
-    await withTimeout(exitP, 8000, 'server process exit')
+    terminate(child)
+    await withTimeout(exitP, stopTimeoutMs, 'server process exit')
   }
   const deadline = Date.now() + startupTimeoutMs
   try {
@@ -211,7 +211,13 @@ export async function startProcessServer({ command, args = [], env = {}, cwd, re
       await new Promise(r => setTimeout(r, 100))
     }
   } catch (e) {
-    try { await stop() } catch {}
+    // Never swallow a failed stop: the caller must know a server may still be running (and holding its data).
+    try { await stop(); e.processStillRunning = false } catch (stopErr) {
+      e.processStillRunning = true
+      e.pid = child.pid
+      e.stopError = String(stopErr.message || stopErr)
+      e.message += '; server process ' + child.pid + ' could not be stopped (' + e.stopError + ')'
+    }
     throw e
   }
   return { pid: child.pid, logs: () => buf, stop, exited: () => exited }
@@ -331,15 +337,67 @@ export async function startRecordingProxy({ targetPort, bodyCap = 65536 }) {
  */
 export function detectIdNamespaceCollision(lines) {
   const hits = []
+  const orderRecords = []
+  for (const line of lines) {
+    const o = /\(local\)ORDERFOLDER \{ id: '(\d+)', order: \[([^\]]*)\]/.exec(String(line))
+    if (o) orderRecords.push({ folder: o[1], ids: [...o[2].matchAll(/id: '(\d+)'/g)].map(m => m[1]) })
+  }
   for (const line of lines) {
     if (!String(line).includes('Inserting created item into order')) continue
-    const c = /creation: \{[^}]*?payload: [-+] #[^\[]*\[([^\]]*)\][^]*?parentId: (\d+)/.exec(line)
+    const c = /creation: \{[^}]*?payload: [-+] #(\d+)(?:;\d+)?\[([^\]]*)\][^]*?parentId: (\d+)/.exec(line)
     const r = /reorder: \{[^]*?payload: \+ #(\d+)\[([^\]]*)\]/.exec(line)
     if (!c || !r) continue
-    const createdParentId = c[2], reorderPayloadId = r[1]
-    if (createdParentId === reorderPayloadId) {
-      hits.push({ createdParentId, reorderPayloadId, reorderPayloadTitle: r[2], createdTitle: c[1] })
-    }
+    const createdId = c[1], createdParentId = c[3], reorderPayloadId = r[1]
+    if (createdParentId !== reorderPayloadId) continue
+    // Same numbers alone are only a candidate. CONFIRMED needs the created item to show up in the
+    // order of a folder that is NOT its own parent (unrelated order contamination).
+    const contaminatedFolders = orderRecords.filter(x => x.folder !== createdParentId && x.ids.includes(createdId)).map(x => x.folder)
+    hits.push({
+      createdParentId, reorderPayloadId, reorderPayloadTitle: r[2], createdTitle: c[2],
+      status: contaminatedFolders.length ? 'CONFIRMED' : 'CANDIDATE', contaminatedFolders
+    })
   }
   return hits
+}
+
+
+// ---- fix round 1 -----------------------------------------------------------------------------
+
+/**
+ * Cleanup step that removes the run directory only when every server process using it is confirmed
+ * exited. A live server's data directory is never deleted: the step fails and names the retained path.
+ */
+export function guardedRunRemoval(dir, servers, { root = SYNC_ROOT } = {}) {
+  return async () => {
+    const alive = servers.filter(sv => !sv.exited())
+    if (alive.length) {
+      throw new Error('run directory RETAINED at ' + dir + ': server process ' + alive.map(a => a.pid).join(', ') + ' not confirmed stopped')
+    }
+    return removeRunRoot(dir, { root })
+  }
+}
+
+/** Combine cleanup results (outer run plus every per-profile cleanup); one failure makes the whole unclean. */
+export function mergeCleanup(results) {
+  const failures = []
+  for (const r of results) {
+    if (!r || typeof r.clean !== 'boolean' || !Array.isArray(r.failures)) throw new Error('missing cleanup result')
+    failures.push(...r.failures)
+  }
+  return { clean: failures.length === 0, failures }
+}
+
+/**
+ * Verdict for one floccus sync. Needs evidence: the RPC completed, and the credential made requests
+ * in this sync's window. 'success' also requires no floccus error. 'rejected403' (an expected read-only
+ * rejection) requires a real 403 from the server for the credential; silence is not a rejection.
+ */
+export function assessSync({ res, entries, expect }) {
+  if (expect !== 'success' && expect !== 'rejected403') throw new Error('unknown expectation ' + expect)
+  const reasons = []
+  if (!res || res.done !== true) reasons.push('RPC did not complete (' + (res?.reason ?? 'no result') + ')')
+  if (!entries || entries.length === 0) reasons.push('no request from this credential in the sync window')
+  if (expect === 'success' && res?.status?.error) reasons.push('floccus error: ' + String(res.status.error).slice(0, 120))
+  if (expect === 'rejected403' && !(entries ?? []).some(e => e.status === 403)) reasons.push('no 403 observed from the server')
+  return { ok: reasons.length === 0, reasons }
 }

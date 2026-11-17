@@ -245,7 +245,7 @@ test('detectIdNamespaceCollision finds a created item inserted into the order of
   const { detectIdNamespaceCollision } = await import('../lib/server-sync.mjs')
   const hits = detectIdNamespaceCollision(COLLISION_LOG)
   assert.equal(hits.length, 1)
-  assert.deepEqual(hits[0], { createdParentId: '6', reorderPayloadId: '6', reorderPayloadTitle: 'Folder F', createdTitle: 'O1' })
+  assert.deepEqual(hits[0], { createdParentId: '6', reorderPayloadId: '6', reorderPayloadTitle: 'Folder F', createdTitle: 'O1', status: 'CONFIRMED', contaminatedFolders: ['9'] })
   assert.deepEqual(detectIdNamespaceCollision(CLEAN_LOG), [])
   assert.deepEqual(detectIdNamespaceCollision([]), [])
 })

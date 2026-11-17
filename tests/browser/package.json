@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test test/cleanup.test.mjs test/server-sync.test.mjs",
+    "test": "node --test test/cleanup.test.mjs test/server-sync.test.mjs test/fix-round1.test.mjs",
     "smoke": "node smoke.mjs",
     "smoke:chromium": "node smoke.mjs --browser=chromium",
     "smoke:brave": "node smoke.mjs --browser=brave",

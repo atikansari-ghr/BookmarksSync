@@ -60,11 +60,32 @@ const fnUpdate = async (a) => { const api = typeof browser !== 'undefined' ? bro
 const fnRemove = async (id) => { const api = typeof browser !== 'undefined' ? browser : chrome; await api.bookmarks.removeTree(id); return true }
 const fnCreateFolder = async (a) => { const api = typeof browser !== 'undefined' ? browser : chrome; return (await api.bookmarks.create({ parentId: a.parentId, title: a.title })).id }
 
+/** The real launchers; tests inject fakes through openBrowser's `deps`. */
+export const realDeps = {
+  launchGecko: o => FH.launchFirefoxWithFloccus(o),
+  launchChromium: o => H.launchWithExtension(o),
+  openGeckoPage: (driver, uuid) => FRPC.openExtensionPage(driver, uuid),
+  openChromiumPage: (ctx, id) => CRPC.openExtensionPage(ctx, id),
+  closeGecko: s => FH.closeAndCleanFirefox(s),
+  closeChromium: s => H.closeAndClean(s)
+}
+
 /** Open a browser with stock floccus in a disposable profile. */
-export async function openBrowser(name, { headless = true } = {}) {
+/** Init failed after a launch: close the owned session (retention rules apply) before rethrowing. */
+async function abortInit(err, session, close) {
+  try { await close(session); err.profileCleaned = true } catch (ce) {
+    err.profileCleaned = false
+    err.profileRetained = ce.profileRetained ?? session.profileDir
+    err.cleanupError = ce.message
+  }
+  throw err
+}
+
+export async function openBrowser(name, { headless = true, deps = realDeps } = {}) {
   if (name === 'firefox') {
-    const s = await FH.launchFirefoxWithFloccus({ headless })
-    const info = await FRPC.openExtensionPage(s.driver, s.extensionUuid)
+    const s = await deps.launchGecko({ headless })
+    let info
+    try { info = await deps.openGeckoPage(s.driver, s.extensionUuid) } catch (e) { return abortInit(e, s, deps.closeGecko) }
     const run = (fn, arg) => FRPC.evalInPage(s.driver, fn, arg)
     return wrap({
       name, family: 'gecko', version: s.browserVersion, extensionVersion: info.version, profileDir: s.profileDir,
@@ -72,19 +93,22 @@ export async function openBrowser(name, { headless = true } = {}) {
       importAccount: data => FRPC.importAccount(s.driver, data),
       syncRpc: (id, o) => FRPC.syncAccount(s.driver, id, o),
       statusRpc: id => FRPC.getAccountStatus(s.driver, id),
-      close: () => FH.closeAndCleanFirefox(s)
+      close: () => deps.closeGecko(s)
     })
   }
-  const s = await H.launchWithExtension({ browser: name, headless })
-  const page = await CRPC.openExtensionPage(s.pageContext, s.extensionId)
+  const s = await deps.launchChromium({ browser: name, headless })
   const run = (fn, arg) => s.serviceWorker.evaluate(fn, arg)
-  const extensionVersion = await run(() => chrome.runtime.getManifest().version)
+  let page, extensionVersion
+  try {
+    page = await deps.openChromiumPage(s.pageContext, s.extensionId)
+    extensionVersion = await run(() => chrome.runtime.getManifest().version)
+  } catch (e) { return abortInit(e, s, deps.closeChromium) }
   return wrap({
     name, family: 'chromium', version: s.browserVersion, extensionVersion, profileDir: s.profileDir, run, raw: s,
     importAccount: data => CRPC.importAccount(page, data),
     syncRpc: (id, o) => CRPC.syncAccount(page, id, o),
     statusRpc: id => CRPC.getAccountStatus(page, id),
-    close: () => H.closeAndClean(s)
+    close: () => deps.closeChromium(s)
   })
 }
 

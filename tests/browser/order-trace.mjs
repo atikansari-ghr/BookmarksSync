@@ -7,7 +7,7 @@ import path from 'node:path'
 import crypto from 'node:crypto'
 import { REPO_ROOT, TOOLS_DIR } from './lib/harness.mjs'
 import {
-  makeRunRoot, removeRunRoot, runCommand, startProcessServer, startRecordingProxy, parseSecretFromCliStdout,
+  makeRunRoot, removeRunRoot, guardedRunRemoval, mergeCleanup, runCommand, startProcessServer, startRecordingProxy, parseSecretFromCliStdout,
   pickLoopbackPort, findGo, runCleanupSteps, sanitize, stripTree, REST
 } from './lib/server-sync.mjs'
 import { openBrowser, prerequisite } from './lib/browser-session.mjs'
@@ -19,6 +19,8 @@ const go = findGo(); if (go.missing) { console.log('NOT_RUN go toolchain missing
 
 const secrets = []
 const cleanups = []
+const attemptCleanups = [] // one cleanup result per profile B, merged into the exit status
+const liveServers = []
 const runDir = makeRunRoot()
 const out = { browser: name, attempts: [] }
 try {
@@ -30,6 +32,7 @@ try {
   const mk = async () => { const s = parseSecretFromCliStdout((await cli(['credential', 'create', '--username', 'alice', '--mode', 'edit'])).stdout); secrets.push(s); return s }
   const port = await pickLoopbackPort()
   const srv = await startProcessServer({ command: bin, args: ['serve', '--listen', `127.0.0.1:${port}`, '--data-dir', data], readyUrl: `http://127.0.0.1:${port}/readyz`, secrets })
+  liveServers.push(srv)
   cleanups.push(['stop server', () => srv.stop()])
   const proxy = await startRecordingProxy({ targetPort: port })
   cleanups.push(['stop proxy', () => proxy.stop()])
@@ -76,12 +79,12 @@ try {
       childrenResponses: recs.filter(r => /children/.test(r.path)).map(r => r.responseBody.replace(/"url":"[^"]*",?/g, '').slice(0, 700))
     })
     } finally {
-      const cl = await runCleanupSteps([[`close B${i}`, () => B.close()]]); if (!cl.clean) out.cleanupProblem = cl.failures
+      attemptCleanups.push(await runCleanupSteps([[`close B${i}`, () => B.close()]], { stepTimeoutMs: 60000 }))
     }
   }
 } finally {
-  const r = await runCleanupSteps([...cleanups, ['remove run dir', () => removeRunRoot(runDir)]], { stepTimeoutMs: 60000 })
-  out.cleanup = r
+  const r = await runCleanupSteps([...cleanups, ['remove run dir', guardedRunRemoval(runDir, liveServers)]], { stepTimeoutMs: 60000 })
+  out.cleanup = mergeCleanup([r, ...attemptCleanups])
 }
 console.log(sanitize(JSON.stringify(out, null, 1), secrets))
 process.exit(out.cleanup.clean ? 0 : 1)

@@ -17,9 +17,10 @@ import fs from 'node:fs'
 import path from 'node:path'
 import crypto from 'node:crypto'
 import { REPO_ROOT, EXTENSION_DIR, EXPECTED_EXTENSION_VERSION, writeResult, TOOLS_DIR } from './lib/harness.mjs'
+
 import {
   sanitizeDeep, sanitize, parseRequestLog, summarizeRequests, makeRunRoot, removeRunRoot, runCleanupSteps, Recorder,
-  parseSecretFromCliStdout, detectIdNamespaceCollision, startRecordingProxy, stripTree, pickLoopbackPort, findGo, startProcessServer, runCommand, treeEquals, apiClient, serverTree,
+  parseSecretFromCliStdout, assessSync, guardedRunRemoval, detectIdNamespaceCollision, startRecordingProxy, stripTree, pickLoopbackPort, findGo, startProcessServer, runCommand, treeEquals, apiClient, serverTree,
   dirContains, REST
 } from './lib/server-sync.mjs'
 import { BROWSERS, prerequisite, openBrowser } from './lib/browser-session.mjs'
@@ -30,6 +31,7 @@ const headless = !process.argv.includes('--headed')
 const BUMP = Number(arg('bump-ids', 0)) // experiment: push the server's folder/bookmark ids far away from the browser's small native ids
 const TRACE = process.argv.includes('--trace') // route floccus through a recording proxy and record native bookmark events
 const secrets = []
+const liveServers = [] // handles { pid, exited() } of every server this run started
 const rec = new Recorder({ secrets })
 const report = {
   harness: 'server-sync', startedAt: new Date().toISOString(), node: process.version, os: `${os.type()} ${os.release()}`,
@@ -62,8 +64,8 @@ const settleLog = async (requests, quietMs = 600, maxMs = 5000) => {
   }
 }
 const credId = secret => Number(secret.split('.')[1])
-const synced = res => res.done && !res.status?.error
-const errText = res => String(res.status?.error ?? res.reason ?? '').slice(0, 160)
+const synced = res => assessSync({ res, entries: res.evidence?.entries ?? [], expect: 'success' }).ok
+const errText = res => String(res.status?.error ?? res.reason ?? (res.evidence?.entries?.length === 0 ? 'no request from this credential in the sync window (RPC returned without syncing)' : '')).slice(0, 160)
 const at = (nodes, titles) => titles.reduce((cur, t) => (cur?.children ?? cur ?? []).find?.(n => n.title === t) ?? null, nodes)
 
 async function buildServer(go, outFile) {
@@ -107,6 +109,7 @@ async function runBrowser(name, ctx) {
       command: ctx.binary, args: ['serve', '--listen', `127.0.0.1:${port}`, '--data-dir', dataDir],
       readyUrl: `${base}/readyz`, startupTimeoutMs: 30000, secrets
     })
+    liveServers.push(server)
     cleanups.push(['stop server', () => server.stop()])
     info.serverPid = server.pid; info.port = port
     const proxy = TRACE ? await startRecordingProxy({ targetPort: port }) : null
@@ -135,17 +138,21 @@ async function runBrowser(name, ctx) {
       while (Date.now() < end) { const st = await S.status(id); if (!st?.syncing) return true; await new Promise(r => setTimeout(r, 300)) }
       return false
     }
+    // Returns the RPC result plus r.evidence.entries = this credential's requests in the (last) attempt's window.
+    // Exhausted retries do NOT pass silently: the empty evidence makes every verdict fail.
     const doSync = async (S, id, o) => {
-      let r
+      let r, entries = []
       for (let attempt = 0; attempt < 3; attempt++) {
         await idle(S, id)
         const m = requests().length
         r = await S.sync(id, o)
         await idle(S, id)
         await settleLog(requests)
-        if (summarizeRequests(requests().slice(m), acctCred.get(id)).total > 0) return r
+        entries = summarizeRequests(requests().slice(m), acctCred.get(id)).entries
+        if (entries.length > 0) break
         info.rpcRetries++
       }
+      r.evidence = { entries }
       return r
     }
 
@@ -244,7 +251,7 @@ async function runBrowser(name, ctx) {
       const traceB = proxy ? { proxyRequests: proxy.records().slice(pBefore).map(r => `${r.method} ${r.path.replace(REST, '')}${r.query} ${r.status}${r.method !== 'GET' ? ' body=' + r.requestBody.slice(0, 300) : ''}`), nativeEvents: await B.run(() => self.__bh), floccusLog: await B.run(async () => { const api = typeof browser !== 'undefined' ? browser : chrome; const all = await api.storage.local.get(null); const lines = []; for (const [k, v] of Object.entries(all)) { if (k === 'accounts') continue; let arr = null; try { arr = typeof v === 'string' ? JSON.parse(v) : null } catch {} const ls = Array.isArray(v) ? v.map(String) : Array.isArray(arr) ? arr.map(String) : String(typeof v === 'string' ? v : JSON.stringify(v)).split(String.fromCharCode(10)); for (const l of ls) if (/ORDERFOLDER|local.CREATE|REORDER|Executing reorder|local.MOVE|[Rr]eorders|ordering|Ordering/.test(l)) lines.push(k + ": " + l.slice(0, 3000)) } return lines.slice(-80) }) } : null
       const dg = info.orderDiag = {
         trace: traceB,
-        knownIssue: traceB ? (detectIdNamespaceCollision(traceB.floccusLog).length ? 'floccus-5.13.0 ReconcileReorders id-namespace collision CONFIRMED in the extension log' : 'collision signature not found in the extension log') : 'run with --trace to capture the extension log',
+        knownIssue: traceB ? (() => { const h = detectIdNamespaceCollision(traceB.floccusLog); return h.some(x => x.status === 'CONFIRMED') ? 'floccus-5.13.0 ReconcileReorders id-namespace collision CONFIRMED (created item found in an unrelated folder order)' : h.length ? 'id-namespace collision CANDIDATE (same numeric ids; contamination not verified)' : 'collision signature not found in the extension log' })() : 'run with --trace to capture the extension log',
         localSandboxOtherId: String(bSbOther), serverFolderFId: String(at(srvNow, ['Bookmarks Bar', 'bs-sandbox', 'Folder F'])?.id),
         bRequests: reqB.entries.map(e => `${e.method} ${e.path.replace(REST, '')} ${e.status}`),
         serverFolderFAtBTime: JSON.stringify(serverTree(at(srvNow, ['Bookmarks Bar', 'bs-sandbox', 'Folder F'])?.children ?? []))
@@ -337,9 +344,9 @@ async function runBrowser(name, ctx) {
       const reqM = summarizeRequests(requests().slice(m1), credRo)
       const s2 = await snap()
       info.readOnlyMisconfig = { floccusDone: rm.done, floccusError: errText(rm), statuses: reqM.entries.map(e => `${e.method} ${e.path.replace(REST, '')} ${e.status}`).slice(0, 12) }
-      const rejected = reqM.entries.some(e => e.status === 403)
-      if (s2 === s0 && !reqM.writes.some(w => w.status < 300)) rec.pass(tag('read-only credential with a local edit and merge strategy: server unchanged'), `403 seen=${rejected}; floccus error="${errText(rm)}"`)
-      else rec.fail(tag('read-only misconfiguration wrote to the server'), JSON.stringify(info.readOnlyMisconfig).slice(0, 300))
+      const verdictRo = assessSync({ res: rm, entries: rm.evidence.entries, expect: 'rejected403' })
+      if (verdictRo.ok && s2 === s0 && !reqM.writes.some(w => w.status < 300)) rec.pass(tag('read-only credential with a local edit and merge strategy: server answered 403, nothing written, RPC finished'), `floccus error="${errText(rm)}"`)
+      else rec.fail(tag('read-only misconfiguration: expected a real 403 rejection'), `${verdictRo.reasons.join('; ')}; unchanged=${s2 === s0} ${JSON.stringify(info.readOnlyMisconfig).slice(0, 240)}`)
     }
 
     // ---- case 5: cross-scope same-URL collision + lookup-first 409 ----------------------
@@ -393,8 +400,9 @@ async function runBrowser(name, ctx) {
         owner409s: mine.entries.filter(e => e.status === 409).map(e => `${e.method} ${e.path.replace(REST, '')}`),
         serverRecordsForX: srvX.length, sameFolderDuplicate: dupInFolder
       }
-      if (moved && !dupInFolder) rec.pass(tag('owner profile A (stock floccus) moves one collided X next to the other: server never holds a same-folder duplicate; behavior recorded'), JSON.stringify(info.extensionCollision).slice(0, 400))
-      else rec.fail(tag('owner extension collision flow'), JSON.stringify(info.extensionCollision).slice(0, 400))
+      const postMove = assessSync({ res: rm, entries: rm.evidence.entries, expect: 'success' })
+      if (moved && synced(ra) && postMove.ok && !dupInFolder) rec.pass(tag('owner profile A (stock floccus) moves one collided X next to the other: completed sync with request evidence, no same-folder duplicate on the server; behavior recorded'), JSON.stringify(info.extensionCollision).slice(0, 400))
+      else rec.fail(tag('owner extension collision flow'), `moved=${!!moved} preSync=${synced(ra)} postMove=${postMove.reasons.join('; ') || 'ok'} ${JSON.stringify(info.extensionCollision).slice(0, 300)}`)
     }
 
     // ---- case 6: secrets are not stored in plaintext --------------------------------------
@@ -407,6 +415,7 @@ async function runBrowser(name, ctx) {
     info.requestLogLines = requests().length
     info.status = 'DONE'
   } catch (e) {
+    if (e.processStillRunning) liveServers.push({ pid: e.pid, exited: () => false })
     info.status = 'ERROR'
     rec.fail(tag('run aborted'), String(e.message).split('\n')[0])
     info.stack = sanitize(String(e.stack).split('\n').slice(0, 4).join(' | '), secrets)
@@ -432,7 +441,7 @@ try {
     for (const b of wanted) rec.notRun(`${b}: server sync (all cases)`, 'go toolchain not found (set BH_GO_EXE or install .tools/go)')
   } else {
     runDir = makeRunRoot()
-    finalSteps.push(['remove run dir', () => removeRunRoot(runDir)])
+    finalSteps.push(['remove run dir', guardedRunRemoval(runDir, liveServers)])
     const binary = path.join(runDir, process.platform === 'win32' ? 'bookmarksync.exe' : 'bookmarksync')
     let built = true
     try { await buildServer(go.exe, binary); report.serverBuild = 'go build ok (CGO_ENABLED=0)' } catch (e) {
