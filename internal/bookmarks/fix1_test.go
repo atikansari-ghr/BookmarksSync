@@ -146,27 +146,55 @@ func TestRecipientFlowsAfterCollisionStayUnchanged(t *testing.T) {
 	e.assertNoSameFolderDuplicates()
 }
 
-func TestURLEditCollidingInAHiddenFolderIsRefusedWithoutLeakingIt(t *testing.T) {
-	e := newEnv(t)
-	alice, bob := e.user("alice"), e.user("bob")
-	as := e.private(alice, identity.ModeEdit)
-	aBar, aOther := e.roots(as)
-	s := e.folder(as, aBar, "Shared")
-	g := e.folder(as, aOther, "Hidden G")
-	r := e.bm(as, "https://r.example/", "R", s, g)
-	e.bm(as, "https://y.example/", "HIDDEN-Y-TITLE", g)
-	ss, _, _ := e.shared(alice, s, bob, identity.ModeEdit, identity.ModeEdit)
-	_, err := e.svc.UpdateBookmark(ctx, ss, r.ID, bookmarks.BookmarkUpdate{URL: ptr("https://y.example/")})
+// Fix round 2 ruling: collision checks consider only what the writer can see. A URL that
+// exists only in a folder hidden from the writer must behave exactly like a fresh URL (no
+// 409 oracle); the resulting duplicate in the hidden folder is visible to the owner.
+func TestURLEditToAURLPresentOnlyInAHiddenFolderBehavesLikeAFreshURL(t *testing.T) {
+	setup := func(t *testing.T, hiddenURL string) (*env, bookmarks.Scope, bookmarks.Scope, bookmarks.Bookmark) {
+		e := newEnv(t)
+		alice, bob := e.user("alice"), e.user("bob")
+		as := e.private(alice, identity.ModeEdit)
+		aBar, aOther := e.roots(as)
+		s := e.folder(as, aBar, "Shared")
+		g := e.folder(as, aOther, "Hidden G")
+		r := e.bm(as, "https://r.example/", "R", s, g)
+		e.bm(as, hiddenURL, "HIDDEN-Y-TITLE", g)
+		ss, _, _ := e.shared(alice, s, bob, identity.ModeEdit, identity.ModeEdit)
+		return e, as, ss, r
+	}
+	eH, asH, ssH, rH := setup(t, "https://y.example/")
+	gotH, errH := eH.svc.UpdateBookmark(ctx, ssH, rH.ID, bookmarks.BookmarkUpdate{URL: ptr("https://y.example/")})
+	eF, _, ssF, rF := setup(t, "https://other-hidden.example/")
+	gotF, errF := eF.svc.UpdateBookmark(ctx, ssF, rF.ID, bookmarks.BookmarkUpdate{URL: ptr("https://y.example/")})
+	noErr(t, errF)
+	noErr(t, errH) // identical outcome: success, no oracle
+	if gotH.URL != gotF.URL || gotH.Title != gotF.Title || len(gotH.Folders) != len(gotF.Folders) || gotH.Folders[0] != gotF.Folders[0] {
+		t.Errorf("hidden-URL outcome %+v differs from fresh-URL outcome %+v", gotH, gotF)
+	}
+	if strings.Contains(gotH.Title, "HIDDEN") {
+		t.Errorf("hidden title returned: %+v", gotH)
+	}
+	// the writer still cannot see the hidden record; the owner can see both for later review
+	list, _ := eH.svc.ListBookmarks(ctx, ssH, bookmarks.ListQuery{Page: -1, URL: "https://y.example/"})
+	if len(list) != 1 || list[0].ID != rH.ID {
+		t.Errorf("recipient sees %+v", list)
+	}
+	own, _ := eH.svc.ListBookmarks(ctx, asH, bookmarks.ListQuery{Page: -1, URL: "https://y.example/"})
+	if len(own) != 2 {
+		t.Errorf("owner should see the duplicate for review, sees %+v", own)
+	}
+}
+
+// A placement added through a share into a hidden folder is not a concern either: the
+// writer can only address visible folders, so an add never probes hidden URLs.
+func TestVisibleCollisionStill409AndNeverMerges(t *testing.T) {
+	e, as, ss, a, b, f1, s := dupSetup(t)
+	_ = ss
+	_, err := e.svc.UpdateBookmark(ctx, as, a.ID, bookmarks.BookmarkUpdate{Folders: &[]int64{f1, s}})
 	is(t, err, bookmarks.ErrConflict)
-	for _, leak := range []string{"HIDDEN-Y-TITLE", "Hidden G", "y.example"} {
-		if strings.Contains(err.Error(), leak) {
-			t.Errorf("error leaks %q: %v", leak, err)
-		}
+	if ga, _ := e.svc.GetBookmark(ctx, as, a.ID); ga.ID == b.ID {
+		t.Error("records merged")
 	}
-	if got, _ := e.svc.GetBookmark(ctx, as, r.ID); got.URL != "https://r.example/" {
-		t.Errorf("url changed despite conflict: %s", got.URL)
-	}
-	e.assertNoSameFolderDuplicates()
 }
 
 func TestFindByURLHasNoFirst100Cap(t *testing.T) {

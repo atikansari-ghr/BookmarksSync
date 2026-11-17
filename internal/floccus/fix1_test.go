@@ -203,3 +203,94 @@ func TestSearchBoundsAre400(t *testing.T) {
 	r.do(&a, "GET", R+"/bookmark?page=-1&search[]="+strings.Repeat("a", 256), nil).ok(t)
 	r.do(&a, "GET", R+"/bookmark?page=-1&search[]=t&search[]=u", nil).ok(t)
 }
+
+// Fix round 2: a URL present only in a folder hidden from the writer must give exactly the
+// response a fresh URL gives, and nothing hidden is returned.
+func TestHiddenOnlyURLHasSameWireOutcomeAsFreshURL(t *testing.T) {
+	run := func(hiddenURL string) (resp, resp) {
+		r := newRig(t)
+		alice := r.account("alice", identity.ModeEdit)
+		bob, _ := r.ids.CreateUser(bg, "bob", "website password bob", false)
+		bar, other := r.roots(alice)
+		shared := r.mkFolder(alice, bar, "Shared")
+		g := r.mkFolder(alice, other, "Hidden G")
+		id := r.mkBookmark(alice, "https://r.example/", "R", shared, g)
+		r.mkBookmark(alice, hiddenURL, "HIDDEN-Y-TITLE", g)
+		bc := r.shareAccount(alice, shared, bob, identity.ModeEdit, identity.ModeEdit)
+		put := r.do(&bc, "PUT", R+"/bookmark/"+idStr(id), map[string]any{"url": "https://y.example/"})
+		post := r.do(&bc, "POST", R+"/bookmark", map[string]any{"url": "https://y.example/", "title": "mine", "folders": []int64{-1}})
+		own := r.do(&alice, "GET", R+"/bookmark?page=-1&url="+url.QueryEscape("https://y.example/"), nil).ok(t)
+		if hiddenURL == "https://y.example/" && len(own.data()) != 2 {
+			t.Errorf("owner should see both records for review: %s", own.raw)
+		}
+		return put, post
+	}
+	hp, hq := run("https://y.example/")
+	fp, fq := run("https://fresh-hidden.example/")
+	for _, rs := range []resp{hp, hq, fp, fq} {
+		rs.ok(t)
+		for _, leak := range []string{"HIDDEN", "Hidden G", "other"} {
+			if strings.Contains(rs.raw, leak) {
+				t.Errorf("response leaks %q: %s", leak, rs.raw)
+			}
+		}
+	}
+	if hp.status != fp.status || hq.status != fq.status {
+		t.Errorf("hidden vs fresh status differ: %d/%d vs %d/%d", hp.status, hq.status, fp.status, fq.status)
+	}
+}
+
+// Stock floccus is lookup-first: GET bookmark?url=X, pick a record, PUT it with its new
+// folder list. After a cross-scope collision the owner sees two records and the picked one
+// may be asked into the folder the other occupies. This stays an explicit 409 (never a
+// merge); it is recorded for the real-browser gate as a sync error, not a success.
+func TestLookupFirstPutIntoFolderOfTheOtherCollidedRecordIs409(t *testing.T) {
+	r := newRig(t)
+	alice := r.account("alice", identity.ModeEdit)
+	bob, _ := r.ids.CreateUser(bg, "bob", "website password bob", false)
+	bar, other := r.roots(alice)
+	shared := r.mkFolder(alice, bar, "Shared")
+	f1 := r.mkFolder(alice, other, "F1")
+	x := "https://dup.example/x"
+	a := r.mkBookmark(alice, x, "private", f1)
+	bc := r.shareAccount(alice, shared, bob, identity.ModeEdit, identity.ModeEdit)
+	b := r.mkBookmark(bc, x, "mine", -1)
+
+	found := r.do(&alice, "GET", R+"/bookmark?page=-1&url="+url.QueryEscape(x), nil).ok(t).data()
+	if len(found) != 2 {
+		t.Fatalf("lookup returned %d records", len(found))
+	}
+	for _, pick := range found {
+		rec := pick.(map[string]any)
+		id := num(rec["id"])
+		var want int64 = f1
+		if id == a {
+			want = shared
+		}
+		folders := append([]int64{}, folderIDs(rec)...)
+		folders = append(folders, want)
+		res := r.do(&alice, "PUT", R+"/bookmark/"+idStr(id), map[string]any{"folders": folders})
+		res.fail(t, 409)
+		if strings.Contains(res.raw, "private") || strings.Contains(res.raw, "mine") {
+			t.Errorf("409 names a title: %s", res.raw)
+		}
+	}
+	after := r.do(&alice, "GET", R+"/bookmark?page=-1&url="+url.QueryEscape(x), nil).ok(t).data()
+	if len(after) != 2 {
+		t.Fatalf("records changed: %v", after)
+	}
+	for _, rec := range after {
+		if len(folderIDs(rec.(map[string]any))) != 1 {
+			t.Errorf("placements changed: %v", rec)
+		}
+	}
+	_ = b
+}
+
+func folderIDs(rec map[string]any) []int64 {
+	var out []int64
+	for _, f := range rec["folders"].([]any) {
+		out = append(out, num(f))
+	}
+	return out
+}

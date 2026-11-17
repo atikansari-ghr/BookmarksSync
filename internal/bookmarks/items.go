@@ -396,7 +396,7 @@ func (s *Service) addPlacement(ctx context.Context, tx *sql.Tx, owner, bookmarkI
 }
 
 // errURLInFolder is deliberately generic: it must not reveal which record, folder or title
-// caused the collision (the same text is used for visible and hidden collisions).
+// caused the collision; collisions are only ever judged among records visible to the writer.
 var errURLInFolder = fmt.Errorf("%w: another bookmark with this URL is already in that folder", ErrConflict)
 
 // findVisibleByURL finds the record with this exact URL that is visible in the scope.
@@ -510,9 +510,7 @@ func (s *Service) UpdateBookmark(ctx context.Context, sc Scope, id int64, up Boo
 		if up.URL != nil && *up.URL != cur.URL {
 			// A URL edit of an already-visible record applies to every reference of it, like
 			// title and tags, including placements this scope cannot see (their rows stay).
-			// It must not collide with another visible record, nor make another record with
-			// the new URL share a folder (hidden or not) with this one. Both refusals use
-			// the same generic message.
+			// It must not collide with another record visible to this scope (generic 409).
 			others, err := s.visibleIDs(ctx, tx, sc, *up.URL, nil, 2, 0)
 			if err != nil {
 				return err
@@ -522,19 +520,9 @@ func (s *Service) UpdateBookmark(ctx context.Context, sc Scope, id int64, up Boo
 					return errURLInFolder
 				}
 			}
-			var one int
-			err = tx.QueryRowContext(ctx, `
-				SELECT 1 FROM placements p
-				JOIN folders f ON f.id = p.folder_id AND f.deleted_at IS NULL
-				JOIN placements p2 ON p2.folder_id = p.folder_id AND p2.deleted_at IS NULL
-				JOIN bookmarks b2 ON b2.id = p2.bookmark_id AND b2.deleted_at IS NULL AND b2.url = ?2 AND b2.id <> ?1
-				WHERE p.bookmark_id = ?1 AND p.deleted_at IS NULL LIMIT 1`, id, *up.URL).Scan(&one)
-			if err == nil {
-				return errURLInFolder
-			}
-			if !errors.Is(err, sql.ErrNoRows) {
-				return err
-			}
+			// Deliberately no look at folders or records hidden from this scope: the outcome
+			// must be identical to a fresh URL. A resulting duplicate inside a hidden folder
+			// is allowed; the owner sees it and resolves it in duplicate review.
 		}
 		now := s.ms()
 		if up.URL != nil {

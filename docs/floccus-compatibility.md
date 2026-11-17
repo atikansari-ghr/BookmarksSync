@@ -131,15 +131,21 @@ releases the lock they held.
   already-visible shared record is allowed** and, exactly like its title and tags, **affects
   every reference to that record, including placements the share cannot see** (those rows are
   kept, only the record's URL changes).
-* **A folder never holds two live placements of the same exact URL.** Single-folder POSTs
-  (all that stock floccus sends) resolve to the record already placed in that folder, else the
-  lowest-id visible record, with no candidate cap. Operations that would put a second record
-  with the same URL into one folder are refused with an explicit **409** and write nothing:
-  a PUT/POST adding a placement to a folder that already holds another record with that URL
-  (only reachable by an owner who sees both records after a cross-scope collision), and a URL
-  edit that would collide with a visible record or with a record in any folder (hidden or not)
-  of the edited record. The 409 text is generic and never names hidden titles or folders; it
-  does reveal one bit (a collision exists), and records are never merged silently.
+* **Same-folder URL dedupe is scoped to what the writer can see.** Within the records and
+  folders visible to a credential, a folder never holds two live placements of one exact URL.
+  Single-folder POSTs (all that stock floccus sends) resolve to the record already placed in
+  that folder, else the lowest-id visible record, with no candidate cap. Two records that are
+  **both visible** to the writer are never merged: a PUT/POST adding a placement to a folder
+  already holding the other record, or a URL edit onto a URL another visible record has, is
+  an explicit generic **409** that writes nothing and names no title or folder. **Hidden data
+  is never consulted:** a URL present only in a folder hidden from the writer behaves exactly
+  like a fresh URL (success, same response). Scoped exception: that can leave a duplicate
+  inside a hidden folder; the owner sees it and resolves it in the planned duplicate-review
+  feature. Observable client behavior (**not verified in a browser**): stock floccus is
+  lookup-first, so after a cross-scope collision an *owner* whose sync picks one of the two
+  visible records and tries to add it to the other's folder gets 409, which floccus reports as
+  a sync error for that move; the collision case is therefore **not** claimed to sync cleanly.
+  Recipients and the stock single-folder flows are unaffected.
 * **Titles and URLs are never normalised.** Empty titles, leading/trailing whitespace and
   URL case/trailing slashes round-trip byte for byte (floccus hashes what it sent).
 * Accepted URL schemes: `http`, `https`, `ftp`, `ftps`, `file`, `javascript`. Anything else
