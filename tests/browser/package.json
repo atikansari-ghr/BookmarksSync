@@ -15,6 +15,7 @@
     "smoke:chrome": "node smoke.mjs --browser=chrome",
     "smoke:edge": "node smoke.mjs --browser=edge",
     "server-sync": "node server-sync.mjs",
+    "factors": "node factors-smoke.mjs",
     "test:firefox": "node --test test/firefox-cleanup.test.mjs test/firefox-startup.test.mjs test/profile-containment.test.mjs",
     "smoke:firefox": "node firefox-smoke.mjs"
   },

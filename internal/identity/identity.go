@@ -105,6 +105,18 @@ type Service struct {
 	// beforeIssue, when set (tests only), runs immediately before the statement that
 	// persists a new session or API token, to interleave concurrent account changes.
 	beforeIssue func(context.Context)
+
+	// box encrypts TOTP seeds under the instance key (nil: TOTP unavailable).
+	box *secretBox
+	// rp is the WebAuthn relying party (nil: passkeys unavailable).
+	rp *RelyingParty
+
+	// secondFactorProofChecked, when set (tests only), runs after a second-factor proof
+	// was evaluated, to count how many attempts reached verification.
+	secondFactorProofChecked func()
+	// beforeTOTPStepRecord, when set (tests only), runs after a TOTP code matched and
+	// before its step is recorded, to interleave a concurrent use of the same code.
+	beforeTOTPStepRecord func()
 }
 
 func (s *Service) runBeforeIssue(ctx context.Context) {

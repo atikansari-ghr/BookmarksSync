@@ -75,9 +75,16 @@ type env struct {
 	h     http.Handler
 	logs  *bytes.Buffer
 	alice identity.User
+	db    *database.DB
 }
 
 func newEnv(t *testing.T, mods ...func(*auth.Options)) *env {
+	t.Helper()
+	return newEnvWith(t, nil, mods...)
+}
+
+// newEnvWith is newEnv with extra identity service options (instance key, relying party).
+func newEnvWith(t *testing.T, idOpts []identity.Option, mods ...func(*auth.Options)) *env {
 	t.Helper()
 	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "auth.db"))
 	if err != nil {
@@ -85,7 +92,7 @@ func newEnv(t *testing.T, mods ...func(*auth.Options)) *env {
 	}
 	t.Cleanup(func() { db.Close() })
 	clock := &fakeClock{t: time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)}
-	ids := identity.New(db.SQL(), identity.WithPasswordCost(8*1024, 1, 1), identity.WithClock(clock.Now))
+	ids := identity.New(db.SQL(), append([]identity.Option{identity.WithPasswordCost(8*1024, 1, 1), identity.WithClock(clock.Now)}, idOpts...)...)
 	ctx := context.Background()
 	alice, err := ids.CreateUser(ctx, "alice", alicePass, false)
 	if err != nil {
@@ -130,7 +137,7 @@ func newEnv(t *testing.T, mods ...func(*auth.Options)) *env {
 			r.Handle("POST /api/v1/test/sensitive", sensitive)
 		},
 	})
-	return &env{t: t, ids: ids, ci: ci, clock: clock, auth: a, h: h, logs: logs, alice: alice}
+	return &env{t: t, ids: ids, ci: ci, clock: clock, auth: a, h: h, logs: logs, alice: alice, db: db}
 }
 
 type reqMod func(*http.Request)

@@ -52,7 +52,12 @@ const serveUsage = `usage: bookmarksync serve [--listen host:port] [--data-dir d
   --data-dir    directory for the database (default ./data, env BOOKMARKSYNC_DATA_DIR)
   --public-url  browser origin users reach the server at, e.g. https://bookmarks.example.com
                 (env BOOKMARKSYNC_PUBLIC_URL; https required except loopback). Enables
-                browser sign-in under /api/v1/auth; unset leaves it disabled.
+                browser sign-in under /api/v1/auth (password, TOTP, and passkeys when
+                the host is a domain name); unset leaves it disabled.
+
+With --public-url set, a private instance key (instance.key) is created in the data
+directory to encrypt TOTP seeds. Include it in every full backup; without it users
+must re-enroll their authenticator apps. Startup fails if it is malformed or not private.
 
 Serves the health endpoints and the floccus-compatible bookmarks API. Put a
 TLS-terminating proxy in front of it for anything other than local testing.
@@ -111,11 +116,28 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
-	ids := identity.New(db.SQL())
+	var idOpts []identity.Option
+	if cfg.PublicOrigin != "" {
+		// The instance key encrypts TOTP seeds. It must be private and is never
+		// replaced: a malformed or exposed key stops startup (fail closed). Full
+		// backups must include it.
+		key, err := identity.LoadOrCreateInstanceKey(cfg.DataDir)
+		if err != nil {
+			_ = ln.Close()
+			return err
+		}
+		idOpts = append(idOpts, identity.WithInstanceKey(key))
+		if rp, err := identity.NewRelyingParty(cfg.PublicOrigin); err != nil {
+			log.Warn("passkeys disabled", "reason", err.Error())
+		} else {
+			idOpts = append(idOpts, identity.WithRelyingParty(rp))
+		}
+	}
+	ids := identity.New(db.SQL(), idOpts...)
 	adapter := floccus.New(ids, bookmarks.New(db.SQL()), log)
 	register := []func(server.Registrar){adapter.Register}
 	if cfg.PublicOrigin != "" {
-		authH, err := auth.New(auth.Options{Identity: ids, PublicOrigin: cfg.PublicOrigin, Logger: log})
+		authH, err := auth.New(auth.Options{Identity: ids, Factors: ids, PublicOrigin: cfg.PublicOrigin, Logger: log})
 		if err != nil {
 			_ = ln.Close()
 			return err

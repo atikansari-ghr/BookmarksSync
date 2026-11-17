@@ -59,6 +59,11 @@ type Options struct {
 	Now    func() time.Time
 	Logger *slog.Logger
 	Limits Limits
+	// Factors enables passkeys, TOTP and recovery codes (nil: password only).
+	Factors Factors
+	// FactorLimits bounds second-factor failures per account across all peers; only
+	// UserFailures and Window apply. Zero fields take DefaultLimits.
+	FactorLimits Limits
 }
 
 // Handler serves the auth API and provides session middleware for other routes.
@@ -68,6 +73,10 @@ type Handler struct {
 	now     func() time.Time
 	log     *slog.Logger
 	limiter *Limiter
+
+	factors Factors
+	// factorLimiter counts second-factor failures per account across peers.
+	factorLimiter *Limiter
 }
 
 // New validates opts and returns a Handler.
@@ -88,8 +97,12 @@ func New(opts Options) (*Handler, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	return &Handler{ids: opts.Identity, origin: o, now: opts.Now, log: opts.Logger,
-		limiter: NewLimiter(opts.Limits, opts.Now)}, nil
+	h := &Handler{ids: opts.Identity, origin: o, now: opts.Now, log: opts.Logger,
+		limiter: NewLimiter(opts.Limits, opts.Now), factors: opts.Factors}
+	if opts.Factors != nil {
+		h.factorLimiter = NewLimiter(factorLimits(opts.FactorLimits), opts.Now)
+	}
+	return h, nil
 }
 
 // Register adds the /api/v1/auth routes. Every response, including errors and empty
@@ -102,6 +115,9 @@ func (h *Handler) Register(r server.Registrar) {
 	r.Handle("GET /api/v1/auth/sessions", h.RequireSession(http.HandlerFunc(h.listSessions)))
 	r.Handle("DELETE /api/v1/auth/sessions/{id}", h.RequireSession(http.HandlerFunc(h.revokeSession)))
 	r.Handle("POST /api/v1/auth/reauthenticate", h.RequireSession(http.HandlerFunc(h.reauthenticate)))
+	if h.factors != nil {
+		h.registerFactors(r)
+	}
 }
 
 // noStore forbids caching of personalized or credential-bearing responses.
@@ -319,6 +335,18 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	res.Success()
+	if h.factors != nil {
+		if h.requireSecondFactor(w, r, user) {
+			return
+		}
+	}
+	h.issueSession(w, r, user, "auth login succeeded")
+}
+
+// issueSession creates a fresh session for a verified user, retires any presented
+// session, sets the cookie and writes the session state. An account suspended since
+// verification gets the generic invalid-credentials response.
+func (h *Handler) issueSession(w http.ResponseWriter, r *http.Request, user identity.User, event string) {
 	sess, secret, err := h.ids.CreateSession(r.Context(), user.ID, r.UserAgent())
 	if err != nil {
 		if errors.Is(err, identity.ErrInvalid) || errors.Is(err, identity.ErrNotFound) {
@@ -338,7 +366,7 @@ func (h *Handler) login(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	h.log.Info("auth login succeeded", "user_id", user.ID, "session_id", sess.ID, "peer", peerKey(r.RemoteAddr))
+	h.log.Info(event, "user_id", user.ID, "session_id", sess.ID, "peer", peerKey(r.RemoteAddr))
 	h.setCookie(w, sess, secret)
 	server.WriteJSON(w, http.StatusOK, toState(user, sess, secret))
 }

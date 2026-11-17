@@ -26,6 +26,7 @@ npm run smoke:brave
 npm run smoke:edge
 npm run smoke:chrome           # branded Chrome, loaded over CDP (see "Native Chrome")
 npm run server-sync            # real server + real browsers (see "Real server sync"); exit 0 PASS, 1 FAIL, 2 NOT_RUN, 3 BLOCKED
+npm run factors                # real server + Chromium virtual authenticator: passkeys, TOTP (see "Authentication factors")
 npm test                       # unit tests: profile cleanup + server-sync helpers (no browser needed)
 ```
 
@@ -132,3 +133,19 @@ floccus's own debug log. `--bump-ids=N` is an experiment that pushes the server'
 Resolved ordering issue: floccus 5.13.0 could reorder a downloaded folder when server and local folder ids
 collided. The server now uses a negative wire namespace for concrete folder ids, and two repeated full
 browser matrices passed. Historical failures and trace evidence remain in `.superpowers/sdd/bookmarksync/server-sync-report.md`.
+
+## Authentication factors (`factors-smoke.mjs`)
+
+`npm run factors` builds the server (CGO-free) into a marked run directory under
+`.tools/server-sync`, creates a throw-away account through the CLI (password via stdin),
+serves it on `http://localhost:<random port>` with `--public-url` set to that origin, and drives
+Playwright's full Chromium in an ephemeral context. A CDP virtual authenticator
+(`WebAuthn.addVirtualAuthenticator`: CTAP2, internal transport, resident keys, user
+verification) answers the real `navigator.credentials.create()`/`get()` calls. It checks the
+instance key is created, password login, passkey registration with a resident credential,
+discoverable passkey sign-in, assertion replay refusal, TOTP enrollment/confirmation, the
+pending second-factor response (no session), TOTP completion, and that nothing is left in
+`localStorage`/`sessionStorage`/`document.cookie`. There is no UI yet (Task 6), so the API is
+called with `fetch` from a same-origin page. Exit codes: 0 PASS, 1 FAIL, 2 NOT_RUN, 3 BLOCKED.
+The run directory (database, instance key, binary) is removed afterwards. Firefox/WebKit and
+real platform authenticators are not covered.
