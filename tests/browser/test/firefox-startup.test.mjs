@@ -74,3 +74,41 @@ test('late quit that hangs is bounded and service is still killed', async () => 
   assert.ok(Date.now() - t0 < 1500)
   assert.ok(f.calls.kill >= 1)
 })
+
+// --- round 2: a failed late quit must survive into cleanup even if the browser later exits ---
+import fs from 'node:fs'
+import { makeProfileDir, removeProfileDir } from '../lib/harness.mjs'
+import { cleanupAfterFailedStart } from '../lib/firefox-harness.mjs'
+
+test('late quit rejection is recorded on the startup error', async () => {
+  const f = fake({ delay: 100 })
+  f.create().driver // shape check only
+  const calls = f.calls
+  const create = () => { const c = f.create(); c.driver.quit = () => { calls.quit++; return Promise.reject(new Error('quit boom')) }; return c }
+  await assert.rejects(startOwnedDriver({ create, ...opts }), e => /quit boom/.test(e.owned.quitError?.message))
+})
+
+test('late quit timeout is recorded on the startup error', async () => {
+  const f = fake({ delay: 100, quitHangs: true })
+  await assert.rejects(startOwnedDriver({ create: f.create, ...opts }), e => /timeout/i.test(e.owned.quitError?.message))
+})
+
+test('failed late quit + browser that later exits: profile RETAINED and cleanup failure reported', async () => {
+  const dir = makeProfileDir('unit-late-quit')
+  let removed = false
+  try {
+    const owned = { driver: undefined, service: { kill: async () => {} }, pid: 5151, quitError: new Error('quit boom') }
+    await assert.rejects(
+      cleanupAfterFailedStart({ owned, profileDir: dir }, { exitWaitMs: 50, pollMs: 5, isAlive: () => false, remove: d => { removed = true; return removeProfileDir(d) } }),
+      e => e instanceof FirefoxHarnessError && e.profileRetained === dir && /quit boom/.test(e.message) && /retained/i.test(e.message))
+    assert.equal(removed, false)
+    assert.equal(fs.existsSync(dir), true)
+  } finally { try { removeProfileDir(dir) } catch {} }
+})
+
+test('clean failed start (no quit error, browser gone) still deletes the profile', async () => {
+  const dir = makeProfileDir('unit-clean-fail')
+  const owned = { driver: undefined, service: { kill: async () => {} }, pid: 5151 }
+  assert.equal(await cleanupAfterFailedStart({ owned, profileDir: dir }, { exitWaitMs: 50, pollMs: 5, isAlive: () => false }), true)
+  assert.equal(fs.existsSync(dir), false)
+})

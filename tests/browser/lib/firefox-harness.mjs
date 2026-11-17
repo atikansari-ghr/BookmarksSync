@@ -135,22 +135,41 @@ export async function startOwnedDriver({ create, startupTimeoutMs = 60000, lateW
     // Startup is slow or hung. Keep ownership: give it a bounded grace period.
     let pid
     let late
+    let quitError
     try { late = await withTimeout(settled, lateWaitMs, 'late startup grace period') } catch { /* still hung */ }
     if (late && late.s) {
       try { pid = sessionPid(late.s) } catch { /* unknown */ }
-      try { await withTimeout(driver.quit(), quitTimeoutMs, 'late driver.quit') } catch { /* retained path reports it */ }
+      try { await withTimeout(driver.quit(), quitTimeoutMs, 'late driver.quit') } catch (e) { quitError = e } // preserved: cleanup must retain the profile
     } else {
       // Even later arrival: shut it down whenever it shows up, so no browser is orphaned.
       settled.then(r => { if (r.s) { Promise.resolve().then(() => driver.quit()).catch(() => {}).finally(() => Promise.resolve(service.kill()).catch(() => {})) } })
     }
     await killService()
-    throw Object.assign(new FirefoxHarnessError(timeoutErr.message), { owned: { driver, service, pid } })
+    throw Object.assign(new FirefoxHarnessError(timeoutErr.message), { owned: { driver, service, pid, quitError } })
   }
   if (first.e) {
     await killService()
     throw Object.assign(first.e, { owned: { driver, service, pid: undefined } })
   }
   return { driver, service, pid: sessionPid(first.s) }
+}
+
+/**
+ * Cleanup after a failed start. A late driver.quit failure (rejected or timed out) is never
+ * forgotten, even if the browser exits afterwards: the profile is retained and the failure
+ * is reported (so the smoke ends FAIL, not BLOCKED, with the path retained).
+ */
+export async function cleanupAfterFailedStart({ owned, profileDir }, opts = {}) {
+  const { quitError, ...handles } = owned
+  if (quitError) {
+    // Still stop the service and wait for the process, but never delete the profile.
+    try {
+      await closeAndCleanFirefox({ ...handles, profileDir }, { ...opts, remove: () => { throw new Error('deletion skipped') } })
+    } catch { /* retained either way */ }
+    throw new FirefoxHarnessError(`profile RETAINED at ${profileDir}: late driver quit failed (${quitError.message}); browser state unproven`,
+      { profileRetained: profileDir, cause: quitError })
+  }
+  return closeAndCleanFirefox({ ...handles, profileDir }, opts)
 }
 
 /**
@@ -199,7 +218,7 @@ export async function launchFirefoxWithFloccus({ headless = true, timeoutMs = 60
     return { driver, service, profileDir, pid, addonId, extensionUuid, browserVersion, seleniumVersion }
   } catch (err) {
     try {
-      err.profileCleaned = await closeAndCleanFirefox({ ...owned, profileDir })
+      err.profileCleaned = await cleanupAfterFailedStart({ owned, profileDir })
     } catch (cleanupErr) {
       err.profileCleaned = false
       err.profileRetained = cleanupErr.profileRetained
