@@ -52,11 +52,11 @@
 
 **Interfaces:** Register `/api/v1/auth/*` JSON endpoints for login, logout, current session, CSRF bootstrap, session listing/revocation, and recent reauthentication. Reserve `/auth/*` for the login/security pages added in Task 6; do not add placeholder browser pages here. Set a `__Host-` session cookie with `Secure; HttpOnly; SameSite=Lax; Path=/`; add a session-bound CSRF token for mutations. Add explicit `BOOKMARKSYNC_PUBLIC_URL` (origin only, HTTPS except loopback development); require exact same-origin checks and do not trust forwarded headers. Password login returns a generic error for every invalid account state. Bound rate-limit storage by normalized username and direct peer address, with a fixed maximum number of tracked keys; do not parse forwarded headers.
 
-- [ ] Test successful login, wrong/unknown/inactive users, session rotation, logout, cookie attributes, idle/absolute expiry, immediate revoke, CSRF/origin rejection, and reauthentication age.
-- [ ] Run focused HTTP tests and confirm they fail before implementation.
-- [ ] Implement password login, logout, current-session and session-list/revoke routes, CSRF bootstrap, and reauthentication with existing Argon2id verification.
-- [ ] Run auth integration tests, `go test -count=1 ./...`, `go vet ./...`, formatting, and Linux/Windows cross-builds.
-- [ ] Commit and require independent review before factor work begins.
+- [x] Test successful login, wrong/unknown/inactive users, session rotation, logout, cookie attributes, idle/absolute expiry, immediate revoke, CSRF/origin rejection, and reauthentication age.
+- [x] Run focused HTTP tests and confirm they fail before implementation.
+- [x] Implement password login, logout, current-session and session-list/revoke routes, CSRF bootstrap, and reauthentication with existing Argon2id verification.
+- [x] Run auth integration tests, `go test -count=1 ./...`, `go vet ./...`, formatting, and Linux/Windows cross-builds.
+- [x] Commit and require independent review before factor work begins.
 
 ### Task 3: Passkeys, TOTP, and recovery codes
 
