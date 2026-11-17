@@ -263,7 +263,7 @@ func TestFolderLifecycleUsesWireIDsEndToEnd(t *testing.T) {
 func TestChildOrderMapsFolderEntriesOnlyAndKeepsBookmarkIDs(t *testing.T) {
 	r := newRig(t)
 	a := r.account("alice", identity.ModeEdit)
-	bar, _ := r.roots(a)
+	bar, other := r.roots(a)
 	f1 := r.mkFolder(a, bar, "F1")
 	f2 := r.mkFolder(a, bar, "F2")
 	b := r.mkBookmark(a, "https://order.example/", "B", bar)
@@ -287,7 +287,6 @@ func TestChildOrderMapsFolderEntriesOnlyAndKeepsBookmarkIDs(t *testing.T) {
 			t.Errorf("folder id not wire: %v", m)
 		}
 	}
-	before := r.snapshot(a)
 	bad := []map[string]any{
 		{"id": internalOf(f1), "type": "folder"}, // old positive folder form
 		{"id": -b - 1, "type": "bookmark"},       // a wire-style negative for a bookmark
@@ -295,10 +294,21 @@ func TestChildOrderMapsFolderEntriesOnlyAndKeepsBookmarkIDs(t *testing.T) {
 		{"id": fid(f1), "type": "bookmark"},      // folder id with the bookmark type
 		{"id": -1, "type": "folder"},             // the root is not a child
 	}
+	foreign := r.mkFolder(a, other, "Foreign")
+	before := r.snapshot(a)
 	for i, e := range bad {
 		res := r.do(&a, "PATCH", folderPath(bar)+"/childorder", map[string]any{"data": []any{e}})
 		if res.status != 400 && res.status != 404 {
 			t.Errorf("bad entry %d %v -> %d %s", i, e, res.status, res.raw)
+		}
+	}
+	for name, order := range map[string][]any{
+		"foreign folder":   {map[string]any{"id": fid(foreign), "type": "folder"}},
+		"duplicate folder": {map[string]any{"id": fid(f1), "type": "folder"}, map[string]any{"id": fid(f1), "type": "folder"}},
+	} {
+		res := r.do(&a, "PATCH", folderPath(bar)+"/childorder", map[string]any{"data": order})
+		if res.status != 400 || strings.Contains(res.raw, fmt.Sprint(internalOf(foreign))) || strings.Contains(res.raw, fmt.Sprint(internalOf(f1))) {
+			t.Errorf("%s childorder response exposes internal folder id: %d %s", name, res.status, res.raw)
 		}
 	}
 	if after := r.snapshot(a); after != before {

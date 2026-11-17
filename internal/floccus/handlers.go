@@ -1,6 +1,7 @@
 package floccus
 
 import (
+	"errors"
 	"strings"
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/bookmarks"
@@ -492,6 +493,10 @@ func (a *Adapter) childOrder(c *call) {
 		refs = append(refs, bookmarks.ChildRef{Type: d.Type, ID: cid})
 	}
 	if err := a.svc.SetChildOrder(c.r.Context(), c.sc, id, refs); err != nil {
+		if errors.Is(err, bookmarks.ErrInvalid) {
+			a.badRequest(c.w, "invalid child order")
+			return
+		}
 		a.fail(c.w, err)
 		return
 	}

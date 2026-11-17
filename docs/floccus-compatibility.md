@@ -12,7 +12,7 @@ evidence; only the last one proves compatibility.
 |---|---|---|
 | Source inspection | Behaviour read in the floccus v5.13.0 and Nextcloud Bookmarks v17.0.2 source (route, verb, envelope and hash contract). | Done (`protocol-audit-report.md`, controller-held). |
 | Protocol tests | `go test` drives the real HTTP handler over a real temporary SQLite database with requests shaped like floccus's. These prove the server matches the contract as read from source. | Done, see below. |
-| **Real browser results** | Unmodified floccus in Chrome, Edge, Firefox and Brave syncing against this server. | **NOT RUN. Pending** (see "Pending browser checks"). No claim of browser compatibility is made. |
+| **Real browser results** | Unmodified floccus in Chrome, Edge, Firefox and Brave syncing against this server. | **Verified for the sync flows listed in the browser report.** Two repeated matrices passed; broader acceptance items below remain untested. |
 
 ## Implemented routes
 
@@ -34,7 +34,7 @@ response contains a `ticket` field.
 | `POST folder`, `PUT/DELETE folder/{id}` | Create, rename/move, delete subtree (to Trash). |
 | `GET folder/{id}/children?layers=-1\|N` | A folder carries `children` only when loaded (empty loaded folders return `[]`). Children keep the stored mixed folder/bookmark order. |
 | `GET folder/{id}/hash?hashFn=sha256` | Hash matches floccus's JS (`JSON.stringify` + SHA-256). Any other `hashFn`, or tag fields, is 400. The root hashes without a title. |
-| `PATCH folder/{id}/childorder` | `{"data":[{"id":"123","type":"bookmark\|folder"}]}`. Duplicates, unknown or foreign children reject the whole request. Children not listed are kept after the listed ones in their previous order. |
+| `PATCH folder/{id}/childorder` | `{"data":[{"id":"123","type":"bookmark"},{"id":"-124","type":"folder"}]}`. Bookmark IDs stay positive; concrete folder IDs use the negative wire namespace. Duplicates, unknown or foreign children reject the whole request with a generic error. Children not listed are kept after the listed ones in their previous order. |
 | `POST folder/{id}/import` | Multipart field `bm_import`, Netscape HTML, parsed with a real HTML5 parser. Appends to the folder and returns only the imported tree. At most 2000 items, 32 levels, 1 MiB. URLs are stored only; nothing is fetched or executed. All-or-nothing. |
 | `POST/DELETE lock` | Scope lock, see below. |
 
@@ -230,11 +230,21 @@ scope-filtered `folders[]` and hidden-placement preservation; the cross-scope UR
 roots independent; trash invisibility; constant-time secret verification inputs and no query
 token acceptance. These prove the contract, **not** browser behaviour.
 
-## Pending browser checks (all NOT RUN)
+## Browser coverage and remaining checks
 
-Acceptance scripts A1 to A14 from the audit remain pending: setup via profile import, native
-roots across Chrome/Edge/Firefox/Brave, order, nesting/move/rename/delete, placements and the
-same-folder limitation, lock contention (423), offline conflict, download-only read-only
-share (the request log for that credential must show only `GET` and lock verbs), read-only
-misconfiguration, isolation, edit-share concurrency, import file with revocation, hash
-efficiency, and the 20% failsafe. The `floccus request` log lines are the intended evidence.
+Two repeated real-server matrices passed with stock floccus 5.13.0 in Chrome 157.0.8103.79,
+Edge 157.0.4341.60, Brave 157.0.8103.79, and Firefox 160.0. Each matrix passed 72/72
+checks, including native bookmark upload/download, root mapping, ordering, edits, read-only
+credentials, sharing/isolation, lock contention, and latest-title/tag retention after a
+same-folder duplicate removal. Harness setup and coverage details are documented in
+[`tests/browser/README.md`](../tests/browser/README.md).
+
+The original audit's broader A1–A14 acceptance list is not fully covered. Remaining checks
+include offline conflict/failsafe behavior, Login Flow v2 setup, and other scenarios not listed
+in the completed browser matrix. Do not treat the completed matrix as coverage of those flows.
+
+### Protocol-level edge cases
+
+The browser harness records real server requests and native tree state; protocol tests cover
+additional route and failure cases that are not part of the browser matrix. Consult the
+browser report for the exact acceptance cases and explicit exclusions.

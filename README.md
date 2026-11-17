@@ -1,6 +1,6 @@
 # BookmarksSync
 
-A self-hosted bookmarks server, written in Go. **Early development: the floccus-compatible sync API exists but has not been verified in a real browser yet.**
+A self-hosted bookmarks server, written in Go. **Early development: the floccus-compatible sync API has passed real-browser sync checks with stock floccus 5.13.0 in Chrome, Edge, Brave, and Firefox.**
 
 ## Status
 
@@ -14,7 +14,7 @@ Implemented:
 - The bookmark domain: folders with canonical roots, ordered placements, tags, Trash (soft delete), shares, scope locks
 - A Nextcloud-Bookmarks-compatible API for the stock floccus extension; see [docs/floccus-compatibility.md](docs/floccus-compatibility.md)
 
-**Compatibility is not yet proven.** The floccus API is covered by protocol tests (real SQLite behind the real HTTP handler) and by reading the floccus source. **No real-browser floccus run has been done**; that gate is pending and is the next step. The compatibility guide states exactly what is and is not verified.
+**Floccus compatibility is verified for the tested sync flows.** Two repeated real-server browser matrices passed in Chrome, Edge, Brave, and Firefox with stock floccus 5.13.0. The compatibility guide and browser report list the covered cases and remaining untested flows.
 
 Not implemented yet: website login, passkeys/TOTP/OIDC, Login Flow v2 (the floccus "Connect" wizard; use profile import for now), `/api/v1` bookmark endpoints and OpenAPI, web UI, Trash restore and purge, backups, installers. See `docs/design.md` and `docs/implementation-plan.md`.
 

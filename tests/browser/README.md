@@ -121,7 +121,7 @@ process' memory, never written; results and logs are sanitised), launches **stoc
 profiles and drives the genuine `syncAccount` RPC and the native bookmarks API. Per browser it checks the
 server request log, the server's API view and the real native trees: upload from a native sandbox, download into
 a second isolated profile, both canonical roots, order/move/rename/delete, capabilities, lock and 423 contention,
-a read-only credential, a cross-scope same-URL collision and the documented lookup-first 409. A missing prerequisite
+a read-only credential, cross-scope same-URL isolation, and latest title/tag retention when floccus deletes one of two same-folder duplicates. A missing prerequisite
 (browser, go, extension) is `NOT_RUN` (exit 2), never a pass; a sync case only passes with real server requests
 and a check of the actual native tree.
 
@@ -129,6 +129,6 @@ and a check of the actual native tree.
 floccus's own debug log. `--bump-ids=N` is an experiment that pushes the server's ids far above the browser's.
 `node order-trace.mjs` is the standalone version of the ordering diagnosis.
 
-Known failing case: floccus 5.13.0 can reorder a downloaded folder wrongly when a server folder id equals a local
-folder id (see `.superpowers/sdd/bookmarksync/server-sync-report.md`). That makes the ordering cases FAIL
-intermittently until the wire ids are namespaced; this is intentional and must not be hidden by retries.
+Resolved ordering issue: floccus 5.13.0 could reorder a downloaded folder when server and local folder ids
+collided. The server now uses a negative wire namespace for concrete folder ids, and two repeated full
+browser matrices passed. Historical failures and trace evidence remain in `.superpowers/sdd/bookmarksync/server-sync-report.md`.
