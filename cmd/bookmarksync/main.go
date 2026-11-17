@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/atikansari-ghr/BookmarksSync/internal/api"
 	"github.com/atikansari-ghr/BookmarksSync/internal/auth"
 	"github.com/atikansari-ghr/BookmarksSync/internal/bookmarks"
 	"github.com/atikansari-ghr/BookmarksSync/internal/config"
@@ -126,6 +127,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 		return fmt.Errorf("listen: %w", err)
 	}
 	var idOpts []identity.Option
+	passkeysEnabled := false
 	if cfg.PublicOrigin != "" {
 		// The instance key encrypts TOTP seeds. It must be private and is never
 		// replaced: a malformed or exposed key stops startup (fail closed). Full
@@ -140,10 +142,12 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 			log.Warn("passkeys disabled", "reason", err.Error())
 		} else {
 			idOpts = append(idOpts, identity.WithRelyingParty(rp))
+			passkeysEnabled = true
 		}
 	}
 	ids := identity.New(db.SQL(), idOpts...)
-	adapter := floccus.New(ids, bookmarks.New(db.SQL()), log)
+	bm := bookmarks.New(db.SQL())
+	adapter := floccus.New(ids, bm, log)
 	register := []func(server.Registrar){adapter.Register}
 	if cfg.PublicOrigin != "" {
 		var providers []auth.OIDCProvider
@@ -157,13 +161,22 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 			_ = ln.Close()
 			return err
 		}
-		register = append(register, authH.Register)
+		apiH, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, Logger: log,
+			System: api.SystemInfo{Version: version.Current().Version, PublicOrigin: cfg.PublicOrigin,
+				PasskeysEnabled: passkeysEnabled, OIDCProviders: configuredOIDCNames(cfg.OIDCProviders)}})
+		if err != nil {
+			_ = ln.Close()
+			return err
+		}
+		register = append(register, authH.Register, apiH.Register)
 	} else {
 		log.Warn("browser sign-in disabled: set " + config.EnvPublicURL + " to enable /api/v1/auth")
 	}
+	go purgeTrashLoop(ctx, bm, log)
 	h := server.NewHandler(server.Options{
-		Version: version.Current(),
-		Ready:   db,
+		Version:   version.Current(),
+		Ready:     db,
+		BodyLimit: api.BodyLimit,
 		Register: func(r server.Registrar) {
 			for _, reg := range register {
 				reg(r)
@@ -177,4 +190,35 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 	}
 	log.Info("shut down cleanly")
 	return nil
+}
+
+func configuredOIDCNames(providers []config.OIDCProvider) []string {
+	names := make([]string, 0, len(providers))
+	for _, p := range providers {
+		names = append(names, p.ID)
+	}
+	return names
+}
+
+func purgeTrashLoop(ctx context.Context, bm *bookmarks.Service, log *slog.Logger) {
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	purgeExpiredTrash(ctx, bm, log)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			purgeExpiredTrash(ctx, bm, log)
+		}
+	}
+}
+
+func purgeExpiredTrash(ctx context.Context, bm *bookmarks.Service, log *slog.Logger) {
+	count, err := bm.PurgeExpiredTrash(ctx)
+	if err != nil {
+		log.Error("automatic trash cleanup failed", "error", err)
+	} else if count > 0 {
+		log.Info("expired trash purged", "owners", count)
+	}
 }

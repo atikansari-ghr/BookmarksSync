@@ -233,6 +233,44 @@ func TestRequestBodyIsLimited(t *testing.T) {
 	}
 }
 
+func TestRouteSpecificBodyLimitOverridesDefault(t *testing.T) {
+	var largeErr error
+	h := newHandler(t, server.Options{
+		MaxBodyBytes: 16,
+		BodyLimit: func(r *http.Request) int64 {
+			if r.Method == http.MethodPost && r.URL.Path == "/api/v1/large" {
+				return 64
+			}
+			return 0
+		},
+		Register: func(r server.Registrar) {
+			for _, path := range []string{"/api/v1/large", "/api/v1/small"} {
+				p := path
+				r.Handle("POST "+p, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+					_, err := io.ReadAll(req.Body)
+					if p == "/api/v1/large" {
+						largeErr = err
+					}
+					if err != nil {
+						server.WriteError(w, http.StatusRequestEntityTooLarge, "payload_too_large", "body too large")
+						return
+					}
+					server.WriteJSON(w, http.StatusOK, map[string]any{"ok": true})
+				}))
+			}
+		},
+	})
+	if rec := do(h, http.MethodPost, "/api/v1/large", strings.NewReader(strings.Repeat("x", 32))); rec.Code != http.StatusOK {
+		t.Fatalf("route-specific body: status=%d", rec.Code)
+	}
+	if largeErr != nil {
+		t.Fatalf("route-specific body read: %v", largeErr)
+	}
+	if rec := do(h, http.MethodPost, "/api/v1/small", strings.NewReader(strings.Repeat("x", 32))); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("default body: status=%d, want 413", rec.Code)
+	}
+}
+
 func TestPanicsBecomeJSON500(t *testing.T) {
 	h := newHandler(t, server.Options{
 		Register: func(r server.Registrar) {

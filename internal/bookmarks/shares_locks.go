@@ -86,6 +86,47 @@ func (s *Service) RevokeShare(ctx context.Context, ownerID, folderID, recipientI
 	return nil
 }
 
+// LeaveShare removes the grant identified by shareID only when recipientID is its
+// recipient. Share-bound credentials are removed by the foreign-key cascade.
+func (s *Service) LeaveShare(ctx context.Context, recipientID, shareID int64) error {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM shares WHERE id = ? AND recipient_id = ?`, shareID, recipientID)
+	if err != nil {
+		return err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateShare changes the mode of an existing share owned by ownerID.
+func (s *Service) UpdateShare(ctx context.Context, ownerID, shareID int64, mode identity.Mode) (Share, error) {
+	if mode != identity.ModeView && mode != identity.ModeEdit {
+		return Share{}, invalid("mode must be view or edit")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Share{}, err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `UPDATE shares SET mode = ? WHERE id = ? AND owner_id = ?`, string(mode), shareID, ownerID)
+	if err != nil {
+		return Share{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return Share{}, ErrNotFound
+	}
+	var sh Share
+	var rawMode string
+	if err := tx.QueryRowContext(ctx, `SELECT sh.id, sh.owner_id, sh.folder_id, sh.recipient_id, sh.mode, f.title
+		FROM shares sh JOIN folders f ON f.id = sh.folder_id WHERE sh.id = ? AND sh.owner_id = ?`, shareID, ownerID).
+		Scan(&sh.ID, &sh.OwnerID, &sh.FolderID, &sh.RecipientID, &rawMode, &sh.FolderTitle); err != nil {
+		return Share{}, err
+	}
+	sh.Mode = identity.Mode(rawMode)
+	return sh, tx.Commit()
+}
+
 func (s *Service) ListShares(ctx context.Context, ownerID int64) ([]Share, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT sh.id, sh.owner_id, sh.folder_id, sh.recipient_id, sh.mode, f.title
 		FROM shares sh JOIN folders f ON f.id = sh.folder_id WHERE sh.owner_id = ? ORDER BY sh.id`, ownerID)

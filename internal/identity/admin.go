@@ -16,25 +16,57 @@ var ErrLastAdmin = errors.New("the last active administrator cannot be deactivat
 // UserInfo is a user with account metadata (never secrets).
 type UserInfo struct {
 	User
-	CreatedAt time.Time
+	CreatedAt     time.Time
+	LastContactAt time.Time
 }
 
 func scanUserInfo(sc interface{ Scan(...any) error }) (UserInfo, error) {
 	var u UserInfo
 	var admin, active int
 	var created int64
-	if err := sc.Scan(&u.ID, &u.Username, &admin, &active, &created); err != nil {
+	var lastContact sql.NullInt64
+	if err := sc.Scan(&u.ID, &u.Username, &admin, &active, &created, &lastContact); err != nil {
 		return UserInfo{}, err
 	}
 	u.IsAdmin, u.Active, u.CreatedAt = admin == 1, active == 1, time.UnixMilli(created).UTC()
+	if lastContact.Valid {
+		u.LastContactAt = time.UnixMilli(lastContact.Int64).UTC()
+	}
 	return u, nil
 }
 
-const userInfoCols = `id, username, is_admin, active, created_at`
+const userInfoCols = `id, username, is_admin, active, created_at,
+	(SELECT MAX(activity) FROM (
+		SELECT last_seen_at AS activity FROM web_sessions WHERE user_id = users.id
+		UNION ALL SELECT last_used_at FROM api_tokens WHERE user_id = users.id
+		UNION ALL SELECT last_used_at FROM credentials WHERE user_id = users.id
+	))`
 
 // ListUsers returns every account in id order.
 func (s *Service) ListUsers(ctx context.Context) ([]UserInfo, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+userInfoCols+` FROM users ORDER BY id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []UserInfo{}
+	for rows.Next() {
+		u, err := scanUserInfo(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// ListUsersPage returns at most limit users in stable id order. Offset is a row
+// offset so callers can request limit+1 to determine whether another page exists.
+func (s *Service) ListUsersPage(ctx context.Context, limit, offset int) ([]UserInfo, error) {
+	if limit < 1 || limit > 201 || offset < 0 || offset > 200_000_000 {
+		return nil, fmt.Errorf("%w: invalid user page", ErrInvalid)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+userInfoCols+` FROM users ORDER BY id LIMIT ? OFFSET ?`, limit, offset)
 	if err != nil {
 		return nil, err
 	}

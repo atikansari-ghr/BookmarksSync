@@ -1,0 +1,122 @@
+openapi: 3.1.0
+info:
+  title: BookmarksSync API
+  version: 1.0.0
+  description: |
+    Authenticated bookmark, account and administrator API. Cookie requests to unsafe
+    methods require the exact configured Origin and X-CSRF-Token. Personal tokens are
+    accepted only on operations declaring their exact x-token-scope.
+servers:
+  - url: /api/v1
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-bookmarksync_session
+    personalToken:
+      type: http
+      scheme: bearer
+      bearerFormat: bmt1
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string}
+            message: {type: string}
+  responses:
+    Error:
+      description: Standard JSON error response.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+paths:
+  /version: {get: {operationId: getVersion, security: [], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/login: {post: {operationId: passwordLogin, security: [], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/logout: {post: {operationId: logout, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/session: {get: {operationId: currentSession, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/csrf: {get: {operationId: csrfBootstrap, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/sessions: {get: {operationId: listSessions, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/sessions/{id}: {delete: {operationId: revokeSession, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/reauthenticate: {post: {operationId: reauthenticate, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/login/second-factor: {post: {operationId: completeSecondFactorLogin, security: [], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/totp: {get: {operationId: totpStatus, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/totp/enroll: {post: {operationId: beginTotpEnrollment, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/totp/confirm: {post: {operationId: confirmTotpEnrollment, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/totp/disable: {post: {operationId: disableTotp, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/recovery-codes: {post: {operationId: regenerateRecoveryCodes, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/passkey/login/begin: {post: {operationId: beginPasskeyLogin, security: [], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/passkey/login/finish: {post: {operationId: finishPasskeyLogin, security: [], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/passkeys: {get: {operationId: listPasskeys, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/passkeys/register/begin: {post: {operationId: beginPasskeyRegistration, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/passkeys/register/finish: {post: {operationId: finishPasskeyRegistration, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/passkeys/{id}: {patch: {operationId: renamePasskey, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}, delete: {operationId: deletePasskey, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/oidc/providers: {get: {operationId: listOidcProviders, security: [], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/oidc/{provider}/login: {post: {operationId: beginOidcLogin, security: [], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/oidc/{provider}/link: {post: {operationId: beginOidcLink, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/oidc/{provider}/callback: {get: {operationId: finishOidcFlow, security: [], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/oidc/identities: {get: {operationId: listOidcIdentities, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /auth/oidc/identities/{id}: {delete: {operationId: unlinkOidcIdentity, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /me: {get: {operationId: getMe, security: [{sessionCookie: []}, {personalToken: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /me/password: {patch: {operationId: changePassword, security: [{sessionCookie: []}], x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /me/settings: {get: {operationId: getSettings, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}, patch: {operationId: updateSettings, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /me/tokens: {get: {operationId: listTokens, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}, post: {operationId: createToken, security: [{sessionCookie: []}], x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /me/tokens/{id}: {delete: {operationId: revokeToken, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /me/connections: {get: {operationId: listConnections, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}, post: {operationId: createConnection, security: [{sessionCookie: []}], x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /me/connections/{id}: {delete: {operationId: revokeConnection, security: [{sessionCookie: []}], responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /bookmarks:
+    get:
+      operationId: listBookmarks
+      description: Returns a page of bookmarks. Supports page (zero-based), limit (default 50, maximum 200), folder, url, q, and repeated tag filters.
+      security: [{sessionCookie: []}, {personalToken: []}]
+      x-token-scope: bookmarks:read
+      responses: {default: {$ref: '#/components/responses/Error'}}
+    post: {operationId: createBookmark, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: bookmarks:write, responses: {default: {$ref: '#/components/responses/Error'}}}
+  /bookmarks/{id}:
+    get: {operationId: getBookmark, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: bookmarks:read, responses: {default: {$ref: '#/components/responses/Error'}}}
+    patch: {operationId: updateBookmark, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: bookmarks:write, responses: {default: {$ref: '#/components/responses/Error'}}}
+    delete: {operationId: deleteBookmark, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: bookmarks:write, responses: {default: {$ref: '#/components/responses/Error'}}}
+  /folders:
+    get: {operationId: listFolders, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: bookmarks:read, responses: {default: {$ref: '#/components/responses/Error'}}}
+    post: {operationId: createFolder, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: bookmarks:write, responses: {default: {$ref: '#/components/responses/Error'}}}
+  /folders/{id}:
+    get: {operationId: getFolder, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: bookmarks:read, responses: {default: {$ref: '#/components/responses/Error'}}}
+    patch: {operationId: updateFolder, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: bookmarks:write, responses: {default: {$ref: '#/components/responses/Error'}}}
+    delete: {operationId: deleteFolder, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: bookmarks:write, responses: {default: {$ref: '#/components/responses/Error'}}}
+  /folders/{folderId}/bookmarks/{id}: {delete: {operationId: removeBookmarkPlacement, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: bookmarks:write, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /folders/{id}/order: {put: {operationId: reorderFolderChildren, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: bookmarks:write, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /tags: {get: {operationId: listTags, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: bookmarks:read, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /trash:
+    get: {operationId: listTrash, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: bookmarks:read, responses: {default: {$ref: '#/components/responses/Error'}}}
+    delete: {operationId: emptyTrash, security: [{sessionCookie: []}], x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}
+  /trash/{type}/{id}:
+    delete: {operationId: purgeTrashItem, security: [{sessionCookie: []}], x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}
+  /trash/{type}/{id}/restore: {post: {operationId: restoreTrashItem, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: bookmarks:write, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /import: {post: {operationId: importBookmarks, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: bookmarks:write, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /export: {get: {operationId: exportBookmarks, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: bookmarks:read, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /shares/owned: {get: {operationId: listOwnedShares, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: shares:read, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /shares/incoming: {get: {operationId: listIncomingShares, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: shares:read, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /shares: {post: {operationId: grantShare, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: shares:manage, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /shares/{id}:
+    patch: {operationId: updateShare, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: shares:manage, responses: {default: {$ref: '#/components/responses/Error'}}}
+    delete: {operationId: revokeOrLeaveShare, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: shares:manage, responses: {default: {$ref: '#/components/responses/Error'}}}
+  /admin/users:
+    get:
+      operationId: adminListUsers
+      description: "Returns paginated account metadata and aggregate bookmark counts. Supports page (zero-based) and limit (default 50, maximum 200)."
+      security: [{sessionCookie: []}]
+      x-admin-required: true
+      responses: {default: {$ref: '#/components/responses/Error'}}
+    post: {operationId: adminCreateUser, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}
+  /admin/users/{id}:
+    patch: {operationId: adminUpdateUser, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}
+  /admin/users/{id}/password-reset: {post: {operationId: adminResetPassword, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /admin/users/{id}/factor-reset: {post: {operationId: adminResetFactors, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /admin/users/{id}/connections: {get: {operationId: adminListConnections, security: [{sessionCookie: []}], x-admin-required: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /admin/users/{id}/connections/{cid}: {delete: {operationId: adminRevokeConnection, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, responses: {default: {$ref: '#/components/responses/Error'}}}}
+  /admin/system: {get: {operationId: adminSystemInfo, security: [{sessionCookie: []}], x-admin-required: true, responses: {default: {$ref: '#/components/responses/Error'}}}}

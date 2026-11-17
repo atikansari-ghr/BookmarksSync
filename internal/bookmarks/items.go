@@ -40,11 +40,13 @@ type BookmarkUpdate struct {
 // ListQuery selects visible bookmarks. Page -1 returns every match (bounded by
 // MaxListAll); otherwise Limit is 1..MaxPageLimit (larger values are clamped).
 type ListQuery struct {
-	Page   int
-	Limit  int
-	URL    string   // exact match when non-empty
-	Search []string // every term must occur in url, title or a tag (case-insensitive)
-	Tags   []string // every tag must be present exactly
+	Page     int
+	Limit    int
+	Offset   *int     // optional row offset, useful when Limit includes a lookahead row
+	FolderID int64    // restrict results to bookmarks placed in this visible folder; zero disables the filter
+	URL      string   // exact match when non-empty
+	Search   []string // every term must occur in url, title or a tag (case-insensitive)
+	Tags     []string // every tag must be present exactly
 }
 
 var allowedSchemes = map[string]bool{"http": true, "https": true, "ftp": true, "ftps": true, "file": true, "javascript": true}
@@ -208,7 +210,7 @@ func (s *Service) hydrate(ctx context.Context, q queryer, sc Scope, ids []int64)
 
 // visibleIDs returns ids of live bookmarks of the owner with at least one visible
 // placement, optionally filtered, ordered by id.
-func (s *Service) visibleIDs(ctx context.Context, q queryer, sc Scope, url string, search []string, limit, offset int, tags ...string) ([]int64, error) {
+func (s *Service) visibleIDs(ctx context.Context, q queryer, sc Scope, folderID int64, url string, search []string, limit, offset int, tags ...string) ([]int64, error) {
 	cte, cond, args := scopeFilter(sc)
 	where := ` WHERE b.owner_id = ? AND b.deleted_at IS NULL AND EXISTS (
 		SELECT 1 FROM placements p JOIN folders f ON f.id = p.folder_id
@@ -221,6 +223,20 @@ func (s *Service) visibleIDs(ctx context.Context, q queryer, sc Scope, url strin
 	}
 	qargs = append(qargs, sc.OwnerID)
 	qargs = append(qargs, args...)
+	if folderID != 0 {
+		folderScope := "ff.owner_id = ?"
+		if sc.RootFolderID != 0 {
+			folderScope = "ff.id IN (SELECT id FROM sub)"
+		}
+		where += ` AND EXISTS (
+			SELECT 1 FROM placements fp JOIN folders ff ON ff.id = fp.folder_id
+			WHERE fp.bookmark_id = b.id AND fp.deleted_at IS NULL AND ff.deleted_at IS NULL
+			AND ff.id = ? AND ` + folderScope + `)`
+		qargs = append(qargs, folderID)
+		if sc.RootFolderID == 0 {
+			qargs = append(qargs, sc.OwnerID)
+		}
+	}
 	if url != "" {
 		where += ` AND b.url = ?`
 		qargs = append(qargs, url)
@@ -285,10 +301,16 @@ func (s *Service) ListBookmarks(ctx context.Context, sc Scope, lq ListQuery) ([]
 			limit = MaxPageLimit
 		}
 		offset = lq.Page * limit
+		if lq.Offset != nil {
+			if *lq.Offset < 0 {
+				return nil, invalid("offset must be non-negative")
+			}
+			offset = *lq.Offset
+		}
 	}
 	var out []Bookmark
 	err := s.read(ctx, func(q queryer) error {
-		ids, err := s.visibleIDs(ctx, q, sc, lq.URL, lq.Search, limit, offset, lq.Tags...)
+		ids, err := s.visibleIDs(ctx, q, sc, lq.FolderID, lq.URL, lq.Search, limit, offset, lq.Tags...)
 		if err != nil {
 			return err
 		}
@@ -432,7 +454,7 @@ func (s *Service) findVisibleByURL(ctx context.Context, q queryer, sc Scope, url
 			return 0, false, err
 		}
 	}
-	ids, err := s.visibleIDs(ctx, q, sc, url, nil, 1, 0)
+	ids, err := s.visibleIDs(ctx, q, sc, 0, url, nil, 1, 0)
 	if err != nil || len(ids) == 0 {
 		return 0, false, err
 	}
@@ -522,7 +544,7 @@ func (s *Service) UpdateBookmark(ctx context.Context, sc Scope, id int64, up Boo
 			// A URL edit of an already-visible record applies to every reference of it, like
 			// title and tags, including placements this scope cannot see (their rows stay).
 			// It must not collide with another record visible to this scope (generic 409).
-			others, err := s.visibleIDs(ctx, tx, sc, *up.URL, nil, 2, 0)
+			others, err := s.visibleIDs(ctx, tx, sc, 0, *up.URL, nil, 2, 0)
 			if err != nil {
 				return err
 			}
@@ -630,7 +652,7 @@ func (s *Service) mergeIntoSoleVisibleDuplicate(ctx context.Context, tx *sql.Tx,
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	ids, err := s.visibleIDs(ctx, tx, sc, src.URL, nil, 3, 0)
+	ids, err := s.visibleIDs(ctx, tx, sc, 0, src.URL, nil, 3, 0)
 	if err != nil {
 		return err
 	}

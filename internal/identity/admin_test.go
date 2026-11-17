@@ -28,6 +28,34 @@ func TestListUsersAndGetByID(t *testing.T) {
 	}
 }
 
+func TestListUsersPageIncludesLastContactAndUsesRowOffsets(t *testing.T) {
+	e := newFactorEnv(t)
+	ctx := context.Background()
+	carol, err := e.svc.CreateUser(ctx, "carol", goodPassword, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := e.clock.Now().UnixMilli()
+	if _, err := e.db.SQL().ExecContext(ctx, `INSERT INTO web_sessions(user_id, secret_hash, label, created_at, last_seen_at, authenticated_at, expires_at) VALUES (?, 'hash-alice', '', ?, ?, ?, ?)`, e.alice.ID, at, at, at, at+1000); err != nil {
+		t.Fatal(err)
+	}
+
+	first, err := e.svc.ListUsersPage(ctx, 2, 0)
+	if err != nil || len(first) != 2 || first[0].ID != e.alice.ID || first[1].ID != e.bob.ID {
+		t.Fatalf("first page = %+v, %v", first, err)
+	}
+	if !first[0].LastContactAt.Equal(e.clock.Now()) {
+		t.Fatalf("last contact = %v, want %v", first[0].LastContactAt, e.clock.Now())
+	}
+	second, err := e.svc.ListUsersPage(ctx, 2, 2)
+	if err != nil || len(second) != 1 || second[0].ID != carol.ID {
+		t.Fatalf("second page = %+v, %v", second, err)
+	}
+	if _, err := e.svc.ListUsersPage(ctx, 0, 0); !errors.Is(err, identity.ErrInvalid) {
+		t.Fatalf("invalid page: %v", err)
+	}
+}
+
 func TestUpdateUserProtectsTheLastActiveAdmin(t *testing.T) {
 	e := newFactorEnv(t)
 	ctx := context.Background()

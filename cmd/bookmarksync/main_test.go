@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atikansari-ghr/BookmarksSync/internal/bookmarks"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
 	"github.com/atikansari-ghr/BookmarksSync/internal/oidcfake"
 )
@@ -98,13 +102,13 @@ func TestServeStartsAnsweringAndStopsOnCancel(t *testing.T) {
 }
 
 // startServe runs serve with env and returns its base URL and a stop function.
-func startServe(t *testing.T, env map[string]string) (string, func()) {
+func startServe(t *testing.T, env map[string]string) (string, func() string) {
 	t.Helper()
 	return startServeIn(t, filepath.Join(t.TempDir(), "data"), env)
 }
 
 // startServeIn is startServe with an explicit data directory.
-func startServeIn(t *testing.T, dir string, env map[string]string) (string, func()) {
+func startServeIn(t *testing.T, dir string, env map[string]string) (string, func() string) {
 	t.Helper()
 	addr := freePort(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -120,7 +124,10 @@ func startServeIn(t *testing.T, dir string, env map[string]string) (string, func
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				var once sync.Once
-				return base, func() { once.Do(func() { cancel(); <-done }) }
+				return base, func() string {
+					once.Do(func() { cancel(); <-done })
+					return errb.String()
+				}
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
@@ -155,12 +162,119 @@ func TestServeWiresAuthAPIWhenPublicURLIsSet(t *testing.T) {
 	}
 }
 
+func TestServeWiresAdminAndBookmarkAPI(t *testing.T) {
+	admin := newCLI(t)
+	admin.mustRun(pw+"\n", "user", "create", "--username", "api-owner", "--password-stdin", "--admin")
+	origin := "http://127.0.0.1:1"
+	base, stop := startServeIn(t, admin.dir, map[string]string{"BOOKMARKSYNC_PUBLIC_URL": origin})
+	defer stop()
+	loginBody, _ := json.Marshal(map[string]string{"username": "api-owner", "password": pw})
+	req, _ := http.NewRequest(http.MethodPost, base+"/api/v1/auth/login", bytes.NewReader(loginBody))
+	req.Header.Set("Origin", origin)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		t.Fatalf("login status %d: %s", resp.StatusCode, body)
+	}
+	var cookie *http.Cookie
+	for _, candidate := range resp.Cookies() {
+		if candidate.Name == "__Host-bookmarksync_session" {
+			cookie = candidate
+			break
+		}
+	}
+	resp.Body.Close()
+	if cookie == nil {
+		t.Fatal("login did not set the session cookie")
+	}
+	for _, path := range []string{"/api/v1/me", "/api/v1/admin/system", "/api/v1/bookmarks"} {
+		apiReq, _ := http.NewRequest(http.MethodGet, base+path, nil)
+		apiReq.AddCookie(cookie)
+		apiResp, err := http.DefaultClient.Do(apiReq)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if apiResp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(apiResp.Body)
+			apiResp.Body.Close()
+			t.Errorf("GET %s: status %d: %s", path, apiResp.StatusCode, body)
+			continue
+		}
+		apiResp.Body.Close()
+	}
+	if logs := stop(); strings.Contains(logs, pw) {
+		t.Fatal("server logs contain the submitted password")
+	}
+}
+
 func TestServeLeavesAuthAPIOffWithoutPublicURL(t *testing.T) {
 	base, stop := startServe(t, nil)
 	defer stop()
 	if code := postLogin(t, base, base); code != http.StatusNotFound {
 		t.Fatalf("login without public URL: %d, want 404", code)
 	}
+}
+
+func TestServePurgesExpiredTrashWithoutPublicURL(t *testing.T) {
+	admin := newCLI(t)
+	admin.mustRun(pw+"\n", "user", "create", "--username", "trash-owner", "--password-stdin", "--admin")
+	db := admin.db()
+	defer db.Close()
+	ids := identity.New(db.SQL())
+	owner, err := ids.GetUser(context.Background(), "trash-owner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bm := bookmarks.New(db.SQL())
+	sc, err := bm.PrivateScope(context.Background(), owner.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roots, err := bm.FolderTree(context.Background(), sc, bookmarks.RootID, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var other int64
+	for _, root := range roots {
+		if root.Type == "folder" && root.Title == "Other Bookmarks" {
+			other = root.ID
+		}
+	}
+	created, err := bm.CreateBookmark(context.Background(), sc, bookmarks.BookmarkInput{URL: "https://expired.example", Title: "expired", Folders: []int64{other}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := bm.DeleteBookmark(context.Background(), sc, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-bookmarks.TrashRetention - time.Hour).UnixMilli()
+	if _, err := db.SQL().Exec(`UPDATE bookmarks SET deleted_at = ?, updated_at = ? WHERE id = ?`, old, old, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SQL().Exec(`UPDATE placements SET deleted_at = ? WHERE bookmark_id = ?`, old, created.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	_, stop := startServeIn(t, admin.dir, nil)
+	defer stop()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var found int
+		err := db.SQL().QueryRow(`SELECT 1 FROM bookmarks WHERE id = ?`, created.ID).Scan(&found)
+		if errors.Is(err, sql.ErrNoRows) {
+			return
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expired Trash item was not purged on a server without browser sign-in")
 }
 
 func TestServeRejectsInvalidPublicURL(t *testing.T) {

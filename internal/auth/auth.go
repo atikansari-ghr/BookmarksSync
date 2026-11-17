@@ -97,6 +97,31 @@ type Handler struct {
 	oidcBeginLimits *Limiter
 }
 
+// CheckPassword verifies a recent-authentication proof using the same per-account
+// and per-peer limiter as password sign-in. It writes a generic authentication error
+// or rate-limit response on failure and returns false.
+func (h *Handler) CheckPassword(w http.ResponseWriter, r *http.Request, username, password string) bool {
+	res, wait := h.limiter.Reserve(username, r.RemoteAddr)
+	if res == nil {
+		h.log.Warn("auth password proof rate limited", "peer", peerKey(r.RemoteAddr))
+		writeRateLimited(w, wait)
+		return false
+	}
+	defer res.Cancel()
+	_, err := h.ids.VerifyPassword(r.Context(), username, password)
+	if err != nil {
+		if !errors.Is(err, identity.ErrUnauthorized) {
+			h.internal(w, "verify password proof", err)
+			return false
+		}
+		res.Fail()
+		writeInvalidCredentials(w)
+		return false
+	}
+	res.Success()
+	return true
+}
+
 // New validates opts and returns a Handler.
 func New(opts Options) (*Handler, error) {
 	if opts.Identity == nil {
@@ -258,6 +283,16 @@ func (h *Handler) setCookie(w http.ResponseWriter, sess identity.Session, secret
 	}
 	http.SetCookie(w, &http.Cookie{Name: SessionCookieName, Value: secret, Path: "/", MaxAge: maxAge,
 		Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+}
+
+// ApplyRotation installs a freshly rotated session secret in the session cookie and
+// returns the matching CSRF token for JSON APIs that change authenticators.
+func (h *Handler) ApplyRotation(w http.ResponseWriter, rot identity.SessionRotation) string {
+	if rot.Secret == "" {
+		return ""
+	}
+	h.setCookie(w, rot.Session, rot.Secret)
+	return csrfToken(rot.Secret)
 }
 
 func (h *Handler) clearCookie(w http.ResponseWriter) {

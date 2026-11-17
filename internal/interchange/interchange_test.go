@@ -154,13 +154,14 @@ func TestXBELRefusesDTDsEntitiesAndMalformedInput(t *testing.T) {
 	external := `<?xml version="1.0"?><!DOCTYPE xbel SYSTEM "file:///etc/passwd"><xbel/>`
 	undefinedEntity := `<xbel><bookmark href="https://x.test"><title>&secret;</title></bookmark></xbel>`
 	for name, in := range map[string]string{
-		"billion laughs":   laughs,
-		"external DTD":     external,
-		"undefined entity": undefinedEntity,
-		"malformed":        `<xbel><folder><title>x</folder></xbel>`,
-		"not xbel":         `<rss><item/></rss>`,
-		"empty":            ``,
-		"trailing garbage": `<xbel/><xbel/>`,
+		"billion laughs":                         laughs,
+		"external DTD":                           external,
+		"external DTD without entity references": `<!DOCTYPE x SYSTEM "https://example.invalid/bookmarks.dtd"><xbel><bookmark href="https://safe.example"><title>safe</title></bookmark></xbel>`,
+		"undefined entity":                       undefinedEntity,
+		"malformed":                              `<xbel><folder><title>x</folder></xbel>`,
+		"not xbel":                               `<rss><item/></rss>`,
+		"empty":                                  ``,
+		"trailing garbage":                       `<xbel/><xbel/>`,
 	} {
 		start := time.Now()
 		if _, err := interchange.ParseXBEL(strings.NewReader(in), mib); !errors.Is(err, bookmarks.ErrInvalid) {

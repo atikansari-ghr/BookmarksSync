@@ -44,7 +44,10 @@ type Options struct {
 	// Register adds routes using Go 1.22 "METHOD /path" patterns.
 	Register     func(r Registrar)
 	MaxBodyBytes int64
-	Logger       *slog.Logger
+	// BodyLimit optionally selects a per-request body limit. A positive result
+	// overrides MaxBodyBytes; zero or a negative result uses the default limit.
+	BodyLimit func(*http.Request) int64
+	Logger    *slog.Logger
 }
 
 type registrar struct {
@@ -93,7 +96,17 @@ func NewHandler(opts Options) http.Handler {
 	})
 
 	var h http.Handler = &fallback{mux: mux}
-	h = http.MaxBytesHandler(h, opts.MaxBodyBytes)
+	next := h
+	h = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		limit := opts.MaxBodyBytes
+		if opts.BodyLimit != nil {
+			if selected := opts.BodyLimit(r); selected > 0 {
+				limit = selected
+			}
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
+		next.ServeHTTP(w, r)
+	})
 	h = recoverer(h, opts.Logger)
 	h = baseHeaders(h)
 	return h

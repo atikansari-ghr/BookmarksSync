@@ -3,10 +3,18 @@ package database
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/atikansari-ghr/BookmarksSync/internal/api"
+	"github.com/atikansari-ghr/BookmarksSync/internal/auth"
+	"github.com/atikansari-ghr/BookmarksSync/internal/bookmarks"
+	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
+	"github.com/atikansari-ghr/BookmarksSync/internal/server"
 	_ "modernc.org/sqlite"
 )
 
@@ -19,6 +27,10 @@ func rawDB(t *testing.T) *sql.DB {
 	t.Cleanup(func() { db.Close() })
 	return db
 }
+
+type migrationReady struct{ db *sql.DB }
+
+func (r migrationReady) Ping(ctx context.Context) error { return r.db.PingContext(ctx) }
 
 func TestFailedMigrationRollsBackCompletely(t *testing.T) {
 	ctx := context.Background()
@@ -82,7 +94,7 @@ func TestIdentityMigrationUpgradesMilestone2DataIntact(t *testing.T) {
 		`INSERT INTO bookmark_tags(bookmark_id, tag) VALUES (1, 'work')`,
 		`INSERT INTO placements(id, bookmark_id, folder_id, position) VALUES (1, 1, 2, 0)`,
 		`INSERT INTO shares(id, owner_id, folder_id, recipient_id, mode, created_at) VALUES (1, 1, 2, 2, 'edit', 1)`,
-		`INSERT INTO credentials(id, user_id, label, secret_hash, kind, share_id, mode, created_at) VALUES (1, 1, 'laptop', 'aa', 'private', NULL, 'edit', 1), (2, 2, 'share', 'bb', 'share', 1, 'view', 1)`,
+		`INSERT INTO credentials(id, user_id, label, secret_hash, kind, share_id, mode, created_at) VALUES (1, 1, 'laptop', '0f007385b6f9d4b7eeb2748605afe1a984a0a3bfa3f014d09e2a784ce9e5cd1a', 'private', NULL, 'edit', 1), (2, 2, 'share', 'bb', 'share', 1, 'view', 1)`,
 	}
 	for _, q := range fixture {
 		if _, err := db.ExecContext(ctx, q); err != nil {
@@ -102,7 +114,7 @@ func TestIdentityMigrationUpgradesMilestone2DataIntact(t *testing.T) {
 		`SELECT tag FROM bookmark_tags WHERE bookmark_id = 1`:                                                  "work",
 		`SELECT folder_id FROM placements WHERE id = 1`:                                                        "2",
 		`SELECT recipient_id || ':' || mode FROM shares WHERE id = 1`:                                          "2:edit",
-		`SELECT group_concat(secret_hash || ':' || kind, ',') FROM credentials ORDER BY id`:                    "aa:private,bb:share",
+		`SELECT group_concat(secret_hash || ':' || kind, ',') FROM credentials ORDER BY id`:                    "0f007385b6f9d4b7eeb2748605afe1a984a0a3bfa3f014d09e2a784ce9e5cd1a:private,bb:share",
 	}
 	for q, want := range checks {
 		var got string
@@ -116,6 +128,45 @@ func TestIdentityMigrationUpgradesMilestone2DataIntact(t *testing.T) {
 		if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?`, table).Scan(&n); err != nil || n != 1 {
 			t.Errorf("table %s missing after upgrade (%v)", table, err)
 		}
+	}
+
+	// The retained milestone-2 Floccus secret still authenticates, and the new
+	// account API sees the bookmark/placement/tags that existed before migration.
+	ids := identity.New(db)
+	if _, err := ids.Authenticate(ctx, "alice", "bms1.1.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"); err != nil {
+		t.Fatalf("legacy Floccus credential after upgrade: %v", err)
+	}
+	authH, err := auth.New(auth.Options{Identity: ids, PublicOrigin: "https://bookmarks.example.test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiH, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bookmarks.New(db)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := server.NewHandler(server.Options{Ready: migrationReady{db}, Register: func(r server.Registrar) { authH.Register(r); apiH.Register(r) }})
+	_, sessionSecret, err := ids.CreateSession(ctx, 1, "migration fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "https://bookmarks.example.test/api/v1/bookmarks", nil)
+	req.AddCookie(&http.Cookie{Name: auth.SessionCookieName, Value: sessionSecret})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	var response struct {
+		Items []struct {
+			URL     string   `json:"url"`
+			Title   string   `json:"title"`
+			Tags    []string `json:"tags"`
+			Folders []int64  `json:"folders"`
+		} `json:"items"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil || rec.Code != http.StatusOK || len(response.Items) != 1 {
+		t.Fatalf("API read of migrated bookmark: status=%d body=%s err=%v", rec.Code, rec.Body.String(), err)
+	}
+	item := response.Items[0]
+	if item.URL != "https://example.com/" || item.Title != "Example" || len(item.Tags) != 1 || item.Tags[0] != "work" || len(item.Folders) != 1 || item.Folders[0] != 2 {
+		t.Fatalf("migrated API record = %+v", item)
 	}
 }
 
