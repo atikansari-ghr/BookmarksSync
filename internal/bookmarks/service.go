@@ -68,6 +68,10 @@ type Scope struct {
 	RootFolderID int64 // 0 = whole private collection; else the shared folder
 	Writable     bool
 	Holder       int64 // credential id used as lock owner; 0 when none
+	// Actor is the /api/v1 user behind a scope without a credential (Holder 0). Writes
+	// re-derive the actor's activity and, for a share scope, the live grant inside the
+	// write transaction, so a suspension, revoke or downgrade cannot be outrun.
+	Actor int64
 }
 
 // out presents a real folder id the way this scope addresses it.
@@ -161,6 +165,9 @@ func (s *Service) write(ctx context.Context, sc Scope, fn func(tx *sql.Tx) error
 // Scopes without a Holder (internal callers such as the CLI) have no credential to check.
 func (s *Service) revalidate(ctx context.Context, q queryer, sc Scope, write bool) error {
 	if sc.Holder == 0 {
+		if sc.Actor != 0 {
+			return s.revalidateActor(ctx, q, sc, write)
+		}
 		return nil
 	}
 	live, _, err := s.liveScope(ctx, q, sc.Holder)

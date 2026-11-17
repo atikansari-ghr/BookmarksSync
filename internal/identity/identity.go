@@ -210,30 +210,42 @@ func (s *Service) SetActive(ctx context.Context, username string, active bool) e
 		return err
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `UPDATE users SET active = ? WHERE username = ?`, b2i(active), username)
+	var id int64
+	err = tx.QueryRowContext(ctx, `SELECT id FROM users WHERE username = ?`, username).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if err := s.setActiveTx(ctx, tx, id, active); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// setActiveTx applies SetActive's change and revocations inside tx.
+func (s *Service) setActiveTx(ctx context.Context, tx *sql.Tx, userID int64, active bool) error {
+	res, err := tx.ExecContext(ctx, `UPDATE users SET active = ? WHERE id = ?`, b2i(active), userID)
 	if err != nil {
 		return err
 	}
 	if n, _ := res.RowsAffected(); n == 0 {
 		return ErrNotFound
 	}
-	if !active {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM locks WHERE credential_id IN
-			(SELECT c.id FROM credentials c JOIN users u ON u.id = c.user_id WHERE u.username = ?)`, username); err != nil {
+	if active {
+		return nil
+	}
+	now := s.now().UnixMilli()
+	if _, err := tx.ExecContext(ctx, `DELETE FROM locks WHERE credential_id IN (SELECT id FROM credentials WHERE user_id = ?)`, userID); err != nil {
+		return err
+	}
+	for _, table := range []string{"credentials", "web_sessions", "api_tokens"} {
+		if _, err := tx.ExecContext(ctx, `UPDATE `+table+` SET revoked_at = ? WHERE revoked_at IS NULL AND user_id = ?`, now, userID); err != nil {
 			return err
-		}
-		if _, err := tx.ExecContext(ctx, `UPDATE credentials SET revoked_at = ? WHERE revoked_at IS NULL AND user_id =
-			(SELECT id FROM users WHERE username = ?)`, s.now().UnixMilli(), username); err != nil {
-			return err
-		}
-		for _, table := range []string{"web_sessions", "api_tokens"} {
-			if _, err := tx.ExecContext(ctx, `UPDATE `+table+` SET revoked_at = ? WHERE revoked_at IS NULL AND user_id =
-				(SELECT id FROM users WHERE username = ?)`, s.now().UnixMilli(), username); err != nil {
-				return err
-			}
 		}
 	}
-	return tx.Commit()
+	return nil
 }
 
 // dummy returns the per-service hash used to equalise work for unknown users.

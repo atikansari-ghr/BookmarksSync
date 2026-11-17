@@ -44,6 +44,7 @@ type ListQuery struct {
 	Limit  int
 	URL    string   // exact match when non-empty
 	Search []string // every term must occur in url, title or a tag (case-insensitive)
+	Tags   []string // every tag must be present exactly
 }
 
 var allowedSchemes = map[string]bool{"http": true, "https": true, "ftp": true, "ftps": true, "file": true, "javascript": true}
@@ -207,7 +208,7 @@ func (s *Service) hydrate(ctx context.Context, q queryer, sc Scope, ids []int64)
 
 // visibleIDs returns ids of live bookmarks of the owner with at least one visible
 // placement, optionally filtered, ordered by id.
-func (s *Service) visibleIDs(ctx context.Context, q queryer, sc Scope, url string, search []string, limit, offset int) ([]int64, error) {
+func (s *Service) visibleIDs(ctx context.Context, q queryer, sc Scope, url string, search []string, limit, offset int, tags ...string) ([]int64, error) {
 	cte, cond, args := scopeFilter(sc)
 	where := ` WHERE b.owner_id = ? AND b.deleted_at IS NULL AND EXISTS (
 		SELECT 1 FROM placements p JOIN folders f ON f.id = p.folder_id
@@ -223,6 +224,10 @@ func (s *Service) visibleIDs(ctx context.Context, q queryer, sc Scope, url strin
 	if url != "" {
 		where += ` AND b.url = ?`
 		qargs = append(qargs, url)
+	}
+	for _, tag := range tags {
+		where += ` AND EXISTS (SELECT 1 FROM bookmark_tags t WHERE t.bookmark_id = b.id AND t.tag = ?)`
+		qargs = append(qargs, tag)
 	}
 	for _, term := range search {
 		like := "%" + escapeLike(term) + "%"
@@ -260,6 +265,12 @@ func (s *Service) ListBookmarks(ctx context.Context, sc Scope, lq ListQuery) ([]
 			return nil, invalid("search terms are limited to %d bytes", MaxSearchTermBytes)
 		}
 	}
+	if len(lq.Tags) > MaxSearchTerms {
+		return nil, invalid("at most %d tag filters", MaxSearchTerms)
+	}
+	if err := validTags(&lq.Tags); err != nil {
+		return nil, err
+	}
 	limit, offset := 0, 0
 	switch {
 	case lq.Page == -1:
@@ -277,7 +288,7 @@ func (s *Service) ListBookmarks(ctx context.Context, sc Scope, lq ListQuery) ([]
 	}
 	var out []Bookmark
 	err := s.read(ctx, func(q queryer) error {
-		ids, err := s.visibleIDs(ctx, q, sc, lq.URL, lq.Search, limit, offset)
+		ids, err := s.visibleIDs(ctx, q, sc, lq.URL, lq.Search, limit, offset, lq.Tags...)
 		if err != nil {
 			return err
 		}

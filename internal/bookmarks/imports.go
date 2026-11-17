@@ -10,6 +10,7 @@ type ImportNode struct {
 	Folder   bool
 	Title    string
 	URL      string
+	Tags     []string // applied to newly created bookmarks only
 	Children []ImportNode
 }
 
@@ -33,6 +34,11 @@ func countAndCheck(nodes []ImportNode, depth int, total *int) error {
 		}
 		if err := validateURL(n.URL); err != nil {
 			return err
+		}
+		if n.Tags != nil {
+			if err := validTags(&n.Tags); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -115,6 +121,11 @@ func (s *Service) importInto(ctx context.Context, tx *sql.Tx, sc Scope, parent f
 				return nil, err
 			}
 			id, _ = res.LastInsertId()
+			if len(n.Tags) > 0 {
+				if err := s.setTags(ctx, tx, id, n.Tags); err != nil {
+					return nil, err
+				}
+			}
 		}
 		created, err := s.addPlacement(ctx, tx, sc.OwnerID, id, parent.id)
 		if err != nil {

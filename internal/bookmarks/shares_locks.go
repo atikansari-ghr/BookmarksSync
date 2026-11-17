@@ -16,6 +16,7 @@ type Share struct {
 	FolderID    int64
 	RecipientID int64
 	Mode        identity.Mode
+	FolderTitle string // filled by the listing functions
 }
 
 // GrantShare grants (or changes the mode of) a folder to an existing active user.
@@ -86,7 +87,8 @@ func (s *Service) RevokeShare(ctx context.Context, ownerID, folderID, recipientI
 }
 
 func (s *Service) ListShares(ctx context.Context, ownerID int64) ([]Share, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, owner_id, folder_id, recipient_id, mode FROM shares WHERE owner_id = ? ORDER BY id`, ownerID)
+	rows, err := s.db.QueryContext(ctx, `SELECT sh.id, sh.owner_id, sh.folder_id, sh.recipient_id, sh.mode, f.title
+		FROM shares sh JOIN folders f ON f.id = sh.folder_id WHERE sh.owner_id = ? ORDER BY sh.id`, ownerID)
 	if err != nil {
 		return nil, err
 	}
@@ -95,7 +97,7 @@ func (s *Service) ListShares(ctx context.Context, ownerID int64) ([]Share, error
 	for rows.Next() {
 		var sh Share
 		var mode string
-		if err := rows.Scan(&sh.ID, &sh.OwnerID, &sh.FolderID, &sh.RecipientID, &mode); err != nil {
+		if err := rows.Scan(&sh.ID, &sh.OwnerID, &sh.FolderID, &sh.RecipientID, &mode, &sh.FolderTitle); err != nil {
 			return nil, err
 		}
 		sh.Mode = identity.Mode(mode)
