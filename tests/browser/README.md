@@ -149,3 +149,27 @@ pending second-factor response (no session), TOTP completion, and that nothing i
 called with `fetch` from a same-origin page. Exit codes: 0 PASS, 1 FAIL, 2 NOT_RUN, 3 BLOCKED.
 The run directory (database, instance key, binary) is removed afterwards. Firefox/WebKit and
 real platform authenticators are not covered.
+
+## Sign-in UI (`ui-smoke.mjs`)
+
+`npm run ui` builds the server (with the embedded UI from `internal/webui/static`) into a
+marked run directory, starts it on `http://localhost:<random port>` with a local fake
+OpenID Connect issuer configured as "Authentik" (Node `crypto`, RS256, PKCE-checking
+token endpoint), creates a throw-away account through the CLI, and drives Playwright's
+Chromium through the real pages with a CDP virtual authenticator:
+
+- the login page's identity, runtime version, copyright and administrator guidance, and only the configured provider;
+- password sign-in;
+- personal API token create (secret shown once, verified against the API) and revoke;
+- revoking another device's session;
+- adding a passkey and signing in with it;
+- TOTP setup with one-time recovery codes;
+- password + TOTP sign-in;
+- linking the provider account;
+- provider sign-in completed with a recovery code (the second-factor handle is removed from the address bar).
+
+After each step it asserts that `localStorage`/`sessionStorage` are empty and no auth
+cookie is visible to scripts, and finally that no script errors or CSP violations
+occurred. `UI_SMOKE_SCREENSHOTS=1` also saves desktop and phone screenshots to
+`.tools/browser-results/ui-screenshots/`. Exit codes: 0 PASS, 1 FAIL, 2 NOT_RUN, 3 BLOCKED.
+Chromium only; Firefox/WebKit and real platform authenticators are not covered.

@@ -111,9 +111,46 @@ jobs:
           node-version: "26"
       - name: npm audit (high and above)
         run: npm audit --audit-level=high
+      - name: npm audit web UI runtime dependencies (high and above)
+        # Gates only what ships in the embedded UI (react, react-dom). As of
+        # 2026-11-17 every picomatch release (used by the Vite/Vitest build and test
+        # tooling on trusted config globs, never shipped) carries GHSA-fc5q-39xc-vjpf
+        # with no patched version; see the Task 6 report.
+        working-directory: web
+        run: npm audit --omit=dev --audit-level=high
+
+  web:
+    # The sign-in UI (web/) is built into internal/webui/static and embedded in the
+    # Go binary. The committed build must match a fresh build from the lockfile.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install (lockfile)
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Component and flow tests
+        run: npm test
+      - name: Build
+        run: npm run build
+      - name: Embedded build is up to date
+        working-directory: .
+        run: |
+          git add --intent-to-add internal/webui/static
+          git diff --exit-code --stat -- internal/webui/static
 
   build:
-    needs: [test, race, govulncheck, browser-harness, npm-audit]
+    needs: [test, race, govulncheck, browser-harness, npm-audit, web]
     runs-on: ubuntu-latest
     env:
       CGO_ENABLED: "0"

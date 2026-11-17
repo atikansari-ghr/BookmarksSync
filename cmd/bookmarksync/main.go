@@ -23,6 +23,7 @@ import (
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
 	"github.com/atikansari-ghr/BookmarksSync/internal/version"
+	"github.com/atikansari-ghr/BookmarksSync/internal/webui"
 )
 
 const usage = `usage:
@@ -54,7 +55,8 @@ const serveUsage = `usage: bookmarksync serve [--listen host:port] [--data-dir d
   --public-url  browser origin users reach the server at, e.g. https://bookmarks.example.com
                 (env BOOKMARKSYNC_PUBLIC_URL; https required except loopback). Enables
                 browser sign-in under /api/v1/auth (password, TOTP, and passkeys when
-                the host is a domain name); unset leaves it disabled.
+                the host is a domain name) and the sign-in pages under /auth/;
+                unset leaves both disabled.
 
 OpenID Connect sign-in (requires --public-url; environment variables only, so client
 secrets never appear in process listings):
@@ -168,7 +170,12 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 			_ = ln.Close()
 			return err
 		}
-		register = append(register, authH.Register, apiH.Register)
+		ui, err := webui.New(webui.Files())
+		if err != nil {
+			_ = ln.Close()
+			return err
+		}
+		register = append(register, authH.Register, apiH.Register, ui.Register)
 	} else {
 		log.Warn("browser sign-in disabled: set " + config.EnvPublicURL + " to enable /api/v1/auth")
 	}

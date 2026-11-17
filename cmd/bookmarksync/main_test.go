@@ -412,3 +412,32 @@ func TestServeRejectsPartialOIDCConfigurationWithoutLeakingSecrets(t *testing.T)
 		t.Fatalf("code %d stderr %q", code, errb.String())
 	}
 }
+
+func TestServeServesTheSignInUIOnlyWithAPublicURL(t *testing.T) {
+	base, stop := startServe(t, map[string]string{"BOOKMARKSYNC_PUBLIC_URL": "http://localhost:1"})
+	defer stop()
+	resp, err := http.Get(base + "/auth/login")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), `<div id="root">`) || resp.Header.Get("Content-Security-Policy") == "" {
+		t.Fatalf("sign-in page: %d %v", resp.StatusCode, resp.Header)
+	}
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	r2, err := client.Get(base + "/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r2.Body.Close()
+	if r2.StatusCode != http.StatusFound || r2.Header.Get("Location") != "/auth/login" {
+		t.Fatalf("root: %d %q", r2.StatusCode, r2.Header.Get("Location"))
+	}
+
+	plain, stopPlain := startServe(t, nil)
+	defer stopPlain()
+	if code := request(t, "GET", plain+"/auth/login", ""); code != http.StatusNotFound {
+		t.Fatalf("UI without a public URL: %d, want 404", code)
+	}
+}

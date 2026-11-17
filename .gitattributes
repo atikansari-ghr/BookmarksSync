@@ -1,0 +1,3 @@
+# The embedded web UI build is committed exactly as Vite writes it (LF); never
+# convert line endings, so the CI "embedded build is up to date" check is stable.
+internal/webui/static/** -text
