@@ -168,8 +168,12 @@ describe('security page', () => {
     const user = userEvent.setup()
     const sec = await screen.findByRole('region', { name: 'Floccus connections' })
     await user.type(within(sec).getByLabelText('Connection name'), 'work laptop')
+    const access = within(sec).getByLabelText('Access') as HTMLSelectElement
+    expect(access.value).toBe('edit')
     await user.selectOptions(within(sec).getByLabelText('Bookmarks'), 'Team links (shared, view only)')
-    await user.selectOptions(within(sec).getByLabelText('Access'), 'view')
+    // A view-only share cannot back a read/write connection, so the form must not offer one.
+    expect(access.value).toBe('view')
+    expect(within(access).queryByRole('option', { name: 'Read and write' })).not.toBeInTheDocument()
     await user.click(within(sec).getByRole('button', { name: 'Create connection' }))
     const reveal = await within(sec).findByRole('group', { name: 'Set up Floccus now' })
     expect(within(reveal).getByText('bms1.9.APPPASSWORD')).toBeInTheDocument()
@@ -181,6 +185,45 @@ describe('security page', () => {
     await user.click(within(sec).getByRole('button', { name: 'Revoke work laptop' }))
     await user.click(await screen.findByRole('button', { name: 'Revoke connection' }))
     await waitFor(() => expect(srv.find('DELETE', '/api/v1/me/connections/9')).toHaveLength(1))
+  })
+
+  it('keeps read/write connections available for your bookmarks and editable shares', async () => {
+    const posted: unknown[] = []
+    const srv = mockServer(base({
+      'GET /api/v1/shares/incoming': { status: 200, body: { shares: [
+        { id: 4, folderTitle: 'Team links', mode: 'view', ownerId: 2 },
+        { id: 5, folderTitle: 'Project', mode: 'edit', ownerId: 3 },
+      ] } },
+      'POST /api/v1/me/connections': (c) => {
+        posted.push(c.body)
+        return { status: 201, body: { connection: { id: posted.length }, secret: `bms1.${posted.length}.SECRET` } }
+      },
+    }))
+    render(<App />)
+    const user = userEvent.setup()
+    const sec = await screen.findByRole('region', { name: 'Floccus connections' })
+    const bookmarks = within(sec).getByLabelText('Bookmarks')
+    await within(bookmarks).findByRole('option', { name: 'Project (shared, can edit)' })
+    let access = within(sec).getByLabelText('Access') as HTMLSelectElement
+    // Choosing a view-only share and then going back restores read/write as the default.
+    await user.selectOptions(bookmarks, 'Team links (shared, view only)')
+    expect(access.value).toBe('view')
+    await user.selectOptions(bookmarks, 'Your bookmarks')
+    expect(access.value).toBe('edit')
+    expect(within(access).getByRole('option', { name: 'Read only (download changes)' })).toBeInTheDocument()
+    await user.type(within(sec).getByLabelText('Connection name'), 'home')
+    await user.click(within(sec).getByRole('button', { name: 'Create connection' }))
+    await user.click(await within(sec).findByRole('button', { name: 'Done' }))
+
+    await user.type(within(sec).getByLabelText('Connection name'), 'office')
+    await user.selectOptions(within(sec).getByLabelText('Bookmarks'), 'Project (shared, can edit)')
+    access = within(sec).getByLabelText('Access') as HTMLSelectElement
+    expect(access.value).toBe('edit')
+    expect(within(access).getByRole('option', { name: 'Read only (download changes)' })).toBeInTheDocument()
+    await user.click(within(sec).getByRole('button', { name: 'Create connection' }))
+    await within(sec).findByRole('group', { name: 'Set up Floccus now' })
+    expect(posted).toEqual([{ label: 'home', mode: 'edit' }, { label: 'office', mode: 'edit', shareId: 5 }])
+    expect(srv.find('POST', '/api/v1/me/connections')).toHaveLength(2)
   })
 
   it('sets up TOTP, shows recovery codes once, and turns it off with a code', async () => {

@@ -36,6 +36,14 @@ export function ConnectionsSection({ notify, username }: { notify: Notify; usern
   const [revoking, setRevoking] = useState<Connection | null>(null)
   const shareList = shares.state === 'ready' ? shares.data : []
   const shareTitle = (id?: number) => shareList.find((s) => s.id === id)?.folderTitle
+  // A view-only share can only back a read-only connection; the server refuses edit.
+  const isViewOnly = (id: string) => shareList.find((s) => String(s.id) === id)?.mode === 'view'
+  const viewOnly = isViewOnly(target)
+
+  function chooseTarget(id: string) {
+    setTarget(id)
+    setMode(isViewOnly(id) ? 'view' : 'edit')
+  }
 
   async function create(e: FormEvent) {
     e.preventDefault()
@@ -93,7 +101,7 @@ export function ConnectionsSection({ notify, username }: { notify: Notify; usern
           </label>
           <label className="field">
             <span>Bookmarks</span>
-            <select value={target} onChange={(e) => setTarget(e.target.value)}>
+            <select value={target} onChange={(e) => chooseTarget(e.target.value)}>
               <option value="">Your bookmarks</option>
               {shareList.map((s) => (
                 <option key={s.id} value={String(s.id)}>{`${s.folderTitle} (shared, ${s.mode === 'edit' ? 'can edit' : 'view only'})`}</option>
@@ -103,7 +111,7 @@ export function ConnectionsSection({ notify, username }: { notify: Notify; usern
           <label className="field">
             <span>Access</span>
             <select value={mode} onChange={(e) => setMode(e.target.value)}>
-              <option value="edit">Read and write</option>
+              {!viewOnly && <option value="edit">Read and write</option>}
               <option value="view">Read only (download changes)</option>
             </select>
           </label>
