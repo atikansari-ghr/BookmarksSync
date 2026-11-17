@@ -40,11 +40,11 @@
 
 **Interfaces:** Add service methods for creating, resolving, listing, revoking, and expiring sessions and personal API tokens. Session/token secrets are generated from cryptographic randomness and stored only as SHA-256 hashes. Token scopes are `bookmarks:read`, `bookmarks:write`, `shares:read`, and `shares:manage`; personal tokens never authorize admin endpoints. Migration 0003 creates the complete milestone schema up front: sessions, API tokens, WebAuthn credentials, encrypted TOTP state, recovery codes, linked OIDC subjects, short-lived auth flows, and whitelisted user settings. Later tasks consume this schema without editing an applied migration.
 
-- [ ] Write tests for opaque secret generation, hash-only persistence, session idle/absolute expiry, rotation, per-session revoke, user-wide revocation, token scopes, and one-time token display.
-- [ ] Run focused identity tests and confirm they fail for missing schema and methods.
-- [ ] Add the migration and service methods. Make deactivation revoke web sessions and API tokens in the same transaction as existing credential revocation.
-- [ ] Run focused tests, `go test -count=1 ./...`, `go vet ./...`, and `gofmt -l cmd internal`.
-- [ ] Commit the task and provide Claude's change summary and test output for Codex review.
+- [x] Write tests for opaque secret generation, hash-only persistence, session idle/absolute expiry, rotation, per-session revoke, user-wide revocation, token scopes, and one-time token display.
+- [x] Run focused identity tests and confirm they fail for missing schema and methods.
+- [x] Add the migration and service methods. Make deactivation revoke web sessions and API tokens in the same transaction as existing credential revocation.
+- [x] Run focused tests, `go test -count=1 ./...`, `go vet ./...`, and `gofmt -l cmd internal`.
+- [x] Commit the task and provide Claude's change summary and test output for Codex review.
 
 ### Task 2: Browser password login, sessions, CSRF, and reauthentication
 
