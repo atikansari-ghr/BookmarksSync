@@ -2,29 +2,31 @@
 
 ## Project Structure & Module Organization
 
-This directory is the starting workspace for BookmarksSync. No source code, tests, assets, package manifests, or Git metadata currently exist. Update this guide as the project takes shape.
+BookmarksSync is a Go service with local SQLite storage. The CLI lives in `cmd/bookmarksync/`; focused backend packages and embedded SQL migrations live in `internal/`. Go tests sit beside implementation files as `*_test.go`.
 
-When adding code, group related modules by responsibility and keep tests close to the code they verify or in a clearly named `tests/` directory. Place static assets in an `assets/` directory when needed. Document the actual layout in the README once it exists.
+`tests/browser/` contains isolated stock-floccus extension tests. `docs/design.md` defines the approved behavior; `docs/implementation-plan.md` tracks milestones. `mocscreenshots/` contains UI references, not screenshots of a completed application. Keep local tools, databases, and worker scratch files in ignored directories.
 
 ## Build, Test, and Development Commands
 
-No build, test, lint, or local development commands are configured yet. Do not assume commands such as `npm test` or `npm run build` are available.
+- `go run ./cmd/bookmarksync serve --listen 127.0.0.1:8080 --data-dir ./data`: start locally.
+- `go test ./...`: run backend tests against temporary databases.
+- `go vet ./...`: check Go code; `gofmt -l cmd internal` should print nothing.
+- `go build ./cmd/bookmarksync`: build the CLI/server.
+- In `tests/browser/`, run `npm ci`, then `npm test` for harness unit tests. Follow its README for extension assets and real-browser smoke commands.
 
-When introducing a toolchain, provide reproducible setup instructions and record the exact commands here and in the README. Include dependency installation, local execution, testing, and production builds where applicable.
+Use the Go version in `go.mod`. Current health endpoints are `/healthz`, `/readyz`, and `/api/v1/version`. Check the README for implemented features before assuming a planned feature works.
 
 ## Coding Style & Naming Conventions
 
-No language, indentation standard, formatter, or linter has been selected. Follow the surrounding code once conventions exist; avoid unrelated formatting changes. Choose descriptive names that reflect each module's responsibility.
-
-When selecting a language, add its formatter and lint configuration, document indentation and naming rules, and use those tools consistently.
+Use `gofmt` for Go indentation and formatting. Keep feature packages focused and reuse domain services across protocol adapters. Follow existing JavaScript module style in browser tests. Avoid unrelated formatting changes.
 
 ## Testing Guidelines
 
-No testing framework or coverage threshold is configured. Add automated tests alongside meaningful behavior changes, including relevant edge cases and failure paths. Use descriptive test names that state the expected behavior. Document the framework, test file naming pattern, and execution command when the first tests are introduced.
+Use Go's `testing`/`httptest` packages with real temporary SQLite databases. Cover authorization failures, persistence, and transactional behavior. Add reproducing regression tests before bug fixes. No arbitrary coverage percentage is configured. Browser tests must use disposable profiles; distinguish PASS, FAIL, BLOCKED, and PENDING. Protocol tests alone do not establish real floccus compatibility.
 
 ## Commit & Pull Request Guidelines
 
-No Git history is available to establish a commit convention. Use concise, imperative commit subjects, such as `Add bookmark import validation`. Keep changes focused.
+Follow the history's concise imperative subjects, such as `Add bookmark import validation`. Keep commits focused.
 
 Pull requests should explain the change, link relevant issues, and report validation performed. Include screenshots for visible interface changes. Identify untested behavior explicitly.
 

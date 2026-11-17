@@ -9,3 +9,9 @@ coverage/
 .env
 .env.*
 !.env.example
+*.db
+*.db-*
+*.sqlite
+*.sqlite3
+floccus.export.json
+bookmarksync-backup-*
