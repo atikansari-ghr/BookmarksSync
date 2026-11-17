@@ -25,8 +25,8 @@ npm run smoke:chromium         # baseline: Playwright full Chromium, headless
 npm run smoke:brave
 npm run smoke:edge
 npm run smoke:chrome           # branded Chrome, loaded over CDP (see "Native Chrome")
-npm run pending                # server capability placeholders, all PENDING
-npm test                       # unit tests for profile cleanup failure handling
+npm run server-sync            # real server + real browsers (see "Real server sync"); exit 0 PASS, 1 FAIL, 2 NOT_RUN, 3 BLOCKED
+npm test                       # unit tests: profile cleanup + server-sync helpers (no browser needed)
 ```
 
 Environment overrides use `$env:NAME = "value"` in PowerShell (e.g.
@@ -67,7 +67,7 @@ Results (JSON, with versions and profile path) go to `.tools/browser-results/` (
   message as `Controller.syncAccount` and waits for `syncAccountResponse` (bounded, no polling).
 - `getAccountStatus` returns stored account data with password/passphrase removed.
 
-The app credential comes from the environment (`BOOKMARKSYNC_APP_TOKEN`); never put it in a file or log.
+`server-sync.mjs` generates its own disposable credentials; never put a real credential in a file or log.
 
 ## Browser support
 
@@ -109,3 +109,26 @@ The floccus app token (`BOOKMARKSYNC_APP_TOKEN`) is passed in by the test proces
 the extension in `chrome.storage.local` inside the disposable profile only. The harness never
 writes it to result JSON or logs, and the profile (with the token) is deleted on clean shutdown. If
 cleanup fails the profile is retained and may still contain it; delete it by hand.
+
+## Real server sync (`npm run server-sync`)
+
+`node server-sync.mjs [--browser=chrome,edge,brave,firefox] [--headed] [--trace] [--bump-ids=N]`
+
+Builds the real server (`go build`, needs `.tools/go` or `BH_GO_EXE`), starts it on a random loopback port
+with a fresh data directory under `.tools/server-sync/run-*` (marked, deleted only after the checks), creates
+disposable users and app credentials with the real CLI (passwords only on child stdin, app secrets only in this
+process' memory, never written; results and logs are sanitised), launches **stock floccus 5.13.0** in disposable
+profiles and drives the genuine `syncAccount` RPC and the native bookmarks API. Per browser it checks the
+server request log, the server's API view and the real native trees: upload from a native sandbox, download into
+a second isolated profile, both canonical roots, order/move/rename/delete, capabilities, lock and 423 contention,
+a read-only credential, a cross-scope same-URL collision and the documented lookup-first 409. A missing prerequisite
+(browser, go, extension) is `NOT_RUN` (exit 2), never a pass; a sync case only passes with real server requests
+and a check of the actual native tree.
+
+`--trace` routes floccus through a harness-owned recording proxy and records native bookmark events plus
+floccus's own debug log. `--bump-ids=N` is an experiment that pushes the server's ids far above the browser's.
+`node order-trace.mjs` is the standalone version of the ordering diagnosis.
+
+Known failing case: floccus 5.13.0 can reorder a downloaded folder wrongly when a server folder id equals a local
+folder id (see `.superpowers/sdd/bookmarksync/server-sync-report.md`). That makes the ordering cases FAIL
+intermittently until the wire ids are namespaced; this is intentional and must not be hidden by retries.

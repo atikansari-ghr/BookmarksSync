@@ -8,13 +8,13 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test test/cleanup.test.mjs",
+    "test": "node --test test/cleanup.test.mjs test/server-sync.test.mjs",
     "smoke": "node smoke.mjs",
     "smoke:chromium": "node smoke.mjs --browser=chromium",
     "smoke:brave": "node smoke.mjs --browser=brave",
     "smoke:chrome": "node smoke.mjs --browser=chrome",
     "smoke:edge": "node smoke.mjs --browser=edge",
-    "pending": "node server-capability.pending.mjs",
+    "server-sync": "node server-sync.mjs",
     "test:firefox": "node --test test/firefox-cleanup.test.mjs test/firefox-startup.test.mjs test/profile-containment.test.mjs",
     "smoke:firefox": "node firefox-smoke.mjs"
   },
