@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { beforeEach, describe, expect, it } from 'vitest'
 import { App } from '../App'
@@ -59,6 +59,23 @@ describe('link checks in the organizer', () => {
     expect(polls).toBeGreaterThanOrEqual(2)
     expect(srv.find('GET', '/api/v1/link-checks/12')).toHaveLength(polls)
   }, 7500)
+
+  it('stops status polling after a permanent client error', async () => {
+    const ws = fakeWorkspace()
+    const srv = mockServer({
+      ...ws.routes,
+      'POST /api/v1/link-checks': { status: 202, body: { id: 13, status: 'queued', total: 1, done: 0, results: [] } },
+      'GET /api/v1/link-checks/13': err(404, 'not_found'),
+    })
+    render(<App />)
+    const user = userEvent.setup()
+    await openWork(user)
+    await user.click(screen.getByRole('checkbox', { name: 'Select GitHub' }))
+    await user.click(screen.getByRole('button', { name: 'Check links (1)' }))
+    await waitFor(() => expect(screen.getByRole('alert')).toBeInTheDocument(), { timeout: 4000 })
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 1600)) })
+    expect(srv.find('GET', '/api/v1/link-checks/13')).toHaveLength(1)
+  }, 6000)
 
   it('edits the signed-in user exclusion list without changing other settings', async () => {
     const ws = fakeWorkspace()

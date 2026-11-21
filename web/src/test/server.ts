@@ -14,7 +14,7 @@ export interface Reply {
   headers?: Record<string, string>
 }
 
-export type Route = Reply | ((call: Call) => Reply)
+export type Route = Reply | ((call: Call) => Reply | Promise<Reply>)
 
 /**
  * mockServer replaces fetch with a small route table keyed by "METHOD /path" (path
@@ -42,7 +42,7 @@ export function mockServer(routes: Record<string, Route>) {
     const route = table[`${method} ${url.pathname}`]
     const reply: Reply = route === undefined
       ? { status: 404, body: { error: { code: 'not_found', message: 'resource not found' } } }
-      : typeof route === 'function' ? route(call) : route
+      : typeof route === 'function' ? await route(call) : route
     const text = reply.body === undefined ? '' : JSON.stringify(reply.body)
     return new Response(reply.status === 204 ? null : text, {
       status: reply.status,

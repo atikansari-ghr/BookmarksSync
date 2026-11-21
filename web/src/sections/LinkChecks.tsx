@@ -31,6 +31,7 @@ export function LinkChecks({ api, client, bookmarkIds, canSubmit, onNotice }: {
       }).catch((err) => {
         if (live && !isCancelled(err)) {
           setError(serverMessage(err, 'The check status could not be loaded.'))
+          if (err instanceof ApiError && err.status >= 400 && err.status < 500 && err.status !== 429) return
           // Updating the job restarts this effect's bounded polling delay after a
           // transient network/server failure. The job itself remains unchanged.
           setJob((current) => current ? { ...current } : current)

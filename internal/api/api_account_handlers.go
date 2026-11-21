@@ -382,6 +382,13 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 				return true
 			}
 			a.assetMu.Lock()
+			for key, value := range changes {
+				if value != nil && (key == "branding.logo-id" || key == "branding.background-id") && !a.brandingAssetExists(*value) {
+					a.assetMu.Unlock()
+					server.WriteError(w, http.StatusBadRequest, "invalid_setting", "branding images must refer to an uploaded asset")
+					return true
+				}
+			}
 			old, oldErr := a.ids.SystemSettings(r.Context())
 			if oldErr != nil {
 				a.assetMu.Unlock()
@@ -389,11 +396,12 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 				return true
 			}
 			settings, err := a.ids.UpdateSystemSettings(r.Context(), changes)
-			a.assetMu.Unlock()
 			if err != nil {
+				a.assetMu.Unlock()
 				writeDomainError(w, err)
 			} else {
 				a.cleanupUnreferencedBrandingAssets([]string{old["branding.logo-id"], old["branding.background-id"]}, settings)
+				a.assetMu.Unlock()
 				a.recordAdminActivity(r, "system_settings_updated", "system", 0)
 				writeJSON(w, 200, map[string]any{"settings": settings})
 			}

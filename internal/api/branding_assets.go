@@ -51,7 +51,7 @@ func (a *API) brandingAssetExists(id string) bool {
 
 // Remove only generated assets that are no longer referenced by either login
 // setting. Callers serialize settings changes with assetMu to prevent races with
-// another upload or settings update.
+// another upload or settings update. Callers must hold assetMu through cleanup.
 func (a *API) cleanupUnreferencedBrandingAssets(candidates []string, settings map[string]string) {
 	for _, id := range candidates {
 		if !assetID(id) || brandingAssetReferenced(id, settings) {
@@ -187,13 +187,14 @@ func (a *API) uploadBrandingAsset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	settings, err := a.ids.UpdateSystemSettings(r.Context(), map[string]*string{settingKey: &id})
-	a.assetMu.Unlock()
 	if err != nil {
+		a.assetMu.Unlock()
 		_ = os.Remove(path)
 		writeDomainError(w, err)
 		return
 	}
 	a.cleanupUnreferencedBrandingAssets([]string{old[settingKey]}, settings)
+	a.assetMu.Unlock()
 	a.recordAdminActivity(r, "branding_asset_uploaded", "system", 0)
 	writeJSON(w, http.StatusCreated, map[string]any{"url": "/api/v1/auth/presentation/assets/" + id, "settings": settings})
 }

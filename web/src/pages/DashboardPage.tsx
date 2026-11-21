@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError } from '../api'
 import { Busy } from '../components/common'
 import { Workspace } from '../components/Workspace'
@@ -42,6 +42,7 @@ function Dashboard() {
   const [error, setError] = useState('')
   const [saved, setSaved] = useState(false)
   const [mobile, setMobile] = useState(window.innerWidth <= 560)
+  const themeChangeVersion = useRef(0)
 
   useEffect(() => {
     const resize = () => setMobile(window.innerWidth <= 560)
@@ -104,20 +105,23 @@ function Dashboard() {
   async function chooseTheme(name: string) {
     const previous = theme
     const next = { ...theme, name }
+    const version = ++themeChangeVersion.current
     setTheme(next)
-    if (!(await updateSetting('ui.theme', name))) setTheme(previous)
+    if (!(await updateSetting('ui.theme', name)) && themeChangeVersion.current === version) setTheme(previous)
   }
   async function chooseScheme(scheme: 'light' | 'dark') {
     const previous = theme
     const next = { ...theme, scheme }
+    const version = ++themeChangeVersion.current
     setTheme(next)
-    if (!(await updateSetting('ui.color-scheme', scheme))) setTheme(previous)
+    if (!(await updateSetting('ui.color-scheme', scheme)) && themeChangeVersion.current === version) setTheme(previous)
   }
   async function chooseTransparency(reducedTransparency: boolean) {
     const previous = theme
     const next = { ...theme, reducedTransparency }
+    const version = ++themeChangeVersion.current
     setTheme(next)
-    if (!(await updateSetting('ui.reduced-transparency', String(reducedTransparency)))) setTheme(previous)
+    if (!(await updateSetting('ui.reduced-transparency', String(reducedTransparency))) && themeChangeVersion.current === version) setTheme(previous)
   }
 
   return <>
@@ -125,16 +129,16 @@ function Dashboard() {
     {saved && <p className="success" role="status">Preferences saved.</p>}
     <section className="ws-card glass dashboard-preferences" aria-label="Dashboard preferences">
       <div><h2>Appearance</h2><p className="muted small">Choose a look and adjust how much glass effect you see.</p></div>
-      <label className="field"><span>Theme</span><select value={theme.name} onChange={(e) => void chooseTheme(e.target.value)}>
+      <label className="field"><span>Theme</span><select disabled={busy} value={theme.name} onChange={(e) => void chooseTheme(e.target.value)}>
         <option value="classic">Classic</option><option value="ocean-glass">Ocean Glass</option><option value="midnight-glass">Midnight Glass</option><option value="warm-glass">Warm Glass</option>
       </select></label>
-      <label className="field"><span>Colors</span><select value={theme.scheme} onChange={(e) => void chooseScheme(e.target.value as 'light' | 'dark')}><option value="light">Light</option><option value="dark">Dark</option></select></label>
-      <label className="check"><input type="checkbox" checked={theme.reducedTransparency} onChange={(e) => void chooseTransparency(e.target.checked)} /> Reduce transparency</label>
+      <label className="field"><span>Colors</span><select disabled={busy} value={theme.scheme} onChange={(e) => void chooseScheme(e.target.value as 'light' | 'dark')}><option value="light">Light</option><option value="dark">Dark</option></select></label>
+      <label className="check"><input type="checkbox" disabled={busy} checked={theme.reducedTransparency} onChange={(e) => void chooseTransparency(e.target.checked)} /> Reduce transparency</label>
     </section>
     <div className="dashboard-tools">
-      <h2>Overview</h2><button type="button" className="btn ghost small" onClick={() => void persistLayout(DEFAULT_LAYOUT)}>Reset widgets</button>
+      <h2>Overview</h2><button type="button" className="btn ghost small" disabled={busy} onClick={() => void persistLayout(DEFAULT_LAYOUT)}>Reset widgets</button>
     </div>
-    <fieldset className="widget-visibility ws-card glass">
+    <fieldset className="widget-visibility ws-card glass" disabled={busy}>
       <legend>Visible widgets</legend>
       {ordered.map((w) => <label className="check" key={w.id}><input type="checkbox" aria-label={`Show ${names[w.id]}`} checked={w.visible} onChange={(e) => void persistLayout({ widgets: layout.widgets.map((x) => x.id === w.id ? { ...x, visible: e.target.checked } : x) })} />{names[w.id]}</label>)}
     </fieldset>

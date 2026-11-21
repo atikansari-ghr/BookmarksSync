@@ -46,6 +46,23 @@ describe('user dashboard', () => {
     await waitFor(() => expect(within(grid).getByRole('article', { name: 'Total Bookmarks' })).toBeInTheDocument())
   })
 
+  it('keeps dashboard preferences disabled until saved settings load', async () => {
+    let finishSettings!: (reply: { status: number; body: unknown }) => void
+    const settings = new Promise<{ status: number; body: unknown }>((resolve) => { finishSettings = resolve })
+    mockServer({
+      ...routes(),
+      'GET /api/v1/me/settings': () => settings,
+    })
+    render(<App />)
+    expect(await screen.findByLabelText('Theme')).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Reset widgets' })).toBeDisabled()
+    expect(screen.getByRole('checkbox', { name: 'Show Total Bookmarks' })).toBeDisabled()
+    finishSettings({ status: 200, body: { settings: {} } })
+    await waitFor(() => expect(screen.getByLabelText('Theme')).toBeEnabled())
+    expect(screen.getByRole('button', { name: 'Reset widgets' })).toBeEnabled()
+    expect(screen.getByRole('checkbox', { name: 'Show Total Bookmarks' })).toBeEnabled()
+  })
+
   it('DashboardFallsBackAtMobileWidth', async () => {
     window.innerWidth = 390
     const server = mockServer(routes())
@@ -92,6 +109,30 @@ describe('user dashboard', () => {
     fireEvent.change(theme, { target: { value: 'midnight-glass' } })
     await waitFor(() => expect(document.documentElement.dataset.theme).toBe('midnight-glass'))
     expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('does not let an older failed theme save undo a newer successful choice', async () => {
+    let failFirst!: (reply: { status: number; body: unknown }) => void
+    let writes = 0
+    const server = mockServer({
+      ...routes(),
+      'PATCH /api/v1/me/settings': () => {
+        writes++
+        if (writes === 1) return new Promise<{ status: number; body: unknown }>((resolve) => { failFirst = resolve })
+        return { status: 200, body: { settings: {} } }
+      },
+    })
+    render(<App />)
+    await screen.findByRole('region', { name: 'Dashboard widgets' })
+    const theme = screen.getByLabelText('Theme')
+    fireEvent.change(theme, { target: { value: 'warm-glass' } })
+    fireEvent.change(theme, { target: { value: 'midnight-glass' } })
+    await waitFor(() => expect(server.find('PATCH', '/api/v1/me/settings')).toHaveLength(2))
+    await waitFor(() => expect(document.documentElement.dataset.theme).toBe('midnight-glass'))
+    failFirst({ status: 500, body: { error: { code: 'save_failed', message: 'save failed' } } })
+    await screen.findByRole('alert')
+    expect(theme).toHaveValue('midnight-glass')
+    expect(document.documentElement.dataset.theme).toBe('midnight-glass')
   })
 
   it('restores the previous widget order when saving a reorder fails', async () => {

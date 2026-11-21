@@ -167,6 +167,16 @@ func TestBrandingAssetsAreOnlyServedWhenReferenced(t *testing.T) {
 	}
 }
 
+func TestAdminSettingsCannotReferenceMissingBrandingAsset(t *testing.T) {
+	e := newTEnv(t)
+	root := e.login(e.root)
+	missing := "0123456789abcdef0123456789abcdef"
+	rec := e.do("PATCH", "/api/v1/admin/settings", map[string]any{"branding.logo-id": missing}, root.mods()...)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("setting missing logo asset = %d %s, want 400", rec.Code, rec.Body.String())
+	}
+}
+
 func TestReplacingBrandingSettingKeepsAssetReferencedByOtherSetting(t *testing.T) {
 	e := newTEnv(t)
 	root := e.login(e.root)
@@ -193,8 +203,12 @@ func TestReplacingBrandingSettingKeepsAssetReferencedByOtherSetting(t *testing.T
 func TestPublicPresentationOnlyReturnsSafeBranding(t *testing.T) {
 	e := newTEnv(t)
 	root := e.login(e.root)
-	if rec := e.do("PATCH", "/api/v1/admin/settings", map[string]any{"branding.app-title": "My Private Server", "branding.primary-color": "#124488", "branding.logo-id": "0123456789abcdef0123456789abcdef"}, root.mods()...); rec.Code != 200 {
+	if rec := e.do("PATCH", "/api/v1/admin/settings", map[string]any{"branding.app-title": "My Private Server", "branding.primary-color": "#124488"}, root.mods()...); rec.Code != 200 {
 		t.Fatalf("branding settings = %d %s", rec.Code, rec.Body.String())
+	}
+	missing := "0123456789abcdef0123456789abcdef"
+	if _, err := e.ids.UpdateSystemSettings(t.Context(), map[string]*string{"branding.logo-id": &missing}); err != nil {
+		t.Fatal(err)
 	}
 	rec := e.do("GET", "/api/v1/auth/presentation", nil)
 	if rec.Code != 200 {
