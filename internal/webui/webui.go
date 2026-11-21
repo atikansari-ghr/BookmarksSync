@@ -1,7 +1,8 @@
 // Package webui serves the embedded sign-in and account-security interface (built
-// from web/ with Vite into static/) under /auth/. Pages get a strict
-// Content-Security-Policy and are never cached; content-hashed assets are cached
-// immutably. Only the known pages and files are served: anything else is 404.
+// from web/ with Vite into static/) under /auth/, plus the workspace pages at exact
+// paths. Pages get a strict Content-Security-Policy and are
+// never cached; content-hashed assets are cached immutably. Only the known pages and
+// files are served: anything else is 404.
 package webui
 
 import (
@@ -71,6 +72,19 @@ func (u *UI) Register(r server.Registrar) {
 	r.Handle("GET /auth/", http.HandlerFunc(u.serve))
 	r.Handle("GET /auth", http.HandlerFunc(u.serve))
 	r.Handle("GET /{$}", http.RedirectHandler("/auth/login", http.StatusFound))
+	// Workspace pages: exact paths only, so no unknown path falls back to the app shell.
+	for _, page := range []string{"/bookmarks", "/duplicates", "/dashboard", "/admin"} {
+		r.Handle("GET "+page, http.HandlerFunc(u.serveShell))
+	}
+}
+
+func (u *UI) serveShell(w http.ResponseWriter, r *http.Request) {
+	pageHeaders(w.Header())
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	if r.Method != http.MethodHead {
+		_, _ = w.Write(u.index)
+	}
 }
 
 func pageHeaders(h http.Header) {

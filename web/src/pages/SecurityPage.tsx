@@ -83,6 +83,7 @@ export function SecurityPage({ initialNotice }: { initialNotice?: string }) {
         </p>
         <div className="whoami-bar">
           <p className="whoami">Signed in as <strong>{session.user.username}</strong></p>
+          <button type="button" className="btn ghost" onClick={() => navigate('/dashboard')}>Dashboard</button>
           <button type="button" className="btn ghost" onClick={signOut}>Sign out</button>
         </div>
       </header>

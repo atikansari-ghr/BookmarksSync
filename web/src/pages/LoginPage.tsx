@@ -8,20 +8,17 @@ import { SecondFactorForm } from './SecondFactor'
 
 /** The split-screen layout shared by the sign-in pages. */
 export function AuthLayout({ children }: { children: ReactNode }) {
+  const { presentation } = useApp()
   return (
-    <div className="auth-layout">
-      <aside className="hero" aria-label="BookmarksSync">
+    <div className={`auth-layout auth-layout-${presentation.loginLayout}`}>
+      <aside className="hero" aria-label={presentation.appTitle}>
         <p className="brand">
-          <BookmarkLogo size={34} />
-          <span className="brand-name">BookmarksSync</span>
+          {presentation.logoUrl ? <img className="login-logo" src={presentation.logoUrl} alt="" /> : <BookmarkLogo size={34} />}
+          <span className="brand-name">{presentation.appTitle}</span>
         </p>
-        <p className="tagline">
-          <span>Your bookmarks.</span>
-          <span>Your browsers.</span>
-          <span className="accent">Your control.</span>
-        </p>
-        <p className="supporting">A self-hosted home for your bookmarks.</p>
-        <HeroArt />
+        <p className="tagline">{presentation.tagline}</p>
+        <p className="supporting">{presentation.supportingLine}</p>
+        {presentation.backgroundUrl ? <div className="login-background-image" aria-hidden="true" style={{ backgroundImage: `linear-gradient(135deg, color-mix(in srgb, var(--login-background) 35%, transparent), color-mix(in srgb, var(--login-primary) 48%, transparent)), url("${presentation.backgroundUrl}")` }} /> : <HeroArt />}
       </aside>
       <main className="auth-main">
         <div className="card glass">{children}</div>
@@ -32,7 +29,7 @@ export function AuthLayout({ children }: { children: ReactNode }) {
 }
 
 export function LoginPage() {
-  const { client, navigate, setSession, leave } = useApp()
+  const { client, navigate, setSession, leave, presentation } = useApp()
   const [providers, setProviders] = useState<Provider[]>([])
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
@@ -143,7 +140,7 @@ export function LoginPage() {
 
   return (
     <AuthLayout>
-      <h1>Personal Bookmarks Server</h1>
+      <h1>{presentation.signinTitle}</h1>
       <p className="muted center">Sign in to your account</p>
       {error && <p className="error" role="alert">{error}</p>}
       {providers.length > 0 && (

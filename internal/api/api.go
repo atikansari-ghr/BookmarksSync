@@ -12,11 +12,14 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/auth"
 	"github.com/atikansari-ghr/BookmarksSync/internal/bookmarks"
+	"github.com/atikansari-ghr/BookmarksSync/internal/health"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
+	"github.com/atikansari-ghr/BookmarksSync/internal/linkcheck"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
 )
 
@@ -32,6 +35,9 @@ func BodyLimit(r *http.Request) int64 {
 	if r.Method == http.MethodPost && r.URL.Path == "/api/v1/import" {
 		return importBodyLimit
 	}
+	if r.Method == http.MethodPost && r.URL.Path == "/api/v1/admin/settings/assets" {
+		return (2 << 20) + (64 << 10)
+	}
 	return 0
 }
 
@@ -41,6 +47,7 @@ type Identity interface {
 	GetUserByID(context.Context, int64) (identity.UserInfo, error)
 	ListUsers(context.Context) ([]identity.UserInfo, error)
 	ListUsersPage(context.Context, int, int) ([]identity.UserInfo, error)
+	ListUserThemeDefaults(context.Context) (map[int64]string, error)
 	CreateUser(context.Context, string, string, bool) (identity.User, error)
 	UpdateUser(context.Context, int64, *bool, *bool) (identity.User, error)
 	ChangePassword(context.Context, int64, int64, string) (identity.SessionRotation, error)
@@ -54,6 +61,12 @@ type Identity interface {
 	RevokeUserCredential(context.Context, int64, int64) error
 	Settings(context.Context, int64) (map[string]string, error)
 	UpdateSettings(context.Context, int64, map[string]*string) (map[string]string, error)
+	UserSettingDefaults(context.Context, int64) (map[string]string, error)
+	UpdateUserSettingDefaults(context.Context, int64, map[string]*string) (map[string]string, error)
+	SystemSettings(context.Context) (map[string]string, error)
+	UpdateSystemSettings(context.Context, map[string]*string) (map[string]string, error)
+	RecordAdminActivity(context.Context, int64, string, string, int64) error
+	ListAdminActivity(context.Context, int) ([]identity.AdminActivity, error)
 }
 
 type Bookmarks interface {
@@ -64,7 +77,9 @@ type Bookmarks interface {
 	CreateBookmark(context.Context, bookmarks.Scope, bookmarks.BookmarkInput) (bookmarks.Bookmark, error)
 	UpdateBookmark(context.Context, bookmarks.Scope, int64, bookmarks.BookmarkUpdate) (bookmarks.Bookmark, error)
 	DeleteBookmark(context.Context, bookmarks.Scope, int64) error
+	MoveBookmarks(context.Context, bookmarks.Scope, []int64, int64, int64) error
 	RemovePlacement(context.Context, bookmarks.Scope, int64, int64) error
+	SetFavorite(context.Context, bookmarks.Scope, int64, bool) error
 	FolderTree(context.Context, bookmarks.Scope, int64, int) ([]bookmarks.Node, error)
 	GetFolder(context.Context, bookmarks.Scope, int64) (bookmarks.Folder, error)
 	CreateFolder(context.Context, bookmarks.Scope, int64, string) (bookmarks.Folder, error)
@@ -72,6 +87,8 @@ type Bookmarks interface {
 	DeleteFolder(context.Context, bookmarks.Scope, int64) error
 	SetChildOrder(context.Context, bookmarks.Scope, int64, []bookmarks.ChildRef) error
 	ListTags(context.Context, bookmarks.Scope) ([]bookmarks.TagCount, error)
+	ListDuplicates(context.Context, bookmarks.Scope, int, int) (bookmarks.DuplicateList, error)
+	Dashboard(context.Context, bookmarks.Scope, time.Time, int, int) (bookmarks.DashboardSummary, error)
 	ListTrash(context.Context, bookmarks.Scope, int, int) ([]bookmarks.TrashItem, error)
 	RestoreTrash(context.Context, bookmarks.Scope, string, int64) (bookmarks.Node, error)
 	PurgeTrash(context.Context, bookmarks.Scope, string, int64) error
@@ -89,6 +106,12 @@ type Bookmarks interface {
 	LeaveShare(context.Context, int64, int64) error
 }
 
+// LinkChecks queues and reports public-only link checks (see internal/linkcheck).
+type LinkChecks interface {
+	SubmitCheck(context.Context, bookmarks.Scope, []int64) (linkcheck.Job, error)
+	CheckStatus(context.Context, bookmarks.Scope, int64) (linkcheck.Job, error)
+}
+
 type SystemInfo struct {
 	Version         string
 	PublicOrigin    string
@@ -96,13 +119,24 @@ type SystemInfo struct {
 	OIDCProviders   []string
 }
 
+type HealthCollector interface {
+	Collect(context.Context) health.Report
+}
+type Readiness interface{ Ping(context.Context) error }
+
 type Options struct {
 	Auth      *auth.Handler
 	Identity  Identity
 	Bookmarks Bookmarks
-	Now       func() time.Time
-	Logger    *slog.Logger
-	System    SystemInfo
+	// LinkChecks is optional; without it the link-check routes answer 503.
+	LinkChecks LinkChecks
+	Now        func() time.Time
+	Logger     *slog.Logger
+	System     SystemInfo
+	Health     HealthCollector
+	Readiness  Readiness
+	SyncErrors func() uint64
+	AssetDir   string
 }
 
 type RouteInfo struct {
@@ -112,21 +146,29 @@ type RouteInfo struct {
 	AnyToken   bool
 	Admin      bool
 	Recent     bool
+	Public     bool
 }
 
 type API struct {
-	auth   *auth.Handler
-	ids    Identity
-	bm     Bookmarks
-	now    func() time.Time
-	log    *slog.Logger
-	system SystemInfo
-	routes []RouteInfo
+	auth       *auth.Handler
+	ids        Identity
+	bm         Bookmarks
+	lc         LinkChecks
+	now        func() time.Time
+	log        *slog.Logger
+	system     SystemInfo
+	health     HealthCollector
+	readiness  Readiness
+	syncErrors func() uint64
+	assetDir   string
+	routes     []RouteInfo
+	assetMu    sync.Mutex
 }
 
 var routePolicies = []RouteInfo{
 	{Method: "GET", Path: "/api/v1/me", AnyToken: true},
 	{Method: "PATCH", Path: "/api/v1/me/password", Recent: true},
+	{Method: "GET", Path: "/api/v1/me/dashboard", TokenScope: identity.ScopeBookmarksRead},
 	{Method: "GET", Path: "/api/v1/me/settings"},
 	{Method: "PATCH", Path: "/api/v1/me/settings"},
 	{Method: "GET", Path: "/api/v1/me/tokens"},
@@ -137,9 +179,12 @@ var routePolicies = []RouteInfo{
 	{Method: "DELETE", Path: "/api/v1/me/connections/{id}"},
 	{Method: "GET", Path: "/api/v1/bookmarks", TokenScope: identity.ScopeBookmarksRead},
 	{Method: "POST", Path: "/api/v1/bookmarks", TokenScope: identity.ScopeBookmarksWrite},
+	{Method: "POST", Path: "/api/v1/bookmarks/bulk-move", TokenScope: identity.ScopeBookmarksWrite},
 	{Method: "GET", Path: "/api/v1/bookmarks/{id}", TokenScope: identity.ScopeBookmarksRead},
 	{Method: "PATCH", Path: "/api/v1/bookmarks/{id}", TokenScope: identity.ScopeBookmarksWrite},
 	{Method: "DELETE", Path: "/api/v1/bookmarks/{id}", TokenScope: identity.ScopeBookmarksWrite},
+	{Method: "PUT", Path: "/api/v1/bookmarks/{id}/favorite", TokenScope: identity.ScopeBookmarksWrite},
+	{Method: "DELETE", Path: "/api/v1/bookmarks/{id}/favorite", TokenScope: identity.ScopeBookmarksWrite},
 	{Method: "DELETE", Path: "/api/v1/folders/{folderId}/bookmarks/{id}", TokenScope: identity.ScopeBookmarksWrite},
 	{Method: "GET", Path: "/api/v1/folders", TokenScope: identity.ScopeBookmarksRead},
 	{Method: "POST", Path: "/api/v1/folders", TokenScope: identity.ScopeBookmarksWrite},
@@ -148,6 +193,9 @@ var routePolicies = []RouteInfo{
 	{Method: "DELETE", Path: "/api/v1/folders/{id}", TokenScope: identity.ScopeBookmarksWrite},
 	{Method: "PUT", Path: "/api/v1/folders/{id}/order", TokenScope: identity.ScopeBookmarksWrite},
 	{Method: "GET", Path: "/api/v1/tags", TokenScope: identity.ScopeBookmarksRead},
+	{Method: "GET", Path: "/api/v1/duplicates", TokenScope: identity.ScopeBookmarksRead},
+	{Method: "POST", Path: "/api/v1/link-checks", TokenScope: identity.ScopeBookmarksWrite},
+	{Method: "GET", Path: "/api/v1/link-checks/{id}", TokenScope: identity.ScopeBookmarksRead},
 	{Method: "GET", Path: "/api/v1/trash", TokenScope: identity.ScopeBookmarksRead},
 	{Method: "POST", Path: "/api/v1/trash/{type}/{id}/restore", TokenScope: identity.ScopeBookmarksWrite},
 	{Method: "DELETE", Path: "/api/v1/trash/{type}/{id}", Recent: true},
@@ -167,6 +215,15 @@ var routePolicies = []RouteInfo{
 	{Method: "GET", Path: "/api/v1/admin/users/{id}/connections", Admin: true},
 	{Method: "DELETE", Path: "/api/v1/admin/users/{id}/connections/{cid}", Admin: true, Recent: true},
 	{Method: "GET", Path: "/api/v1/admin/system", Admin: true},
+	{Method: "GET", Path: "/api/v1/admin/health", Admin: true},
+	{Method: "GET", Path: "/api/v1/admin/activity", Admin: true},
+	{Method: "GET", Path: "/api/v1/admin/settings", Admin: true},
+	{Method: "PATCH", Path: "/api/v1/admin/settings", Admin: true, Recent: true},
+	{Method: "POST", Path: "/api/v1/admin/settings/assets", Admin: true, Recent: true},
+	{Method: "GET", Path: "/api/v1/admin/users/{id}/settings", Admin: true},
+	{Method: "PATCH", Path: "/api/v1/admin/users/{id}/settings", Admin: true, Recent: true},
+	{Method: "GET", Path: "/api/v1/auth/presentation", Public: true},
+	{Method: "GET", Path: "/api/v1/auth/presentation/assets/{id}", Public: true},
 }
 
 func New(opts Options) (*API, error) {
@@ -179,7 +236,10 @@ func New(opts Options) (*API, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	return &API{auth: opts.Auth, ids: opts.Identity, bm: opts.Bookmarks, now: opts.Now, log: opts.Logger, system: opts.System, routes: append([]RouteInfo(nil), routePolicies...)}, nil
+	if opts.SyncErrors == nil {
+		opts.SyncErrors = func() uint64 { return 0 }
+	}
+	return &API{auth: opts.Auth, ids: opts.Identity, bm: opts.Bookmarks, lc: opts.LinkChecks, now: opts.Now, log: opts.Logger, system: opts.System, health: opts.Health, readiness: opts.Readiness, syncErrors: opts.SyncErrors, assetDir: opts.AssetDir, routes: append([]RouteInfo(nil), routePolicies...)}, nil
 }
 
 func (a *API) Routes() []RouteInfo { return append([]RouteInfo(nil), a.routes...) }
@@ -188,7 +248,9 @@ func (a *API) Register(r server.Registrar) {
 	for _, rt := range a.routes {
 		info := rt
 		var h http.Handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) { a.serve(w, req, info) })
-		h = a.authorize(info, h)
+		if !info.Public {
+			h = a.authorize(info, h)
+		}
 		h = noStore(h)
 		r.Handle(rt.Method+" "+rt.Path, h)
 	}
@@ -272,7 +334,7 @@ func (a *API) authorize(rt RouteInfo, next http.Handler) http.Handler {
 }
 
 func (a *API) serve(w http.ResponseWriter, r *http.Request, rt RouteInfo) {
-	if a.serveBookmarks(w, r) || a.serveFolders(w, r) || a.serveTags(w, r) || a.serveTrash(w, r) || a.serveShares(w, r) || a.serveMe(w, r) || a.serveTokens(w, r) || a.serveConnections(w, r) || a.serveAdmin(w, r) || a.serveTransfer(w, r) {
+	if a.serveBrandingAsset(w, r) || a.servePresentation(w, r) || a.serveBookmarks(w, r) || a.serveFolders(w, r) || a.serveTags(w, r) || a.serveDuplicates(w, r) || a.serveLinkChecks(w, r) || a.serveTrash(w, r) || a.serveShares(w, r) || a.serveMe(w, r) || a.serveTokens(w, r) || a.serveConnections(w, r) || a.serveAdmin(w, r) || a.serveTransfer(w, r) {
 		return
 	}
 	server.WriteError(w, http.StatusNotFound, "not_found", "route not found")
@@ -322,7 +384,7 @@ func (a *API) scope(r *http.Request, write bool) (bookmarks.Scope, error) {
 }
 
 func bookmarkJSON(b bookmarks.Bookmark) map[string]any {
-	return map[string]any{"id": b.ID, "url": b.URL, "title": b.Title, "tags": b.Tags, "folders": b.Folders}
+	return map[string]any{"id": b.ID, "url": b.URL, "title": b.Title, "tags": b.Tags, "folders": b.Folders, "favorite": b.Favorite}
 }
 func folderJSON(f bookmarks.Folder) map[string]any {
 	return map[string]any{"id": f.ID, "parentId": f.ParentID, "title": f.Title, "position": f.Position, "canonical": f.Canonical}
@@ -348,9 +410,26 @@ func (a *API) serveBookmarks(w http.ResponseWriter, r *http.Request) bool {
 	if p != "/api/v1/bookmarks" && !(strings.HasPrefix(p, "/api/v1/bookmarks/") || strings.HasPrefix(p, "/api/v1/folders/")) {
 		return false
 	}
-	sc, err := a.scope(r, r.Method != http.MethodGet)
+	// A favorite is the caller's own metadata, so its toggle resolves a read-only scope:
+	// a view-only share recipient may favorite what it can see. Token callers still need
+	// bookmarks:write (route policy), and the service revalidates actor and visibility.
+	favorite := strings.HasPrefix(p, "/api/v1/bookmarks/") && strings.HasSuffix(p, "/favorite")
+	sc, err := a.scope(r, r.Method != http.MethodGet && !favorite)
 	if err != nil {
 		writeDomainError(w, err)
+		return true
+	}
+	if favorite {
+		id, e := requestID(r, "id")
+		if e != nil || (r.Method != http.MethodPut && r.Method != http.MethodDelete) {
+			writeDomainError(w, bookmarks.ErrNotFound)
+			return true
+		}
+		if err := a.bm.SetFavorite(r.Context(), sc, id, r.Method == http.MethodPut); err != nil {
+			writeDomainError(w, err)
+		} else {
+			empty(w)
+		}
 		return true
 	}
 	if p == "/api/v1/bookmarks" {
@@ -369,7 +448,20 @@ func (a *API) serveBookmarks(w http.ResponseWriter, r *http.Request) bool {
 				server.WriteError(w, 400, "invalid_request", "invalid folder filter")
 				return true
 			}
-			items, err := a.bm.ListBookmarks(r.Context(), sc, bookmarks.ListQuery{Page: int(page), Limit: int(effective + 1), Offset: &offset, FolderID: folderID, URL: q.Get("url"), Search: strings.Fields(q.Get("q")), Tags: q["tag"]})
+			var fav *bool
+			if q.Has("favorite") {
+				var v bool
+				switch q.Get("favorite") {
+				case "true":
+					v = true
+				case "false":
+				default:
+					server.WriteError(w, 400, "invalid_request", "favorite must be true or false")
+					return true
+				}
+				fav = &v
+			}
+			items, err := a.bm.ListBookmarks(r.Context(), sc, bookmarks.ListQuery{Page: int(page), Limit: int(effective + 1), Offset: &offset, FolderID: folderID, URL: q.Get("url"), Search: strings.Fields(q.Get("q")), Tags: q["tag"], Favorite: fav})
 			if err != nil {
 				writeDomainError(w, err)
 				return true
@@ -403,6 +495,26 @@ func (a *API) serveBookmarks(w http.ResponseWriter, r *http.Request) bool {
 			writeJSON(w, 201, bookmarkJSON(b))
 			return true
 		}
+	}
+	if p == "/api/v1/bookmarks/bulk-move" && r.Method == http.MethodPost {
+		var in struct {
+			BookmarkIDs    []int64 `json:"bookmarkIds"`
+			SourceFolderID *int64  `json:"sourceFolderId"`
+			FolderID       *int64  `json:"folderId"`
+		}
+		if !decodeJSON(w, r, &in) {
+			return true
+		}
+		if in.SourceFolderID == nil || in.FolderID == nil {
+			server.WriteError(w, 400, "invalid_request", "sourceFolderId and folderId are required")
+			return true
+		}
+		if err := a.bm.MoveBookmarks(r.Context(), sc, in.BookmarkIDs, *in.SourceFolderID, *in.FolderID); err != nil {
+			writeDomainError(w, err)
+		} else {
+			empty(w)
+		}
+		return true
 	}
 	if strings.HasPrefix(p, "/api/v1/bookmarks/") {
 		id, e := requestID(r, "id")
@@ -506,6 +618,11 @@ func writeDomainError(w http.ResponseWriter, err error) {
 	case errors.Is(err, identity.ErrLastAdmin):
 		server.WriteError(w, 409, "last_admin", "at least one active administrator must remain")
 	case errors.Is(err, identity.ErrExists):
+		server.WriteError(w, 409, "conflict", "resource conflicts with existing data")
+	case errors.Is(err, linkcheck.ErrTooManyJobs):
+		w.Header().Set("Retry-After", "30")
+		server.WriteError(w, 429, "too_many_jobs", "too many link checks are already queued")
+	case errors.Is(err, bookmarks.ErrConflict):
 		server.WriteError(w, 409, "conflict", "resource conflicts with existing data")
 	case errors.Is(err, bookmarks.ErrForbidden):
 		server.WriteError(w, 403, "read_only", "operation is not permitted")

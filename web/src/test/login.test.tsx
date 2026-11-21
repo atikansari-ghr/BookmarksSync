@@ -17,9 +17,7 @@ describe('login page', () => {
     mockServer(base())
     render(<App />)
     expect(await screen.findByRole('heading', { name: 'Personal Bookmarks Server' })).toBeInTheDocument()
-    expect(screen.getByText('Your bookmarks.')).toBeInTheDocument()
-    expect(screen.getByText('Your browsers.')).toBeInTheDocument()
-    expect(screen.getByText('Your control.')).toBeInTheDocument()
+    expect(screen.getByText('Your bookmarks. Your browsers. Your control.')).toBeInTheDocument()
     expect(screen.getByText('A self-hosted home for your bookmarks.')).toBeInTheDocument()
     expect(screen.getByText('BookmarksSync', { selector: '.brand-name' })).toBeInTheDocument()
     expect(await screen.findByText(/v0\.4\.2/)).toBeInTheDocument()
@@ -47,6 +45,18 @@ describe('login page', () => {
     render(<App />)
     await screen.findByRole('heading', { name: 'Personal Bookmarks Server' })
     await waitFor(() => expect(screen.queryByRole('button', { name: /Sign in with (Google|Authentik)/ })).not.toBeInTheDocument())
+  })
+
+  it('marks the decorative login background as hidden from assistive technology', async () => {
+    mockServer({
+      ...base(),
+      'GET /api/v1/auth/presentation': { status: 200, body: { backgroundUrl: '/background.webp' } },
+    })
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Personal Bookmarks Server' })
+    const background = document.querySelector('.login-background-image')
+    expect(background).toHaveAttribute('aria-hidden', 'true')
+    expect(background).not.toHaveAttribute('role')
   })
 
   it('toggles password visibility from the keyboard', async () => {

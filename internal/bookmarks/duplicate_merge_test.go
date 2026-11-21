@@ -191,6 +191,58 @@ func TestNoSurvivorKeepsExistingBehaviour(t *testing.T) {
 	is(t, err, bookmarks.ErrNotFound)
 }
 
+// Favorites are private per user and follow a bookmark across placements, so the merge must
+// carry each source favorite to the survivor for the same user only, and keep the source row
+// so a Trash restore of the source still shows it as a favorite. API scopes are used because
+// Floccus scopes are actorless and cannot hold favorites.
+func TestMergeTransfersSourceFavoritesPerUserAndKeepsSourceRow(t *testing.T) {
+	e := newEnv(t)
+	alice, bob := e.user("alice"), e.user("bob")
+	asc := e.apiPrivate(alice)
+	other := e.otherRoot(asc)
+	priv := e.folder(asc, other, "Private")
+	shared := e.folder(asc, other, "Shared")
+	src := e.bm(asc, dupURL, "Source", priv)
+	sh, err := e.svc.GrantShare(ctx, alice.ID, shared, bob.ID, identity.ModeEdit)
+	noErr(t, err)
+	bsc, err := e.svc.ShareScopeFor(ctx, bob.ID, sh.ID, true)
+	noErr(t, err)
+	// bob cannot see the private source, so his POST makes a separate same-URL record
+	survivor := e.bm(bsc, dupURL, "Survivor", bookmarks.RootID)
+	if survivor.ID == src.ID {
+		t.Fatal("setup: expected two separate records")
+	}
+	noErr(t, e.svc.SetFavorite(ctx, asc, src.ID, true))
+
+	noErr(t, e.svc.RemovePlacement(ctx, asc, priv, src.ID))
+
+	got, err := e.svc.GetBookmark(ctx, asc, survivor.ID)
+	noErr(t, err)
+	if !got.Favorite {
+		t.Error("alice's favorite on the merged source did not follow to the survivor")
+	}
+	if got, _ := e.svc.GetBookmark(ctx, bsc, survivor.ID); got.Favorite {
+		t.Error("alice's favorite became bob's favorite on the survivor")
+	}
+	var n int
+	noErr(t, e.db.SQL().QueryRowContext(ctx, `SELECT COUNT(*) FROM bookmark_favorites WHERE user_id = ? AND bookmark_id = ?`, alice.ID, src.ID).Scan(&n))
+	if n != 1 {
+		t.Errorf("source favorite rows for alice = %d, want 1 kept for Trash/restore", n)
+	}
+	noErr(t, e.db.SQL().QueryRowContext(ctx, `SELECT COUNT(*) FROM bookmark_favorites WHERE user_id = ?`, bob.ID).Scan(&n))
+	if n != 0 {
+		t.Errorf("bob has %d favorite rows, want 0", n)
+	}
+	if _, err := e.svc.RestoreTrash(ctx, asc, "bookmark", src.ID); err != nil {
+		t.Fatalf("RestoreTrash: %v", err)
+	}
+	restored, err := e.svc.GetBookmark(ctx, asc, src.ID)
+	noErr(t, err)
+	if !restored.Favorite {
+		t.Error("restored source lost alice's favorite")
+	}
+}
+
 func mustOther(t *testing.T, w *dupWorld) int64 {
 	t.Helper()
 	_, other := w.e.roots(w.owner)

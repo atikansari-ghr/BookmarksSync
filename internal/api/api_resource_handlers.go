@@ -4,9 +4,11 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/bookmarks"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
+	"github.com/atikansari-ghr/BookmarksSync/internal/linkcheck"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
 )
 
@@ -138,6 +140,109 @@ func (a *API) serveTags(w http.ResponseWriter, r *http.Request) bool {
 	}
 	writeJSON(w, 200, map[string]any{"tags": out})
 	return true
+}
+
+func (a *API) serveDuplicates(w http.ResponseWriter, r *http.Request) bool {
+	if r.URL.Path != "/api/v1/duplicates" {
+		return false
+	}
+	sc, err := a.scope(r, false)
+	if err != nil {
+		writeDomainError(w, err)
+		return true
+	}
+	page, e1 := queryInt(r, "page", 0)
+	limit, e2 := queryInt(r, "limit", 50)
+	if e1 != nil || e2 != nil || page < 0 || page > 1_000_000 || limit < 1 {
+		server.WriteError(w, 400, "invalid_request", "invalid pagination")
+		return true
+	}
+	effective := min(limit, bookmarks.MaxPageLimit)
+	list, err := a.bm.ListDuplicates(r.Context(), sc, int(page), int(effective))
+	if err != nil {
+		writeDomainError(w, err)
+		return true
+	}
+	groups := make([]map[string]any, 0, len(list.Groups))
+	for _, g := range list.Groups {
+		items := make([]map[string]any, 0, len(g.Bookmarks))
+		for _, b := range g.Bookmarks {
+			items = append(items, bookmarkJSON(b))
+		}
+		groups = append(groups, map[string]any{"url": g.URL, "bookmarks": items})
+	}
+	writeJSON(w, 200, map[string]any{"count": list.Count, "groups": groups, "page": page, "limit": effective, "hasMore": list.HasMore})
+	return true
+}
+
+// serveLinkChecks queues a public-only link check (POST) and reports one job (GET). Jobs
+// are scoped to the caller and the collection or share they were submitted in; submitting
+// needs write authority in that scope, so a view-only share cannot queue checks.
+func (a *API) serveLinkChecks(w http.ResponseWriter, r *http.Request) bool {
+	p := r.URL.Path
+	if p != "/api/v1/link-checks" && !strings.HasPrefix(p, "/api/v1/link-checks/") {
+		return false
+	}
+	if a.lc == nil {
+		server.WriteError(w, 503, "unavailable", "link checking is not available")
+		return true
+	}
+	write := r.Method == http.MethodPost
+	sc, err := a.scope(r, write)
+	if err != nil {
+		writeDomainError(w, err)
+		return true
+	}
+	if write && p == "/api/v1/link-checks" {
+		var in struct {
+			BookmarkIDs []int64 `json:"bookmarkIds"`
+		}
+		if !decodeJSON(w, r, &in) {
+			return true
+		}
+		job, err := a.lc.SubmitCheck(r.Context(), sc, in.BookmarkIDs)
+		if err != nil {
+			writeDomainError(w, err)
+			return true
+		}
+		writeJSON(w, 202, linkJobJSON(job))
+		return true
+	}
+	if r.Method == http.MethodGet && p != "/api/v1/link-checks" {
+		id, e := requestID(r, "id")
+		if e != nil {
+			writeDomainError(w, bookmarks.ErrNotFound)
+			return true
+		}
+		job, err := a.lc.CheckStatus(r.Context(), sc, id)
+		if err != nil {
+			writeDomainError(w, err)
+			return true
+		}
+		writeJSON(w, 200, linkJobJSON(job))
+		return true
+	}
+	return false
+}
+
+func linkJobJSON(j linkcheck.Job) map[string]any {
+	when := func(t time.Time) any {
+		if t.IsZero() {
+			return nil
+		}
+		return t.UTC().Format(time.RFC3339Nano)
+	}
+	results := make([]map[string]any, 0, len(j.Results))
+	for _, r := range j.Results {
+		var httpStatus any
+		if r.HTTPStatus != 0 {
+			httpStatus = r.HTTPStatus
+		}
+		results = append(results, map[string]any{"bookmarkId": r.BookmarkID, "url": r.URL, "status": r.Status,
+			"httpStatus": httpStatus, "detail": r.Detail, "redirects": r.Redirects, "checkedAt": when(r.CheckedAt)})
+	}
+	return map[string]any{"id": j.ID, "status": j.Status, "total": j.Total, "done": j.Done,
+		"createdAt": when(j.CreatedAt), "startedAt": when(j.StartedAt), "finishedAt": when(j.FinishedAt), "results": results}
 }
 
 func (a *API) serveTrash(w http.ResponseWriter, r *http.Request) bool {

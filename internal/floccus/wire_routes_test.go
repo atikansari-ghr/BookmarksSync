@@ -142,6 +142,59 @@ func TestBookmarkIDsStayPositiveFolderIDsAreWire(t *testing.T) {
 	r.do(&a, "DELETE", folderPath(other)+"/bookmarks/"+idStr(num(b2["id"])), nil).ok(t)
 }
 
+// A native Floccus delete can be the operation that collapses a duplicate into its
+// visible survivor. The owner's personal favorite follows the record, but stays out
+// of the Floccus protocol payload.
+func TestFloccusDeleteDuplicateTransfersFavoriteWithoutWireLeak(t *testing.T) {
+	r := newRig(t)
+	alice := r.account("alice", identity.ModeEdit)
+	_, other := r.roots(alice)
+	private := r.mkFolder(alice, other, "Private")
+	shared := r.mkFolder(alice, other, "Shared")
+	source := r.mkBookmark(alice, "https://favorite-merge.example/", "Private source", private)
+
+	bobUser, err := r.ids.GetUser(bg, "bob")
+	if err != nil {
+		bobUser, err = r.ids.CreateUser(bg, "bob", "website password bob", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	bob := r.shareAccount(alice, shared, bobUser, identity.ModeEdit, identity.ModeEdit)
+	survivor := r.mkBookmark(bob, "https://favorite-merge.example/", "Shared survivor", -1)
+	if source == survivor {
+		t.Fatal("setup: expected separate source and survivor records")
+	}
+
+	ownerScope, err := r.svc.PrivateScope(bg, alice.user.ID, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.svc.SetFavorite(bg, ownerScope, source, true); err != nil {
+		t.Fatal(err)
+	}
+	// Floccus uses negative wire folder ids. Deleting the last source placement
+	// triggers the same merge path as a browser bookmark removal.
+	r.do(&alice, "DELETE", folderPath(private)+"/bookmarks/"+idStr(source), nil).ok(t)
+
+	items, err := r.svc.ListBookmarks(bg, ownerScope, bookmarks.ListQuery{Page: -1, URL: "https://favorite-merge.example/"})
+	if err != nil || len(items) != 1 || items[0].ID != survivor || !items[0].Favorite {
+		t.Fatalf("owner favorite after Floccus delete = %+v, %v; want survivor %d favorited", items, err, survivor)
+	}
+	// Floccus list and get responses remain the stock wire shape.
+	list := r.do(&alice, "GET", R+"/bookmark?url=https%3A%2F%2Ffavorite-merge.example%2F", nil).ok(t)
+	if len(list.data()) != 1 || num(asMap(list.data()[0])["id"]) != survivor {
+		t.Fatalf("Floccus list after merge = %s", list.raw)
+	}
+	item := r.do(&alice, "GET", R+"/bookmark/"+idStr(survivor), nil).ok(t).item()
+	if _, leaked := item["favorite"]; leaked {
+		t.Fatalf("Floccus item leaked favorite metadata: %v", item)
+	}
+	if strings.Contains(list.raw, `"favorite":`) {
+		t.Fatalf("Floccus list leaked favorite metadata: %s", list.raw)
+	}
+}
+
 func TestFolderIDsInEveryPathAndFieldRejectOldPositiveForm(t *testing.T) {
 	r := newRig(t)
 	a := r.account("alice", identity.ModeEdit)

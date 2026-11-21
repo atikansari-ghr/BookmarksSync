@@ -22,11 +22,11 @@
     - the web UI tests and a real-Chromium sign-in/factor smoke;
     - the Floccus browser matrix.
   - **Still open:**
-    - acceptance review of the full milestone diff;
-    - CI on GitHub (the branch has not been pushed);
-    - favorites, which await a storage decision;
+    - GitHub-hosted CI and the configured Ubuntu race job (the branch has not been pushed); `go test -race ./...` did pass locally on Windows/amd64 with MSYS2 GCC 16.2;
+    - review and acceptance of per-user bookmark-level Favorites (migration 0004, `favorite` field/filter, `PUT`/`DELETE /api/v1/bookmarks/{id}/favorite`), implemented locally and uncommitted; see `docs/superpowers/plans/2026-11-18-bookmark-favorites.md`;
     - real Google/Authentik, non-Chromium passkey, and reverse-proxy checks.
 - [ ] 4 Workspace/UI: native-style organizer and dashboards matching references; CRUD/multi-select/drag/drop/search/tags/favorites/import/export, duplicates, SSRF-safe link checks, Trash, persisted widgets/theme/branding. Browser/accessibility and negative authorization tests.
+  - **Progress:** Dashboard summary/recent-changes API, scoped duplicate-review API, atomic placement-aware bulk-move API, organizer/duplicate-review UI, public-only link-check backend and organizer controls, configurable dashboard widgets, user theme preferences, admin health/settings/defaults/activity, and login branding with bounded image uploads are implemented locally and uncommitted. Full Go (including vet) and web suites pass; web typecheck/build and Linux/Windows builds pass. Chromium exercised login/security, admin health, branding upload, and safe asset serving; desktop and phone screenshots were reviewed. Real API/stock-Floccus organizer verification, real-browser link-check/dashboard smoke, and link-check job/result retention remain open; see `docs/superpowers/plans/2026-11-17-workspace-ui.md`.
 - [ ] 5 Operations: consistent snapshots, weekly/monthly destination backup/encryption/retention, full and user recovery, notifications, country access/trusted-proxy rules. Recovery to clean instance, corrupt archive, failed target, geo spoofing tests.
 - [ ] 6 Distribution: Debian/LXC/Docker/Windows installers and maintenance, successful-main CI packages with provenance/admin update confirmation/rollback; complete documentation. Each platform installs/upgrades/repairs/restores independently.
 

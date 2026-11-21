@@ -93,6 +93,40 @@ func (s *Service) revalidateActor(ctx context.Context, q queryer, sc Scope, writ
 	return nil
 }
 
+// SetFavorite sets (favorite true) or clears the scope actor's own favorite on a bookmark
+// visible in the scope. It is idempotent. A favorite is the actor's private metadata, so it
+// needs no collection edit right and takes no Floccus lock: a view-only share recipient may
+// favorite what it can see, and neither the bookmark nor the grant changes. The actor and
+// the bookmark's visibility are re-derived from committed state inside the write
+// transaction (held from start to commit), so a revoke, suspension or move cannot be
+// outrun. Actorless scopes (Floccus credentials, internal callers) are refused.
+func (s *Service) SetFavorite(ctx context.Context, sc Scope, bookmarkID int64, favorite bool) error {
+	if sc.Actor == 0 || sc.Holder != 0 {
+		return fmt.Errorf("%w: favorites need a signed-in user", ErrForbidden)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.revalidateActor(ctx, tx, sc, false); err != nil {
+		return err
+	}
+	if _, err := s.getVisible(ctx, tx, sc, bookmarkID); err != nil {
+		return err
+	}
+	if favorite {
+		_, err = tx.ExecContext(ctx, `INSERT INTO bookmark_favorites(user_id, bookmark_id, created_at) VALUES (?, ?, ?)
+			ON CONFLICT(user_id, bookmark_id) DO NOTHING`, sc.Actor, bookmarkID, s.ms())
+	} else {
+		_, err = tx.ExecContext(ctx, `DELETE FROM bookmark_favorites WHERE user_id = ? AND bookmark_id = ?`, sc.Actor, bookmarkID)
+	}
+	if err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
 // ListIncomingShares lists live grants to recipientID, with folder titles.
 func (s *Service) ListIncomingShares(ctx context.Context, recipientID int64) ([]Share, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT sh.id, sh.owner_id, sh.folder_id, sh.recipient_id, sh.mode, f.title

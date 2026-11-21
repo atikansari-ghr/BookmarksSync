@@ -3,8 +3,8 @@
 A self-hosted bookmarks server, written in Go.
 
 **Early development.**
-- The floccus-compatible sync API has passed real-browser sync checks with stock floccus 5.13.0 in Chrome, Edge, Brave, and Firefox.
-- Browser sign-in, account security and the versioned `/api/v1` API (milestone 3) are implemented on the development branch and await acceptance review.
+- The floccus-compatible sync API has passed real-browser checks with stock floccus 5.13.0 in Chrome, Edge, Brave, and Firefox; organizer and collision cases are still under acceptance review.
+- Browser sign-in, account security, bookmark workspace, dashboard, and admin interface are implemented on the development branch and await acceptance review.
 
 ## Status
 
@@ -23,24 +23,26 @@ Implemented:
   - server-side sessions, revocable per device (12 hours idle, 30 days absolute);
   - CSRF and exact-origin checks, and recent reauthentication for sensitive changes.
 - Sign-in and account-security pages under `/auth/`, built with React/TypeScript and embedded in the binary. They cover passkeys, the authenticator app, recovery codes, linked accounts, active sessions, personal API tokens, and Floccus connections.
+- Bookmark workspace pages at `/dashboard`, `/bookmarks`, `/duplicates`, and `/admin`; these include configurable dashboard widgets and themes, folder/bookmark organization, duplicate review, and public-only link checks.
+- Admin health and account usage views, per-account theme defaults, sanitized activity, editable login appearance, and private PNG/JPEG/WebP logo/background uploads (up to 2 MiB).
+- User instructions for the bookmark workspace and admin pages: [docs/workspace-guide.md](docs/workspace-guide.md).
 - The versioned `/api/v1` JSON API, documented in [api/openapi.yaml](api/openapi.yaml):
   - profile, password and settings;
-  - bookmarks, folders, tags and search;
+  - bookmarks, folders, tags, search and per-user Favorites across folder placements;
   - Trash list, restore and purge;
   - Netscape HTML and XBEL import/export;
   - shares;
   - personal API tokens with `bookmarks:read|write` and `shares:read|manage` scopes;
   - per-device Floccus connections;
-  - administrator routes for accounts, resets, connections and aggregate system data, with no access to other users' bookmarks.
+  - administrator routes for accounts, resets, connections, health, settings, sanitized activity and aggregate system data, with no access to other users' bookmarks.
 
 **Floccus compatibility is verified for the tested sync flows.** Two repeated real-server browser matrices passed in Chrome, Edge, Brave, and Firefox with stock floccus 5.13.0. The compatibility guide and browser report list the covered cases and remaining untested flows.
 
-Not implemented yet:
-- favorites (pending a storage decision);
+Still planned or awaiting acceptance:
 - Login Flow v2 (the floccus "Connect" wizard; use profile import for now);
-- the bookmark workspace, dashboards, themes and admin web pages (milestone 4);
-- trusted-proxy and country rules, backups and restore (milestone 5);
-- installers and updates (milestone 6).
+- trusted-proxy and country rules, scheduled backups and restore;
+- production single-command installers and admin-triggered updates;
+- notifications and remaining browser/organizer acceptance checks.
 
 See `docs/design.md` and `docs/implementation-plan.md`.
 

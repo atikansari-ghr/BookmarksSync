@@ -238,6 +238,173 @@ func TestIdentityMigrationUpgradesMilestone2DataIntact(t *testing.T) {
 	}
 }
 
+// TestFavoritesMigrationUpgradesIdentityDataIntact applies migrations up to 0003, fills
+// representative identity-milestone data, upgrades to the latest schema, and verifies the
+// rows survive and the favorites relation enforces its keys.
+func TestFavoritesMigrationUpgradesIdentityDataIntact(t *testing.T) {
+	ctx := context.Background()
+	db := rawDB(t)
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatal(err)
+	}
+	ms, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) < 4 || ms[3].version != 4 {
+		t.Fatalf("migration 0004 missing (have %d migrations)", len(ms))
+	}
+	if err := applyMigrations(ctx, db, ms[:3]); err != nil {
+		t.Fatalf("identity schema: %v", err)
+	}
+	fixture := []string{
+		`INSERT INTO users(id, username, password_hash, is_admin, active, created_at) VALUES (1, 'alice', 'ha', 1, 1, 1), (2, 'bob', 'hb', 0, 1, 2)`,
+		`INSERT INTO folders(id, owner_id, kind, title, created_at, updated_at) VALUES (1, 1, 'bar', 'Bar', 1, 1), (2, 1, 'folder', 'Shared', 1, 1)`,
+		`UPDATE folders SET parent_id = 1 WHERE id = 2`,
+		`INSERT INTO bookmarks(id, owner_id, url, title, created_at, updated_at) VALUES (1, 1, 'https://example.com/', 'Example', 1, 1)`,
+		`INSERT INTO bookmark_tags(bookmark_id, tag) VALUES (1, 'work')`,
+		`INSERT INTO placements(id, bookmark_id, folder_id, position) VALUES (1, 1, 2, 0)`,
+		`INSERT INTO shares(id, owner_id, folder_id, recipient_id, mode, created_at) VALUES (1, 1, 2, 2, 'view', 1)`,
+		`INSERT INTO credentials(id, user_id, label, secret_hash, kind, share_id, mode, created_at) VALUES (1, 1, 'laptop', 'aa', 'private', NULL, 'edit', 1)`,
+		`INSERT INTO api_tokens(id, user_id, secret_hash, scopes, created_at) VALUES (1, 1, 'tok', 'bookmarks:read', 1)`,
+		`INSERT INTO user_settings(user_id, key, value, updated_at) VALUES (1, 'theme', '"ocean"', 1)`,
+	}
+	for _, q := range fixture {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("fixture %q: %v", q, err)
+		}
+	}
+	if err := applyMigrations(ctx, db, ms); err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	checks := map[string]string{
+		`SELECT group_concat(username, ',') FROM users ORDER BY id`:                        "alice,bob",
+		`SELECT url || ':' || title FROM bookmarks WHERE id = 1`:                           "https://example.com/:Example",
+		`SELECT tag FROM bookmark_tags WHERE bookmark_id = 1`:                              "work",
+		`SELECT folder_id FROM placements WHERE id = 1`:                                    "2",
+		`SELECT recipient_id || ':' || mode FROM shares WHERE id = 1`:                      "2:view",
+		`SELECT secret_hash || ':' || kind FROM credentials WHERE id = 1`:                  "aa:private",
+		`SELECT secret_hash || ':' || scopes FROM api_tokens WHERE id = 1`:                 "tok:bookmarks:read",
+		`SELECT value FROM user_settings WHERE user_id = 1 AND key = 'theme'`:              `"ocean"`,
+		`SELECT CAST(MAX(version) AS TEXT) FROM schema_migrations`:                         "6",
+		`SELECT CAST(COUNT(*) AS TEXT) FROM bookmark_favorites`:                            "0",
+		`SELECT CAST(COUNT(*) AS TEXT) FROM pragma_foreign_key_list('bookmark_favorites')`: "2",
+	}
+	for q, want := range checks {
+		var got string
+		if err := db.QueryRow(q).Scan(&got); err != nil || got != want {
+			t.Errorf("%s = %q (%v), want %q", q, got, err, want)
+		}
+	}
+	mustExec := func(q string) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	mustFail := func(why, q string) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, q); err == nil {
+			t.Errorf("%s: %s succeeded", why, q)
+		}
+	}
+	mustExec(`INSERT INTO bookmark_favorites(user_id, bookmark_id, created_at) VALUES (1, 1, 1), (2, 1, 1)`)
+	mustFail("duplicate favorite", `INSERT INTO bookmark_favorites(user_id, bookmark_id, created_at) VALUES (2, 1, 2)`)
+	mustFail("favorite for unknown user", `INSERT INTO bookmark_favorites(user_id, bookmark_id, created_at) VALUES (99, 1, 1)`)
+	mustFail("favorite for unknown bookmark", `INSERT INTO bookmark_favorites(user_id, bookmark_id, created_at) VALUES (1, 99, 1)`)
+	// Purging a bookmark removes its favorites.
+	mustExec(`DELETE FROM bookmarks WHERE id = 1`)
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM bookmark_favorites`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("favorites after bookmark delete = %d (%v)", n, err)
+	}
+}
+
+// TestLinkCheckMigrationUpgradesFavoritesDataIntact applies migrations up to 0004 with
+// representative data, upgrades to the latest schema, and verifies the data survives and
+// the link-check relations enforce their keys and status vocabulary.
+func TestLinkCheckMigrationUpgradesFavoritesDataIntact(t *testing.T) {
+	ctx := context.Background()
+	db := rawDB(t)
+	db.SetMaxOpenConns(1)
+	if _, err := db.ExecContext(ctx, `PRAGMA foreign_keys = ON`); err != nil {
+		t.Fatal(err)
+	}
+	ms, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) < 5 || ms[4].version != 5 {
+		t.Fatalf("migration 0005 missing (have %d migrations)", len(ms))
+	}
+	if err := applyMigrations(ctx, db, ms[:4]); err != nil {
+		t.Fatalf("favorites schema: %v", err)
+	}
+	for _, q := range []string{
+		`INSERT INTO users(id, username, password_hash, is_admin, active, created_at) VALUES (1, 'alice', 'ha', 1, 1, 1), (2, 'bob', 'hb', 0, 1, 2)`,
+		`INSERT INTO folders(id, owner_id, kind, title, created_at, updated_at) VALUES (1, 1, 'bar', 'Bar', 1, 1)`,
+		`INSERT INTO bookmarks(id, owner_id, url, title, created_at, updated_at) VALUES (1, 1, 'https://example.com/', 'Example', 1, 1)`,
+		`INSERT INTO placements(id, bookmark_id, folder_id, position) VALUES (1, 1, 1, 0)`,
+		`INSERT INTO bookmark_favorites(user_id, bookmark_id, created_at) VALUES (1, 1, 1)`,
+		`INSERT INTO user_settings(user_id, key, value, updated_at) VALUES (1, 'bookmarks.view', '"grid"', 1)`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("fixture %q: %v", q, err)
+		}
+	}
+	if err := applyMigrations(ctx, db, ms); err != nil {
+		t.Fatalf("upgrade: %v", err)
+	}
+	checks := map[string]string{
+		`SELECT CAST(MAX(version) AS TEXT) FROM schema_migrations`:                         "6",
+		`SELECT url FROM bookmarks WHERE id = 1`:                                           "https://example.com/",
+		`SELECT CAST(COUNT(*) AS TEXT) FROM bookmark_favorites`:                            "1",
+		`SELECT value FROM user_settings WHERE user_id = 1 AND key = 'bookmarks.view'`:     `"grid"`,
+		`SELECT CAST(COUNT(*) AS TEXT) FROM link_check_jobs`:                               "0",
+		`SELECT CAST(COUNT(*) AS TEXT) FROM link_check_results`:                            "0",
+		`SELECT CAST(COUNT(*) AS TEXT) FROM pragma_foreign_key_list('link_check_jobs')`:    "2",
+		`SELECT CAST(COUNT(*) AS TEXT) FROM pragma_foreign_key_list('link_check_results')`: "1",
+	}
+	for q, want := range checks {
+		var got string
+		if err := db.QueryRow(q).Scan(&got); err != nil || got != want {
+			t.Errorf("%s = %q (%v), want %q", q, got, err, want)
+		}
+	}
+	mustExec := func(q string) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	mustFail := func(why, q string) {
+		t.Helper()
+		if _, err := db.ExecContext(ctx, q); err == nil {
+			t.Errorf("%s: %s succeeded", why, q)
+		}
+	}
+	mustExec(`INSERT INTO link_check_jobs(id, user_id, owner_id, share_folder_id, status, created_at) VALUES (1, 2, 1, 0, 'queued', 1)`)
+	mustFail("unknown job status", `INSERT INTO link_check_jobs(user_id, owner_id, share_folder_id, status, created_at) VALUES (1, 1, 0, 'weird', 1)`)
+	mustFail("job for unknown user", `INSERT INTO link_check_jobs(user_id, owner_id, share_folder_id, status, created_at) VALUES (99, 1, 0, 'queued', 1)`)
+	mustExec(`INSERT INTO link_check_results(job_id, position, bookmark_id, url, status) VALUES (1, 0, 1, 'https://example.com/', 'pending')`)
+	mustFail("duplicate position", `INSERT INTO link_check_results(job_id, position, bookmark_id, url, status) VALUES (1, 0, 1, 'https://example.com/', 'pending')`)
+	mustFail("unknown result status", `INSERT INTO link_check_results(job_id, position, bookmark_id, url, status) VALUES (1, 1, 1, 'https://example.com/', 'fine')`)
+	mustFail("result for unknown job", `INSERT INTO link_check_results(job_id, position, bookmark_id, url, status) VALUES (9, 0, 1, 'https://example.com/', 'pending')`)
+	// Purging a bookmark must not be blocked by, or silently alter, finished link checks.
+	mustExec(`DELETE FROM placements WHERE id = 1`)
+	mustExec(`DELETE FROM bookmarks WHERE id = 1`)
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM link_check_results`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("results after bookmark purge = %d (%v)", n, err)
+	}
+	// Removing a job removes its results.
+	mustExec(`DELETE FROM link_check_jobs WHERE id = 1`)
+	if err := db.QueryRow(`SELECT COUNT(*) FROM link_check_results`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("results after job delete = %d (%v)", n, err)
+	}
+}
+
 // TestIdentitySchemaEnforcesKeyConstraints pins the schema-level invariants later
 // tasks rely on: unique secret hashes, one OIDC link per issuer+subject, and bounded settings.
 func TestIdentitySchemaEnforcesKeyConstraints(t *testing.T) {

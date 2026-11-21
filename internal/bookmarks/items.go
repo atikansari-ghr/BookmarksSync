@@ -18,6 +18,10 @@ type Bookmark struct {
 	Title   string
 	Tags    []string
 	Folders []int64
+	// Favorite is the scope actor's own favorite state for this record (false for
+	// actorless scopes such as Floccus credentials). It is per user and per record, so
+	// it is the same across every placement.
+	Favorite bool
 }
 
 // BookmarkInput creates a bookmark (or adds placements to the visible record with the
@@ -47,6 +51,7 @@ type ListQuery struct {
 	URL      string   // exact match when non-empty
 	Search   []string // every term must occur in url, title or a tag (case-insensitive)
 	Tags     []string // every tag must be present exactly
+	Favorite *bool    // when non-nil, only records whose actor favorite state equals *Favorite
 }
 
 var allowedSchemes = map[string]bool{"http": true, "https": true, "ftp": true, "ftps": true, "file": true, "javascript": true}
@@ -190,6 +195,26 @@ func (s *Service) hydrate(ctx context.Context, q queryer, sc Scope, ids []int64)
 	if err := trows.Err(); err != nil {
 		return nil, err
 	}
+	if sc.Actor != 0 {
+		frows, err := q.QueryContext(ctx, `SELECT bookmark_id FROM bookmark_favorites WHERE user_id = ? AND bookmark_id IN (SELECT value FROM json_each(?))`, sc.Actor, string(list))
+		if err != nil {
+			return nil, err
+		}
+		for frows.Next() {
+			var id int64
+			if err := frows.Scan(&id); err != nil {
+				frows.Close()
+				return nil, err
+			}
+			if b := meta[id]; b != nil {
+				b.Favorite = true
+			}
+		}
+		frows.Close()
+		if err := frows.Err(); err != nil {
+			return nil, err
+		}
+	}
 	pl, err := s.visiblePlacements(ctx, q, sc, ids)
 	if err != nil {
 		return nil, err
@@ -209,8 +234,9 @@ func (s *Service) hydrate(ctx context.Context, q queryer, sc Scope, ids []int64)
 }
 
 // visibleIDs returns ids of live bookmarks of the owner with at least one visible
-// placement, optionally filtered, ordered by id.
-func (s *Service) visibleIDs(ctx context.Context, q queryer, sc Scope, folderID int64, url string, search []string, limit, offset int, tags ...string) ([]int64, error) {
+// placement, optionally filtered, ordered by id. A non-nil favorite keeps only records
+// whose favorite state for sc.Actor equals *favorite (actorless scopes have none).
+func (s *Service) visibleIDs(ctx context.Context, q queryer, sc Scope, folderID int64, url string, search []string, favorite *bool, limit, offset int, tags ...string) ([]int64, error) {
 	cte, cond, args := scopeFilter(sc)
 	where := ` WHERE b.owner_id = ? AND b.deleted_at IS NULL AND EXISTS (
 		SELECT 1 FROM placements p JOIN folders f ON f.id = p.folder_id
@@ -244,6 +270,19 @@ func (s *Service) visibleIDs(ctx context.Context, q queryer, sc Scope, folderID 
 	for _, tag := range tags {
 		where += ` AND EXISTS (SELECT 1 FROM bookmark_tags t WHERE t.bookmark_id = b.id AND t.tag = ?)`
 		qargs = append(qargs, tag)
+	}
+	if favorite != nil {
+		switch {
+		case sc.Actor == 0 && *favorite:
+			where += ` AND 0`
+		case sc.Actor != 0:
+			not := ""
+			if !*favorite {
+				not = "NOT "
+			}
+			where += ` AND ` + not + `EXISTS (SELECT 1 FROM bookmark_favorites bf WHERE bf.user_id = ? AND bf.bookmark_id = b.id)`
+			qargs = append(qargs, sc.Actor)
+		}
 	}
 	for _, term := range search {
 		like := "%" + escapeLike(term) + "%"
@@ -310,7 +349,7 @@ func (s *Service) ListBookmarks(ctx context.Context, sc Scope, lq ListQuery) ([]
 	}
 	var out []Bookmark
 	err := s.read(ctx, func(q queryer) error {
-		ids, err := s.visibleIDs(ctx, q, sc, lq.FolderID, lq.URL, lq.Search, limit, offset, lq.Tags...)
+		ids, err := s.visibleIDs(ctx, q, sc, lq.FolderID, lq.URL, lq.Search, lq.Favorite, limit, offset, lq.Tags...)
 		if err != nil {
 			return err
 		}
@@ -454,7 +493,7 @@ func (s *Service) findVisibleByURL(ctx context.Context, q queryer, sc Scope, url
 			return 0, false, err
 		}
 	}
-	ids, err := s.visibleIDs(ctx, q, sc, 0, url, nil, 1, 0)
+	ids, err := s.visibleIDs(ctx, q, sc, 0, url, nil, nil, 1, 0)
 	if err != nil || len(ids) == 0 {
 		return 0, false, err
 	}
@@ -544,7 +583,7 @@ func (s *Service) UpdateBookmark(ctx context.Context, sc Scope, id int64, up Boo
 			// A URL edit of an already-visible record applies to every reference of it, like
 			// title and tags, including placements this scope cannot see (their rows stay).
 			// It must not collide with another record visible to this scope (generic 409).
-			others, err := s.visibleIDs(ctx, tx, sc, 0, *up.URL, nil, 2, 0)
+			others, err := s.visibleIDs(ctx, tx, sc, 0, *up.URL, nil, nil, 2, 0)
 			if err != nil {
 				return err
 			}
@@ -652,7 +691,7 @@ func (s *Service) mergeIntoSoleVisibleDuplicate(ctx context.Context, tx *sql.Tx,
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
-	ids, err := s.visibleIDs(ctx, tx, sc, 0, src.URL, nil, 3, 0)
+	ids, err := s.visibleIDs(ctx, tx, sc, 0, src.URL, nil, nil, 3, 0)
 	if err != nil {
 		return err
 	}
@@ -666,6 +705,13 @@ func (s *Service) mergeIntoSoleVisibleDuplicate(ctx context.Context, tx *sql.Tx,
 		return nil
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE bookmarks SET title = ?, updated_at = ? WHERE id = ?`, src.Title, now, survivors[0]); err != nil {
+		return err
+	}
+	// Each user's favorite follows the bookmark to the survivor for that same user only; the
+	// source rows stay so a Trash restore of the source keeps its favorite state.
+	if _, err := tx.ExecContext(ctx, `INSERT INTO bookmark_favorites(user_id, bookmark_id, created_at)
+		SELECT user_id, ?, created_at FROM bookmark_favorites WHERE bookmark_id = ?
+		ON CONFLICT(user_id, bookmark_id) DO NOTHING`, survivors[0], src.ID); err != nil {
 		return err
 	}
 	return s.setTags(ctx, tx, survivors[0], src.Tags)

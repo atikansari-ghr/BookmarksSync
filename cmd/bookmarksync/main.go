@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -20,7 +21,9 @@ import (
 	"github.com/atikansari-ghr/BookmarksSync/internal/config"
 	"github.com/atikansari-ghr/BookmarksSync/internal/database"
 	"github.com/atikansari-ghr/BookmarksSync/internal/floccus"
+	"github.com/atikansari-ghr/BookmarksSync/internal/health"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
+	"github.com/atikansari-ghr/BookmarksSync/internal/linkcheck"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
 	"github.com/atikansari-ghr/BookmarksSync/internal/version"
 	"github.com/atikansari-ghr/BookmarksSync/internal/webui"
@@ -163,7 +166,15 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 			_ = ln.Close()
 			return err
 		}
-		apiH, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, Logger: log,
+		// Link checks resolve stored URLs, so they run only with the browser API that can
+		// submit them. Jobs interrupted by a restart are re-queued before the worker starts.
+		lc := linkcheck.NewService(db.SQL(), bm, ids, linkcheck.NewChecker(linkcheck.Config{}), linkcheck.WithLogger(log))
+		if err := lc.Resume(ctx); err != nil {
+			_ = ln.Close()
+			return err
+		}
+		go lc.Run(ctx)
+		apiH, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Logger: log, Health: health.New(cfg.DataDir), Readiness: db, SyncErrors: adapter.SyncErrors, AssetDir: filepath.Join(cfg.DataDir, "branding"),
 			System: api.SystemInfo{Version: version.Current().Version, PublicOrigin: cfg.PublicOrigin,
 				PasskeysEnabled: passkeysEnabled, OIDCProviders: configuredOIDCNames(cfg.OIDCProviders)}})
 		if err != nil {

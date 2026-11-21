@@ -1,21 +1,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { ApiError, Client, tooMany, type SessionState } from './api'
+import { ApiError, Client, tooMany, type PublicPresentation, type SessionState } from './api'
 import { AppContext, useApp as useAppFromProvider, type AppContextValue } from './context'
 import { Dialog } from './components/Dialog'
+import { DuplicatesPage } from './pages/DuplicatesPage'
+import { DashboardPage } from './pages/DashboardPage'
+import { AdminPage } from './pages/AdminPage'
 import { LoginPage } from './pages/LoginPage'
 import { OidcComplete } from './pages/OidcComplete'
+import { OrganizerPage } from './pages/OrganizerPage'
 import { SecurityPage } from './pages/SecurityPage'
 
 function currentPath() {
   return window.location.pathname.replace(/\/+$/, '') || '/'
 }
 
-/** The sign-in and account-security app served under /auth/. */
+const defaultPresentation: PublicPresentation = {
+  appTitle: 'BookmarksSync', signinTitle: 'Personal Bookmarks Server',
+  tagline: 'Your bookmarks. Your browsers. Your control.',
+  supportingLine: 'A self-hosted home for your bookmarks.', loginLayout: 'split',
+  primaryColor: '#0f766e', accentColor: '#14b8a6', backgroundColor: '#e6f4fb', version: '', copyright: '© 2026 Atik Ansari',
+}
+
+/** The sign-in and account-security app (/auth/) and the bookmark workspace (/bookmarks, /duplicates). */
 export function App() {
   const client = useMemo(() => new Client(), [])
   const [path, setPath] = useState(currentPath)
   const [notice, setNotice] = useState('')
   const [session, setSession] = useState<SessionState | null>(null)
+  const [theme, setTheme] = useState<AppContextValue['theme']>({ name: 'ocean-glass', scheme: 'light', reducedTransparency: false })
+  const [presentation, setPresentation] = useState<PublicPresentation>(defaultPresentation)
+  const themeTouched = useRef(false)
+  const themeOwner = useRef<number | null>(null)
   const [reauth, setReauth] = useState<((ok: boolean) => void) | null>(null)
 
   useEffect(() => {
@@ -43,23 +58,82 @@ export function App() {
   const updateSession = useCallback(
     (s: SessionState | null) => {
       if (s) client.setCSRF(s.csrfToken)
+      if (!s) {
+        themeTouched.current = false
+        themeOwner.current = null
+        setTheme({ name: 'ocean-glass', scheme: 'light', reducedTransparency: false })
+      }
       setSession(s)
     },
     [client],
   )
 
+  useEffect(() => {
+    let live = true
+    void client.request<PublicPresentation>('GET', '/api/v1/auth/presentation', undefined, { reauth: false }).then((p) => { if (live) setPresentation((old) => ({ ...old, ...p })) }).catch(() => undefined)
+    return () => { live = false }
+  }, [client])
+
+  useEffect(() => {
+    document.documentElement.style.setProperty('--login-primary', presentation.primaryColor)
+    document.documentElement.style.setProperty('--login-accent', presentation.accentColor)
+    document.documentElement.style.setProperty('--login-background', presentation.backgroundColor)
+  }, [presentation])
+
+  useEffect(() => {
+    if (!session) return
+    if (themeOwner.current !== session.user.id) {
+      themeOwner.current = session.user.id
+      themeTouched.current = false
+    }
+    let live = true
+    void client.request<{ settings: Record<string, string> }>('GET', '/api/v1/me/settings', undefined, { reauth: false }).then(({ settings }) => {
+      if (!live) return
+      if (themeTouched.current) return
+      setTheme({
+        name: settings['ui.theme'] || 'ocean-glass',
+        scheme: settings['ui.color-scheme'] === 'dark' ? 'dark' : 'light',
+        reducedTransparency: settings['ui.reduced-transparency'] === 'true',
+      })
+    }).catch(() => undefined)
+    return () => { live = false }
+  }, [client, session?.user.id])
+
+  const updateTheme = useCallback<AppContextValue['setTheme']>((v) => {
+    themeTouched.current = true
+    setTheme(v)
+  }, [])
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme.name
+    document.documentElement.dataset.scheme = theme.scheme
+    document.documentElement.dataset.reducedTransparency = String(theme.reducedTransparency)
+  }, [theme])
+
   const ctx: AppContextValue = useMemo(
-    () => ({ client, navigate, session, setSession: updateSession, leave: (url: string) => window.location.assign(url) }),
-    [client, navigate, session, updateSession],
+    () => ({ client, navigate, session, setSession: updateSession, leave: (url: string) => window.location.assign(url), theme, setTheme: updateTheme, presentation, setPresentation }),
+    [client, navigate, session, updateSession, theme, updateTheme, presentation],
   )
 
   let page
   switch (path) {
+    case '/dashboard':
+      page = <DashboardPage />
+      break
+    case '/admin':
+      page = <AdminPage />
+      break
     case '/auth/security':
       page = <SecurityPage key={notice} initialNotice={notice} />
       break
     case '/auth/oidc/complete':
       page = <OidcComplete />
+      break
+    case '/bookmarks':
+      page = <OrganizerPage />
+      break
+    case '/duplicates':
+      page = <DuplicatesPage />
       break
     default:
       page = <LoginPage />

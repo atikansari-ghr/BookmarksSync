@@ -167,6 +167,7 @@ Chromium through the real pages with a CDP virtual authenticator:
 - password + TOTP sign-in;
 - linking the provider account;
 - provider sign-in completed with a recovery code (the second-factor handle is removed from the address bar).
+- administrator health page, PNG logo/background uploads, public image response headers, and application of both images on the signed-out login page.
 
 After each step it asserts that `localStorage`/`sessionStorage` are empty and no auth
 cookie is visible to scripts, and finally that no script errors or CSP violations

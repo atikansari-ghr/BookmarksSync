@@ -34,6 +34,8 @@ export function mockServer(routes: Record<string, Route>) {
       } catch {
         body = init.body
       }
+    } else if (typeof FormData !== 'undefined' && init?.body instanceof FormData) {
+      body = init.body
     }
     const call: Call = { method, path: url.pathname, query: url.searchParams, body, headers: new Headers(init?.headers) }
     calls.push(call)

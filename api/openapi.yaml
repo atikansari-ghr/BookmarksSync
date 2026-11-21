@@ -441,12 +441,13 @@ components:
       allOf:
         - {$ref: '#/components/schemas/User'}
         - type: object
-          required: [bookmarkCount, folderCount, storageBytes, connectionCount]
+          required: [bookmarkCount, folderCount, storageBytes, connectionCount, themeDefault]
           properties:
             bookmarkCount: {type: integer, minimum: 0}
             folderCount: {type: integer, minimum: 0}
             storageBytes: {type: integer, format: int64, minimum: 0}
             connectionCount: {type: integer, minimum: 0}
+            themeDefault: {type: [string, 'null'], enum: [classic, ocean-glass, midnight-glass, warm-glass, null]}
     AdminUserPage:
       type: object
       required: [users, page, limit, hasMore]

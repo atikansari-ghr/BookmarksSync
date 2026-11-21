@@ -1,0 +1,227 @@
+package api_test
+
+import (
+	"bytes"
+	"encoding/json"
+	"image"
+	"image/color"
+	"image/png"
+	"mime/multipart"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestAdminPerUserDefaultsRequireAdminAndRespectOverrides(t *testing.T) {
+	e := newTEnv(t)
+	alice := e.login(e.alice)
+	if rec := e.do("PATCH", "/api/v1/admin/users/1/settings", map[string]any{"ui.theme": "midnight-glass"}, alice.mods()...); rec.Code != 403 {
+		t.Fatalf("non-admin default update = %d %s", rec.Code, rec.Body.String())
+	}
+	root := e.login(e.root)
+	rec := e.do("PATCH", "/api/v1/admin/users/1/settings", map[string]any{"ui.theme": "midnight-glass"}, root.mods()...)
+	if rec.Code != 200 {
+		t.Fatalf("admin default update = %d %s", rec.Code, rec.Body.String())
+	}
+	effective := e.do("GET", "/api/v1/me/settings", nil, alice.mods()...)
+	if effective.Code != 200 || decode(t, effective)["settings"].(map[string]any)["ui.theme"] != "midnight-glass" {
+		t.Fatalf("default not effective: %d %s", effective.Code, effective.Body.String())
+	}
+	if rec := e.do("PATCH", "/api/v1/me/settings", map[string]any{"ui.theme": "warm-glass"}, alice.mods()...); rec.Code != 200 {
+		t.Fatalf("user override = %d %s", rec.Code, rec.Body.String())
+	}
+	effective = e.do("GET", "/api/v1/me/settings", nil, alice.mods()...)
+	if decode(t, effective)["settings"].(map[string]any)["ui.theme"] != "warm-glass" {
+		t.Fatalf("admin default overrode user choice: %s", effective.Body.String())
+	}
+}
+
+func TestAdminUserListIncludesThemeDefaults(t *testing.T) {
+	e := newTEnv(t)
+	theme := "midnight-glass"
+	if _, err := e.ids.UpdateUserSettingDefaults(t.Context(), e.alice.ID, map[string]*string{"ui.theme": &theme}); err != nil {
+		t.Fatal(err)
+	}
+	root := e.login(e.root)
+	rec := e.do("GET", "/api/v1/admin/users?limit=200", nil, root.mods()...)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("admin users = %d %s", rec.Code, rec.Body.String())
+	}
+	users := decode(t, rec)["users"].([]any)
+	got := map[string]any{}
+	for _, raw := range users {
+		user := raw.(map[string]any)
+		got[user["username"].(string)] = user["themeDefault"]
+	}
+	if got["alice"] != "midnight-glass" || got["bob"] != nil {
+		t.Fatalf("theme defaults = %#v, want alice default and no bob override", got)
+	}
+}
+
+func makeAssetBody(t *testing.T, kind, filename string, content []byte) (string, string) {
+	t.Helper()
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	if err := w.WriteField("kind", kind); err != nil {
+		t.Fatal(err)
+	}
+	part, err := w.CreateFormFile("asset", filename)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(content); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return body.String(), w.FormDataContentType()
+}
+
+func testPNG(t *testing.T) []byte {
+	t.Helper()
+	var b bytes.Buffer
+	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
+	img.Set(0, 0, color.RGBA{R: 20, G: 80, B: 140, A: 255})
+	if err := png.Encode(&b, img); err != nil {
+		t.Fatal(err)
+	}
+	return b.Bytes()
+}
+
+func TestBrandingAssetRejectsUnsupportedTypeAndOversize(t *testing.T) {
+	e := newTEnv(t)
+	root := e.login(e.root)
+	bad, contentType := makeAssetBody(t, "logo", "bad.svg", []byte("<svg>bad</svg>"))
+	if rec := e.do("POST", "/api/v1/admin/settings/assets", bad, append(root.mods(), withContentType(contentType))...); rec.Code != 400 {
+		t.Fatalf("SVG upload = %d %s", rec.Code, rec.Body.String())
+	}
+	large, contentType := makeAssetBody(t, "background", "large.png", append(testPNG(t), bytes.Repeat([]byte{0}, (2<<20)+1)...))
+	if rec := e.do("POST", "/api/v1/admin/settings/assets", large, append(root.mods(), withContentType(contentType))...); rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversize upload = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBrandingAssetPathCannotEscapeDataDirectory(t *testing.T) {
+	e := newTEnv(t)
+	root := e.login(e.root)
+	body, contentType := makeAssetBody(t, "logo", "../../outside.png", testPNG(t))
+	rec := e.do("POST", "/api/v1/admin/settings/assets", body, append(root.mods(), withContentType(contentType))...)
+	if rec.Code != 201 {
+		t.Fatalf("upload = %d %s", rec.Code, rec.Body.String())
+	}
+	data := decode(t, rec)
+	assetURL, _ := data["url"].(string)
+	if !strings.HasPrefix(assetURL, "/api/v1/auth/presentation/assets/") || strings.Contains(assetURL, "..") {
+		t.Fatalf("unsafe generated URL %q", assetURL)
+	}
+	entries, err := os.ReadDir(e.assetDir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("asset directory entries = %v, %v", entries, err)
+	}
+	resolved, err := filepath.Abs(filepath.Join(e.assetDir, entries[0].Name()))
+	if err != nil || filepath.Dir(resolved) != filepath.Clean(e.assetDir) {
+		t.Fatalf("asset escaped directory: %q %v", resolved, err)
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(e.assetDir), "outside.png")); !os.IsNotExist(err) {
+		t.Fatalf("attacker filename created an outside file: %v", err)
+	}
+	public := e.do("GET", assetURL, nil)
+	if public.Code != 200 || public.Header().Get("Content-Type") != "image/png" {
+		t.Fatalf("public image = %d %q", public.Code, public.Header().Get("Content-Type"))
+	}
+	if public.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("image response missing nosniff protection: %v", public.Header())
+	}
+	presentation := e.do("GET", "/api/v1/auth/presentation", nil)
+	if got := decode(t, presentation)["logoUrl"]; got != assetURL {
+		t.Fatalf("presentation logo URL = %v, want %q", got, assetURL)
+	}
+}
+
+func TestBrandingAssetsAreOnlyServedWhenReferenced(t *testing.T) {
+	e := newTEnv(t)
+	root := e.login(e.root)
+	body, contentType := makeAssetBody(t, "logo", "logo.png", testPNG(t))
+	rec := e.do("POST", "/api/v1/admin/settings/assets", body, append(root.mods(), withContentType(contentType))...)
+	if rec.Code != 201 {
+		t.Fatalf("upload = %d %s", rec.Code, rec.Body.String())
+	}
+	url := decode(t, rec)["url"].(string)
+	id := strings.TrimPrefix(url, "/api/v1/auth/presentation/assets/")
+	for _, path := range []string{"/api/v1/auth/presentation/assets/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"} {
+		if got := e.do("GET", path, nil).Code; got != http.StatusNotFound {
+			t.Errorf("GET %q = %d, want 404", path, got)
+		}
+	}
+	if rec := e.do("PATCH", "/api/v1/admin/settings", map[string]any{"branding.logo-id": nil}, root.mods()...); rec.Code != http.StatusOK {
+		t.Fatalf("clear logo setting = %d %s", rec.Code, rec.Body.String())
+	}
+	if got := e.do("GET", url, nil).Code; got != http.StatusNotFound {
+		t.Fatalf("unreferenced image = %d, want 404", got)
+	}
+	if _, err := os.Stat(filepath.Join(e.assetDir, id+".png")); !os.IsNotExist(err) {
+		t.Fatalf("cleared asset file still exists: %v", err)
+	}
+}
+
+func TestReplacingBrandingSettingKeepsAssetReferencedByOtherSetting(t *testing.T) {
+	e := newTEnv(t)
+	root := e.login(e.root)
+	body, contentType := makeAssetBody(t, "logo", "logo.png", testPNG(t))
+	first := e.do("POST", "/api/v1/admin/settings/assets", body, append(root.mods(), withContentType(contentType))...)
+	if first.Code != http.StatusCreated {
+		t.Fatalf("first upload = %d %s", first.Code, first.Body.String())
+	}
+	oldURL := decode(t, first)["url"].(string)
+	oldID := strings.TrimPrefix(oldURL, "/api/v1/auth/presentation/assets/")
+	if rec := e.do("PATCH", "/api/v1/admin/settings", map[string]any{"branding.background-id": oldID}, root.mods()...); rec.Code != http.StatusOK {
+		t.Fatalf("share asset between settings = %d %s", rec.Code, rec.Body.String())
+	}
+	secondBody, contentType := makeAssetBody(t, "logo", "new-logo.png", testPNG(t))
+	second := e.do("POST", "/api/v1/admin/settings/assets", secondBody, append(root.mods(), withContentType(contentType))...)
+	if second.Code != http.StatusCreated {
+		t.Fatalf("replacement upload = %d %s", second.Code, second.Body.String())
+	}
+	if got := e.do("GET", oldURL, nil).Code; got != http.StatusOK {
+		t.Fatalf("image still referenced as background = %d, want 200", got)
+	}
+}
+
+func TestPublicPresentationOnlyReturnsSafeBranding(t *testing.T) {
+	e := newTEnv(t)
+	root := e.login(e.root)
+	if rec := e.do("PATCH", "/api/v1/admin/settings", map[string]any{"branding.app-title": "My Private Server", "branding.primary-color": "#124488", "branding.logo-id": "0123456789abcdef0123456789abcdef"}, root.mods()...); rec.Code != 200 {
+		t.Fatalf("branding settings = %d %s", rec.Code, rec.Body.String())
+	}
+	rec := e.do("GET", "/api/v1/auth/presentation", nil)
+	if rec.Code != 200 {
+		t.Fatalf("presentation = %d %s", rec.Code, rec.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body["appTitle"] != "My Private Server" || body["primaryColor"] != "#124488" || body["version"] != "test" {
+		t.Fatalf("presentation values = %v", body)
+	}
+	if _, exists := body["logoUrl"]; exists {
+		t.Fatalf("presentation returned a URL for a missing branding asset: %v", body["logoUrl"])
+	}
+	for _, key := range []string{"cookie", "csrfToken", "credentials", "bookmarks", "secret", "databasePath"} {
+		if _, exists := body[key]; exists {
+			t.Errorf("unsafe field %q exposed", key)
+		}
+	}
+	activity := e.do("GET", "/api/v1/admin/activity", nil, root.mods()...)
+	if activity.Code != 200 || strings.Contains(activity.Body.String(), "My Private Server") || strings.Contains(activity.Body.String(), "#124488") || !strings.Contains(activity.Body.String(), "system_settings_updated") {
+		t.Fatalf("activity is missing safe event metadata or leaked settings: %d %s", activity.Code, activity.Body.String())
+	}
+	for key, value := range map[string]string{"branding.primary-color": "url(javascript:alert(1))", "branding.app-title": "<script>bad</script>"} {
+		if r := e.do("PATCH", "/api/v1/admin/settings", map[string]any{key: value}, root.mods()...); r.Code != 400 {
+			t.Errorf("unsafe %s returned %d body=%s", key, r.Code, r.Body.String())
+		}
+	}
+}

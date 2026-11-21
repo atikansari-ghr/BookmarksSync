@@ -297,3 +297,104 @@ func TestUserSettingsWhitelist(t *testing.T) {
 		t.Fatalf("bob sees settings: %v", bob)
 	}
 }
+
+func TestWidgetSettingsPersistPerUserAndReset(t *testing.T) {
+	e := newFactorEnv(t)
+	ctx := context.Background()
+	layout := `{"widgets":[{"id":"duplicates","visible":true,"order":0,"size":"large"},{"id":"total","visible":true,"order":1,"size":"small"},{"id":"recent","visible":false,"order":2,"size":"medium"},{"id":"sync","visible":true,"order":3,"size":"medium"}]}`
+	got, err := e.svc.UpdateSettings(ctx, e.alice.ID, map[string]*string{"dashboard.layout": &layout})
+	if err != nil || got["dashboard.layout"] != layout {
+		t.Fatalf("persist layout = %v, %v", got, err)
+	}
+	if bob, _ := e.svc.Settings(ctx, e.bob.ID); bob["dashboard.layout"] != "" {
+		t.Fatalf("dashboard layout crossed users: %v", bob)
+	}
+	if got, err := e.svc.UpdateSettings(ctx, e.alice.ID, map[string]*string{"dashboard.layout": nil}); err != nil || got["dashboard.layout"] != "" {
+		t.Fatalf("reset layout = %v, %v", got, err)
+	}
+	for _, invalid := range []string{
+		`{"widgets":[]}`,
+		`{"widgets":[{"id":"unknown","visible":true,"order":0,"size":"small"}]}`,
+		`{"widgets":[{"id":"total","visible":true,"order":0,"size":"giant"}]}`,
+		`{"widgets":[{"id":"total","visible":true,"order":0,"size":"small"},{"id":"total","visible":false,"order":1,"size":"small"}]}`,
+	} {
+		if _, err := e.svc.UpdateSettings(ctx, e.alice.ID, map[string]*string{"dashboard.layout": &invalid}); !errors.Is(err, identity.ErrInvalid) {
+			t.Errorf("accepted invalid layout %s: %v", invalid, err)
+		}
+	}
+}
+
+func TestThemeSettingsRejectUnknownValues(t *testing.T) {
+	e := newFactorEnv(t)
+	ctx := context.Background()
+	for key, valid := range map[string]string{"ui.theme": "ocean-glass", "ui.color-scheme": "dark", "ui.reduced-transparency": "true"} {
+		if _, err := e.svc.UpdateSettings(ctx, e.alice.ID, map[string]*string{key: &valid}); err != nil {
+			t.Errorf("valid %s rejected: %v", key, err)
+		}
+	}
+	for key, invalid := range map[string]string{"ui.theme": "neon", "ui.color-scheme": "auto", "ui.reduced-transparency": "yes"} {
+		if _, err := e.svc.UpdateSettings(ctx, e.alice.ID, map[string]*string{key: &invalid}); !errors.Is(err, identity.ErrInvalid) {
+			t.Errorf("accepted %s=%q: %v", key, invalid, err)
+		}
+	}
+}
+
+func TestAdminDefaultsApplyUntilUserOverride(t *testing.T) {
+	e := newFactorEnv(t)
+	ctx := context.Background()
+	value := "midnight-glass"
+	got, err := e.svc.UpdateUserSettingDefaults(ctx, e.alice.ID, map[string]*string{"ui.theme": &value})
+	if err != nil || got["ui.theme"] != value {
+		t.Fatalf("set default = %v, %v", got, err)
+	}
+	if settings, err := e.svc.Settings(ctx, e.alice.ID); err != nil || settings["ui.theme"] != value {
+		t.Fatalf("default not effective: %v, %v", settings, err)
+	}
+	personal := "warm-glass"
+	if _, err := e.svc.UpdateSettings(ctx, e.alice.ID, map[string]*string{"ui.theme": &personal}); err != nil {
+		t.Fatal(err)
+	}
+	if settings, _ := e.svc.Settings(ctx, e.alice.ID); settings["ui.theme"] != personal {
+		t.Fatalf("default replaced user choice: %v", settings)
+	}
+	if _, err := e.svc.UpdateSettings(ctx, e.alice.ID, map[string]*string{"ui.theme": nil}); err != nil {
+		t.Fatal(err)
+	}
+	if settings, _ := e.svc.Settings(ctx, e.alice.ID); settings["ui.theme"] != value {
+		t.Fatalf("removing override did not restore default: %v", settings)
+	}
+	if settings, _ := e.svc.Settings(ctx, e.bob.ID); settings["ui.theme"] != "" {
+		t.Fatalf("default leaked to another user: %v", settings)
+	}
+}
+
+func TestSystemBrandingSettingsRejectUnsafeValues(t *testing.T) {
+	e := newFactorEnv(t)
+	ctx := context.Background()
+	valid := map[string]*string{"branding.app-title": strptr("Personal Bookmarks Server"), "branding.primary-color": strptr("#1255aa"), "branding.login-layout": strptr("centered")}
+	if got, err := e.svc.UpdateSystemSettings(ctx, valid); err != nil || got["branding.app-title"] != *valid["branding.app-title"] {
+		t.Fatalf("valid settings = %v, %v", got, err)
+	}
+	for key, v := range map[string]string{"branding.primary-color": "url(javascript:alert(1))", "branding.app-title": "<script>alert(1)</script>", "branding.login-layout": "iframe"} {
+		if _, err := e.svc.UpdateSystemSettings(ctx, map[string]*string{key: &v}); !errors.Is(err, identity.ErrInvalid) {
+			t.Errorf("accepted unsafe %s=%q: %v", key, v, err)
+		}
+	}
+}
+
+func TestAdminActivityIsSanitized(t *testing.T) {
+	e := newFactorEnv(t)
+	ctx := context.Background()
+	if err := e.svc.RecordAdminActivity(ctx, e.alice.ID, "system_settings_updated", "system", 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.svc.RecordAdminActivity(ctx, e.alice.ID, "system_settings_updated:secret-value", "system", 0); !errors.Is(err, identity.ErrInvalid) {
+		t.Fatalf("accepted raw activity text: %v", err)
+	}
+	items, err := e.svc.ListAdminActivity(ctx, 100)
+	if err != nil || len(items) != 1 || items[0].Action != "system_settings_updated" || items[0].TargetType != "system" || items[0].TargetID != nil {
+		t.Fatalf("activity = %+v, %v", items, err)
+	}
+}
+
+func strptr(v string) *string { return &v }

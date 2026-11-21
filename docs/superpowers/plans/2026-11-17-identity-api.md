@@ -89,7 +89,7 @@
 
 - [x] Write table-driven route tests for method/path/schema errors, pagination limits, each token scope, ownership, share view/edit permissions, admin role, last-admin protection, deactivated users, and no private data in admin responses.
 - [x] Add a migration fixture test proving existing users, credentials, bookmarks, and shares remain intact.
-- [x] Implement handlers through domain services; do not add SQL that bypasses service scoping. Favorites are deferred until the user rules on their storage (no migration 0004 yet).
+- [x] Implement handlers through domain services; do not add SQL that bypasses service scoping. Per-user, bookmark-level Favorites are implemented locally via migration 0004 (uncommitted, pending milestone acceptance); see `2026-11-18-bookmark-favorites.md`.
 - [x] Validate OpenAPI syntax and add a test that every registered `/api/v1` route/method is represented.
 - [x] Run API integration suite, full Go tests, vet, formatting, builds, and mutation checks for authorization boundaries; commit for review.
 
@@ -103,7 +103,7 @@
 - [x] Run tests to identify missing accessible form states and API/UI contracts.
 - [x] Implement responsive accessible screens with keyboard navigation and clear factor setup/removal states; build static assets into the Go embed package.
 - [x] Add CI Node setup, locked dependency install, typecheck, unit/browser tests, and frontend build before Go packaging.
-- [x] Run frontend checks, Go suite, Linux/Windows builds, local end-to-end auth flow, and commit for review. (Independent Task 6 review still pending; see progress ledger.)
+- [x] Run frontend checks, Go suite, Linux/Windows builds, local end-to-end auth flow, and commit for review. Task 6 was included in the independent full-milestone review; see `fresh-review.md` and the progress ledger.
 
 ### Task 7: Security documentation and whole-milestone acceptance
 
@@ -111,6 +111,7 @@
 
 - [x] Document CLI admin bootstrap, HTTPS/public URL configuration, Google/Authentik provider setup, account/factor recovery, API tokens/scopes, session controls, and security limits. (`docs/authentication.md`, README, design and implementation-plan updates.)
 - [x] Test a fresh database and an upgraded milestone-2 database; prove existing Floccus credentials and sync remain operational. (Go regression over the Floccus wire with the preexisting `bms1` credential; real `b0eab92` binary upgraded to the current binary; fresh-database CLI bootstrap.)
-- [ ] Run all CI workflows, Go/Node suites, browser workflows, Linux/Windows builds, and `govulncheck`; record exact results and untested platform cases. Local CI-equivalents all pass after the go-jose v4.1.4 security bump, as do the UI and factor smokes and the Floccus 4-browser matrix (72/72). Still open: the race detector (NOT_RUN: no local C compiler; CI runs it) and GitHub-hosted CI (NOT_RUN: branch not pushed). See `task-7-report.md`.
-- [ ] Ask a fresh reviewer to inspect the full milestone diff for auth bypasses, cross-user access, migration safety, and mismatch between OpenAPI and handlers. Fix all Critical/Important findings and rerun affected checks. Implementer self-review is done: it fixed the OpenAPI recent-auth drift and the govulncheck finding. A fresh independent review is still open; this task was told not to start extra agents.
+- [ ] Run all CI workflows, Go/Node suites, browser workflows, Linux/Windows builds, and `govulncheck`; record exact results and untested platform cases. Current local evidence: Go suite/vet/format/Linux+Windows cross-builds pass, full Windows/amd64 race suite passes with MSYS2 GCC 16.2, pinned `govulncheck@v1.9.0` finds no vulnerabilities, Node 26 UI/browser suites and audits pass, and real browser matrices pass. GitHub run 44037891729 passed all jobs on remote SHA `b0eab923`, which is only the merge-base; the current local branch is 22 commits ahead and has no GitHub CI run. Ubuntu-specific execution remains unavailable locally (Docker/WSL are absent) and is not being pushed. See `task-7-report.md`.
+- [x] Ask a fresh reviewer to inspect the full milestone diff for auth bypasses, cross-user access, migration safety, and mismatch between OpenAPI and handlers. Fix all Critical/Important findings and rerun affected checks. `fresh-review.md`: no Critical/Important findings; one Minor share-connection mode mismatch fixed in `1860c02` and UI in `2b40496`. Claude's independent M2 review found contract mismatches; Codex verified and fixed them, and Claude's final spot-check found no new mismatch.
+- [x] Close the OpenAPI contract completeness follow-up: document each operation's request body and successful response (status, content type, schema), document the `share` query parameter, and test this coverage against the registered API. The tests also pin pagination/search/import/export, OIDC callback query parameters, request-body presence/absence, root-folder IDs, and other reviewed handler edge cases. Focused and full Go gates pass; Redocly reports a valid OpenAPI document with warnings only.
 - [ ] Commit only after the review and acceptance checks are clean; do not merge or deploy. Task 7 is committed for controller review, but not merged, pushed or deployed. Milestone acceptance waits for the fresh review and CI.

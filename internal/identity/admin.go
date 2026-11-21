@@ -1,13 +1,20 @@
 package identity
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 	_ "time/tzdata" // IANA zones for ui.timezone validation on every platform
+	"unicode"
+	"unicode/utf8"
+
+	"github.com/atikansari-ghr/BookmarksSync/internal/linkcheck/exclude"
 )
 
 // ErrLastAdmin refuses a change that would leave no active administrator.
@@ -78,6 +85,27 @@ func (s *Service) ListUsersPage(ctx context.Context, limit, offset int) ([]UserI
 			return nil, err
 		}
 		out = append(out, u)
+	}
+	return out, rows.Err()
+}
+
+// ListUserThemeDefaults returns the account theme overrides in one query for the
+// administrator's paginated account list. Missing entries inherit the account's
+// regular theme preference.
+func (s *Service) ListUserThemeDefaults(ctx context.Context) (map[int64]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT user_id,value FROM user_setting_defaults WHERE key='ui.theme'`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := make(map[int64]string)
+	for rows.Next() {
+		var userID int64
+		var theme string
+		if err := rows.Scan(&userID, &theme); err != nil {
+			return nil, err
+		}
+		out[userID] = theme
 	}
 	return out, rows.Err()
 }
@@ -287,6 +315,14 @@ func (s *Service) RevokeUserCredential(ctx context.Context, userID, credID int64
 var settingValidators = map[string]func(string) bool{
 	"bookmarks.view": func(v string) bool { return v == "list" || v == "grid" },
 	"bookmarks.sort": func(v string) bool { return v == "manual" || v == "title" || v == "created" },
+	// Link-check exclusions only ever skip checks; the checker's public-only rules still apply.
+	exclude.SettingKey: exclude.Valid,
+	"dashboard.layout": validDashboardLayout,
+	"ui.theme": func(v string) bool {
+		return v == "classic" || v == "ocean-glass" || v == "midnight-glass" || v == "warm-glass"
+	},
+	"ui.color-scheme":         func(v string) bool { return v == "light" || v == "dark" },
+	"ui.reduced-transparency": func(v string) bool { return v == "true" || v == "false" },
 	"ui.timezone": func(v string) bool {
 		if v == "" || len(v) > 64 || v == "Local" || strings.Contains(v, "..") || strings.HasPrefix(v, "/") {
 			return false
@@ -294,6 +330,93 @@ var settingValidators = map[string]func(string) bool{
 		_, err := time.LoadLocation(v)
 		return err == nil
 	},
+}
+
+var defaultSettingKeys = map[string]bool{
+	"bookmarks.view": true, "bookmarks.sort": true, "dashboard.layout": true,
+	"ui.theme": true, "ui.color-scheme": true, "ui.reduced-transparency": true,
+}
+
+var systemSettingValidators = map[string]func(string) bool{
+	"branding.app-title":        func(v string) bool { return validPlainSetting(v, 80) },
+	"branding.signin-title":     func(v string) bool { return validPlainSetting(v, 100) },
+	"branding.tagline":          func(v string) bool { return validPlainSetting(v, 160) },
+	"branding.supporting-line":  func(v string) bool { return validPlainSetting(v, 240) },
+	"branding.primary-color":    validHexColor,
+	"branding.accent-color":     validHexColor,
+	"branding.background-color": validHexColor,
+	"branding.login-layout":     func(v string) bool { return v == "split" || v == "centered" || v == "plain" },
+	"branding.logo-id":          validBrandingAssetID,
+	"branding.background-id":    validBrandingAssetID,
+}
+
+func validBrandingAssetID(v string) bool {
+	if len(v) != 32 {
+		return false
+	}
+	for _, c := range v {
+		if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func validPlainSetting(v string, max int) bool {
+	if !utf8.ValidString(v) || utf8.RuneCountInString(v) > max || strings.TrimSpace(v) != v || strings.ContainsAny(v, "<>") {
+		return false
+	}
+	for _, r := range v {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func validHexColor(v string) bool {
+	if len(v) != 7 || v[0] != '#' {
+		return false
+	}
+	for _, r := range v[1:] {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+type dashboardWidgetSetting struct {
+	ID      string `json:"id"`
+	Visible bool   `json:"visible"`
+	Order   int    `json:"order"`
+	Size    string `json:"size"`
+}
+
+func validDashboardLayout(raw string) bool {
+	if len(raw) > 2048 {
+		return false
+	}
+	var layout struct {
+		Widgets []dashboardWidgetSetting `json:"widgets"`
+	}
+	dec := json.NewDecoder(bytes.NewBufferString(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&layout); err != nil || len(layout.Widgets) != 4 {
+		return false
+	}
+	if err := dec.Decode(new(any)); err != io.EOF {
+		return false
+	}
+	seenID, seenOrder := map[string]bool{}, map[int]bool{}
+	for _, w := range layout.Widgets {
+		if (w.ID != "total" && w.ID != "recent" && w.ID != "sync" && w.ID != "duplicates") || seenID[w.ID] || w.Order < 0 || w.Order > 3 || seenOrder[w.Order] ||
+			(w.Size != "small" && w.Size != "medium" && w.Size != "large") {
+			return false
+		}
+		seenID[w.ID], seenOrder[w.Order] = true, true
+	}
+	return true
 }
 
 // Settings returns the user's whitelisted settings.
@@ -312,6 +435,188 @@ func (s *Service) Settings(ctx context.Context, userID int64) (map[string]string
 		if _, ok := settingValidators[k]; ok {
 			out[k] = v
 		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	defaults, err := s.db.QueryContext(ctx, `SELECT key, value FROM user_setting_defaults WHERE user_id = ?`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer defaults.Close()
+	for defaults.Next() {
+		var k, v string
+		if err := defaults.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		if _, valid := settingValidators[k]; valid {
+			if _, override := out[k]; !override {
+				out[k] = v
+			}
+		}
+	}
+	return out, defaults.Err()
+}
+
+// UpdateUserSettingDefaults sets the values an administrator has chosen for one user.
+// User-owned settings take precedence and deleting a user override reveals the default.
+func (s *Service) UpdateUserSettingDefaults(ctx context.Context, userID int64, changes map[string]*string) (map[string]string, error) {
+	if userID <= 0 || len(changes) == 0 {
+		return nil, fmt.Errorf("%w: no default settings given", ErrInvalid)
+	}
+	for k, v := range changes {
+		valid, ok := settingValidators[k]
+		if !defaultSettingKeys[k] || !ok || v != nil && !valid(*v) {
+			return nil, fmt.Errorf("%w: invalid default setting %q", ErrInvalid, k)
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var one int
+	if err := tx.QueryRowContext(ctx, `SELECT 1 FROM users WHERE id = ?`, userID).Scan(&one); errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	} else if err != nil {
+		return nil, err
+	}
+	now := s.now().UnixMilli()
+	for k, v := range changes {
+		if v == nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM user_setting_defaults WHERE user_id = ? AND key = ?`, userID, k); err != nil {
+				return nil, err
+			}
+		} else if _, err := tx.ExecContext(ctx, `INSERT INTO user_setting_defaults(user_id,key,value,updated_at) VALUES (?,?,?,?) ON CONFLICT(user_id,key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, userID, k, *v, now); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.UserSettingDefaults(ctx, userID)
+}
+
+func (s *Service) UserSettingDefaults(ctx context.Context, userID int64) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT key,value FROM user_setting_defaults WHERE user_id = ?`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		out[k] = v
+	}
+	return out, rows.Err()
+}
+
+func (s *Service) SystemSettings(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT key,value FROM system_settings`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var k, v string
+		if err := rows.Scan(&k, &v); err != nil {
+			return nil, err
+		}
+		if _, ok := systemSettingValidators[k]; ok {
+			out[k] = v
+		}
+	}
+	return out, rows.Err()
+}
+
+func (s *Service) UpdateSystemSettings(ctx context.Context, changes map[string]*string) (map[string]string, error) {
+	if len(changes) == 0 {
+		return nil, fmt.Errorf("%w: no system settings given", ErrInvalid)
+	}
+	for k, v := range changes {
+		valid, ok := systemSettingValidators[k]
+		if !ok || v != nil && !valid(*v) {
+			return nil, fmt.Errorf("%w: invalid system setting %q", ErrInvalid, k)
+		}
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	now := s.now().UnixMilli()
+	for k, v := range changes {
+		if v == nil {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM system_settings WHERE key=?`, k); err != nil {
+				return nil, err
+			}
+		} else if _, err := tx.ExecContext(ctx, `INSERT INTO system_settings(key,value,updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at`, k, *v, now); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.SystemSettings(ctx)
+}
+
+type AdminActivity struct {
+	ID         int64
+	ActorID    int64
+	Action     string
+	TargetType string
+	TargetID   *int64
+	CreatedAt  time.Time
+}
+
+var adminActivityActions = map[string]bool{
+	"user_created": true, "user_updated": true, "user_settings_updated": true,
+	"system_settings_updated": true, "branding_asset_uploaded": true,
+	"connection_revoked": true, "password_reset": true, "factor_reset": true,
+}
+
+// RecordAdminActivity stores only a fixed action code and numeric target identifiers.
+// Callers cannot attach usernames, bookmark content, request data, or secrets.
+func (s *Service) RecordAdminActivity(ctx context.Context, actorID int64, action, targetType string, targetID int64) error {
+	if actorID <= 0 || !adminActivityActions[action] || (targetType != "user" && targetType != "system" && targetType != "asset") ||
+		(targetType == "system" && targetID != 0) || (targetType != "system" && targetID <= 0) {
+		return fmt.Errorf("%w: invalid activity event", ErrInvalid)
+	}
+	var target any
+	if targetID > 0 {
+		target = targetID
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO admin_activity(actor_id,action,target_type,target_id,created_at) VALUES (?,?,?,?,?)`, actorID, action, targetType, target, s.now().UnixMilli())
+	return err
+}
+
+func (s *Service) ListAdminActivity(ctx context.Context, limit int) ([]AdminActivity, error) {
+	if limit < 1 || limit > 200 {
+		return nil, fmt.Errorf("%w: invalid activity limit", ErrInvalid)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id,COALESCE(actor_id,0),action,target_type,target_id,created_at FROM admin_activity ORDER BY created_at DESC,id DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AdminActivity{}
+	for rows.Next() {
+		var v AdminActivity
+		var target sql.NullInt64
+		var at int64
+		if err := rows.Scan(&v.ID, &v.ActorID, &v.Action, &v.TargetType, &target, &at); err != nil {
+			return nil, err
+		}
+		if target.Valid {
+			id := target.Int64
+			v.TargetID = &id
+		}
+		v.CreatedAt = time.UnixMilli(at).UTC()
+		out = append(out, v)
 	}
 	return out, rows.Err()
 }

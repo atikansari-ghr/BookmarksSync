@@ -1,4 +1,4 @@
-// Real-browser check of the Task 6 sign-in and account-security UI. Builds the server
+// Real-browser check of the sign-in, account-security, and admin branding UI. Builds the server
 // (with the embedded UI) into a marked run directory, starts it on
 // http://localhost:<port> with a local fake OpenID Connect issuer configured as
 // "Authentik", creates a throw-away account through the CLI (password via stdin), and
@@ -6,7 +6,7 @@
 //   password sign-in -> API token create/revoke -> revoke another session ->
 //   add a passkey (CDP virtual authenticator) -> passkey sign-in -> TOTP setup with
 //   one-time recovery codes -> password + TOTP sign-in -> link the provider account
-//   -> provider sign-in completed with a recovery code.
+//   -> provider sign-in completed with a recovery code -> admin health and branding upload.
 // After every step it asserts that localStorage and sessionStorage stay empty and no
 // auth cookie is visible to scripts. Exit codes: 0 PASS, 1 FAIL, 2 NOT_RUN, 3 BLOCKED.
 import crypto from 'node:crypto'
@@ -106,7 +106,7 @@ async function main() {
     const password = crypto.randomBytes(18).toString('base64url')
     const clientSecret = crypto.randomBytes(18).toString('base64url')
     secrets.push(password, clientSecret)
-    const create = await runCommand({ command: exe, args: ['user', 'create', '--username', 'ui-smoke', '--password-stdin', '--data-dir', dataDir], stdin: password + '\n' })
+    const create = await runCommand({ command: exe, args: ['user', 'create', '--username', 'ui-smoke', '--password-stdin', '--admin', '--data-dir', dataDir], stdin: password + '\n' })
     if (create.code !== 0) { record('create user', 'FAIL', sanitize(create.stderr, secrets)); return 1 }
     issuer = await startFakeIssuer({ clientId: 'ui-smoke-client', clientSecret, subject: 'ui-smoke-subject' })
     server = await startProcessServer({ command: exe, args: ['serve', '--listen', `127.0.0.1:${port}`, '--data-dir', dataDir, '--public-url', origin],
@@ -265,6 +265,47 @@ async function main() {
     await security()
     record('OIDC sign-in completed with a recovery code', 'PASS')
     await noStorage('after OIDC sign-in')
+
+    // 9. Administrator health and branding upload. Build a real 1x1 PNG in the browser
+    // canvas, so the smoke exercises the actual multipart upload and public image route.
+    await page.goto(`${origin}/admin`)
+    await page.getByRole('heading', { name: 'Server health' }).waitFor()
+    must(await page.getByText('Database ready').isVisible(), 'administrator health page loads')
+    const pngBytes = await page.evaluate(async () => {
+      const canvas = document.createElement('canvas')
+      canvas.width = 1; canvas.height = 1
+      const ctx = canvas.getContext('2d')
+      ctx.fillStyle = '#167f8b'; ctx.fillRect(0, 0, 1, 1)
+      const blob = await new Promise((resolve) => canvas.toBlob(resolve, 'image/png'))
+      return Array.from(new Uint8Array(await blob.arrayBuffer()))
+    })
+    await page.getByLabel('Login logo image').setInputFiles({ name: 'logo.png', mimeType: 'image/png', buffer: Buffer.from(pngBytes) })
+    await page.getByText('Logo uploaded.').waitFor()
+    await page.getByLabel('Login background image').setInputFiles({ name: 'background.png', mimeType: 'image/png', buffer: Buffer.from(pngBytes) })
+    await page.getByText('Background uploaded.').waitFor()
+    const presentation = await page.evaluate(async () => (await (await fetch('/api/v1/auth/presentation')).json()))
+    const assetURL = /^\/api\/v1\/auth\/presentation\/assets\/[0-9a-f]{32}$/
+    must(assetURL.test(presentation.logoUrl) && assetURL.test(presentation.backgroundUrl) && presentation.logoUrl !== presentation.backgroundUrl, 'uploaded login images have distinct generated public URLs')
+    const images = await page.evaluate(async (urls) => Promise.all(urls.map(async (url) => {
+      const response = await fetch(url)
+      return { status: response.status, type: response.headers.get('content-type'), nosniff: response.headers.get('x-content-type-options') }
+    })), [presentation.logoUrl, presentation.backgroundUrl])
+    must(images.every((image) => image.status === 200 && image.type === 'image/png' && image.nosniff === 'nosniff'), 'public branding images are served with a safe image type')
+    await shoot('admin-desktop', true)
+    await signOut()
+    const logo = page.locator('.login-logo')
+    const logoReady = await logo.waitFor({ timeout: 5000 }).then(() => true, () => false)
+    const loginState = await page.evaluate(async () => ({
+      path: location.pathname,
+      title: document.title,
+      body: document.body.innerText.slice(0, 280),
+      presentation: await (await fetch('/api/v1/auth/presentation')).json(),
+    }))
+    must(logoReady, 'branded login page renders the uploaded logo', JSON.stringify(loginState))
+    const renderedBackground = await page.locator('.login-background-image').evaluate((element) => getComputedStyle(element).backgroundImage)
+    must((await page.locator('.login-logo').getAttribute('src')) === presentation.logoUrl && renderedBackground.includes(presentation.backgroundUrl), 'uploaded images are applied to the login page')
+    await shoot('branded-login-desktop', true)
+    await noStorage('after admin branding upload')
 
     must(consoleErrors.length === 0, 'no script errors or CSP violations', consoleErrors.slice(0, 3).join(' | '))
     return 0

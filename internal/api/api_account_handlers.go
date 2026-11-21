@@ -2,6 +2,7 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"mime"
 	"net/http"
@@ -15,6 +16,43 @@ import (
 	"github.com/atikansari-ghr/BookmarksSync/internal/interchange"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
 )
+
+func (a *API) servePresentation(w http.ResponseWriter, r *http.Request) bool {
+	if r.URL.Path != "/api/v1/auth/presentation" || r.Method != http.MethodGet {
+		return false
+	}
+	settings, err := a.ids.SystemSettings(r.Context())
+	if err != nil {
+		writeDomainError(w, err)
+		return true
+	}
+	defaults := map[string]string{
+		"appTitle": "BookmarksSync", "signinTitle": "Personal Bookmarks Server",
+		"tagline":        "Your bookmarks. Your browsers. Your control.",
+		"supportingLine": "A self-hosted home for your bookmarks.",
+		"loginLayout":    "split", "primaryColor": "#0f766e", "accentColor": "#14b8a6", "backgroundColor": "#e6f4fb",
+	}
+	for k, sk := range map[string]string{"appTitle": "branding.app-title", "signinTitle": "branding.signin-title", "tagline": "branding.tagline", "supportingLine": "branding.supporting-line", "loginLayout": "branding.login-layout", "primaryColor": "branding.primary-color", "accentColor": "branding.accent-color", "backgroundColor": "branding.background-color"} {
+		if v, ok := settings[sk]; ok {
+			defaults[k] = v
+		}
+	}
+	for output, key := range map[string]string{"logoUrl": "branding.logo-id", "backgroundUrl": "branding.background-id"} {
+		if id := settings[key]; brandingAssetReferenced(id, settings) && a.brandingAssetExists(id) {
+			defaults[output] = "/api/v1/auth/presentation/assets/" + id
+		}
+	}
+	defaults["version"] = a.system.Version
+	defaults["copyright"] = fmt.Sprintf("\u00a9 %d Atik Ansari", time.Now().Year())
+	writeJSON(w, 200, defaults)
+	return true
+}
+
+func (a *API) recordAdminActivity(r *http.Request, action, targetType string, targetID int64) {
+	if err := a.ids.RecordAdminActivity(r.Context(), principalFrom(r).user.ID, action, targetType, targetID); err != nil {
+		a.log.Warn("admin activity record failed", "action", action, "error", err)
+	}
+}
 
 func userJSON(u identity.UserInfo) map[string]any {
 	return map[string]any{"id": u.ID, "username": u.Username, "isAdmin": u.IsAdmin, "active": u.Active, "createdAt": u.CreatedAt, "lastContactAt": timeOrNil(u.LastContactAt)}
@@ -32,6 +70,72 @@ func credentialJSON(c identity.CredentialInfo) map[string]any {
 	return map[string]any{"id": c.ID, "label": c.Label, "kind": c.Kind, "shareId": c.ShareID, "mode": c.Mode, "createdAt": c.CreatedAt, "lastUsedAt": timeOrNil(c.LastUsedAt), "revoked": c.Revoked}
 }
 
+// dashboardWindow is the recent-changes window of the dashboard.
+const dashboardWindowDays = 7
+
+// serveDashboard answers GET /api/v1/me/dashboard for the caller's own private collection
+// only. lastContactAt comes from the identity service (newest Floccus credential use);
+// the bookmarks service never sees identity data.
+func (a *API) serveDashboard(w http.ResponseWriter, r *http.Request, userID int64) {
+	if r.URL.Query().Has("share") {
+		server.WriteError(w, 400, "invalid_request", "the dashboard is available only for your own collection")
+		return
+	}
+	page, e1 := queryInt(r, "page", 0)
+	limit, e2 := queryInt(r, "limit", 20)
+	if e1 != nil || e2 != nil || page < 0 || page > 1_000_000 || limit < 1 {
+		server.WriteError(w, 400, "invalid_request", "invalid pagination")
+		return
+	}
+	effective := min(limit, 200)
+	sc, err := a.bm.PrivateScope(r.Context(), userID, false)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	since := a.now().UTC().Add(-dashboardWindowDays * 24 * time.Hour)
+	sum, err := a.bm.Dashboard(r.Context(), sc, since, int(page), int(effective))
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	dups, err := a.bm.ListDuplicates(r.Context(), sc, 0, 1)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	creds, err := a.ids.ListCredentials(r.Context(), userID)
+	if err != nil {
+		writeDomainError(w, err)
+		return
+	}
+	var lastContact *time.Time
+	for _, c := range creds {
+		if !c.Revoked && !c.LastUsedAt.IsZero() && (lastContact == nil || c.LastUsedAt.After(*lastContact)) {
+			t := c.LastUsedAt
+			lastContact = &t
+		}
+	}
+	items := make([]map[string]any, 0, len(sum.Recent.Items))
+	for _, it := range sum.Recent.Items {
+		items = append(items, map[string]any{"type": it.Type, "id": it.ID, "title": it.Title, "url": it.URL, "at": it.At})
+	}
+	writeJSON(w, 200, map[string]any{
+		"totalBookmarks": sum.TotalBookmarks,
+		"duplicateCount": dups.Count,
+		"lastContactAt":  lastContact,
+		"recentChanges": map[string]any{
+			"since":      sum.Recent.Since,
+			"windowDays": dashboardWindowDays,
+			"counts":     map[string]any{"created": sum.Recent.Created, "updated": sum.Recent.Updated, "deleted": sum.Recent.Deleted},
+			"items":      items,
+			"page":       page,
+			"limit":      effective,
+			"hasMore":    sum.Recent.HasMore,
+		},
+	})
+}
+
 func (a *API) serveMe(w http.ResponseWriter, r *http.Request) bool {
 	p := principalFrom(r)
 	userID := p.user.ID
@@ -46,6 +150,12 @@ func (a *API) serveMe(w http.ResponseWriter, r *http.Request) bool {
 		} else {
 			writeJSON(w, 200, map[string]any{"id": u.ID, "username": u.Username, "isAdmin": u.IsAdmin, "createdAt": u.CreatedAt})
 		}
+		return true
+	case "/api/v1/me/dashboard":
+		if r.Method != http.MethodGet {
+			return false
+		}
+		a.serveDashboard(w, r, userID)
 		return true
 	case "/api/v1/me/password":
 		if r.Method != http.MethodPatch {
@@ -224,6 +334,76 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 	if !strings.HasPrefix(p, "/api/v1/admin/") {
 		return false
 	}
+	if p == "/api/v1/admin/health" && r.Method == http.MethodGet {
+		if a.health == nil {
+			server.WriteError(w, http.StatusServiceUnavailable, "health_unavailable", "host health collector is unavailable")
+			return true
+		}
+		report := a.health.Collect(r.Context())
+		dbReady := a.readiness != nil && a.readiness.Ping(r.Context()) == nil
+		writeJSON(w, 200, map[string]any{
+			"cpuPercent": report.CPUPercent, "memory": report.Memory, "disk": report.Disk,
+			"uptimeSeconds": report.UptimeSeconds, "unavailable": report.Unavailable,
+			"dbReady": dbReady, "syncErrors": a.syncErrors(),
+		})
+		return true
+	}
+	if p == "/api/v1/admin/activity" && r.Method == http.MethodGet {
+		limit, err := queryInt(r, "limit", 50)
+		if err != nil || limit < 1 {
+			server.WriteError(w, 400, "invalid_request", "invalid activity limit")
+			return true
+		}
+		items, err := a.ids.ListAdminActivity(r.Context(), int(min(limit, 200)))
+		if err != nil {
+			writeDomainError(w, err)
+			return true
+		}
+		out := make([]map[string]any, 0, len(items))
+		for _, v := range items {
+			out = append(out, map[string]any{"id": v.ID, "actorId": v.ActorID, "action": v.Action, "targetType": v.TargetType, "targetId": v.TargetID, "createdAt": v.CreatedAt})
+		}
+		writeJSON(w, 200, map[string]any{"items": out})
+		return true
+	}
+	if p == "/api/v1/admin/settings" {
+		switch r.Method {
+		case http.MethodGet:
+			settings, err := a.ids.SystemSettings(r.Context())
+			if err != nil {
+				writeDomainError(w, err)
+			} else {
+				writeJSON(w, 200, map[string]any{"settings": settings})
+			}
+			return true
+		case http.MethodPatch:
+			var changes map[string]*string
+			if !decodeJSON(w, r, &changes) {
+				return true
+			}
+			a.assetMu.Lock()
+			old, oldErr := a.ids.SystemSettings(r.Context())
+			if oldErr != nil {
+				a.assetMu.Unlock()
+				writeDomainError(w, oldErr)
+				return true
+			}
+			settings, err := a.ids.UpdateSystemSettings(r.Context(), changes)
+			a.assetMu.Unlock()
+			if err != nil {
+				writeDomainError(w, err)
+			} else {
+				a.cleanupUnreferencedBrandingAssets([]string{old["branding.logo-id"], old["branding.background-id"]}, settings)
+				a.recordAdminActivity(r, "system_settings_updated", "system", 0)
+				writeJSON(w, 200, map[string]any{"settings": settings})
+			}
+			return true
+		}
+	}
+	if p == "/api/v1/admin/settings/assets" && r.Method == http.MethodPost {
+		a.uploadBrandingAsset(w, r)
+		return true
+	}
 	if p == "/api/v1/admin/users" && r.Method == http.MethodPost {
 		var in struct {
 			Username string `json:"username"`
@@ -238,6 +418,7 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 			writeDomainError(w, err)
 			return true
 		}
+		a.recordAdminActivity(r, "user_created", "user", u.ID)
 		info, err := a.ids.GetUserByID(r.Context(), u.ID)
 		if err != nil {
 			writeDomainError(w, err)
@@ -269,6 +450,11 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 		if hasMore {
 			users = users[:effective]
 		}
+		themeDefaults, err := a.ids.ListUserThemeDefaults(r.Context())
+		if err != nil {
+			writeDomainError(w, err)
+			return true
+		}
 		out := make([]map[string]any, 0, len(users))
 		for _, u := range users {
 			row := userJSON(u)
@@ -288,6 +474,10 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 			row["folderCount"] = st.Folders
 			row["storageBytes"] = st.StorageBytes
 			row["connectionCount"] = activeConnections
+			row["themeDefault"] = themeDefaults[u.ID]
+			if _, ok := themeDefaults[u.ID]; !ok {
+				row["themeDefault"] = nil
+			}
 			out = append(out, row)
 		}
 		writeJSON(w, 200, map[string]any{"users": out, "page": page, "limit": effective, "hasMore": hasMore})
@@ -329,6 +519,35 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 			writeDomainError(w, identity.ErrNotFound)
 			return true
 		}
+		if len(parts) == 2 && parts[1] == "settings" {
+			if _, err := a.ids.GetUserByID(r.Context(), id); err != nil {
+				writeDomainError(w, err)
+				return true
+			}
+			switch r.Method {
+			case http.MethodGet:
+				settings, err := a.ids.UserSettingDefaults(r.Context(), id)
+				if err != nil {
+					writeDomainError(w, err)
+				} else {
+					writeJSON(w, 200, map[string]any{"settings": settings})
+				}
+				return true
+			case http.MethodPatch:
+				var changes map[string]*string
+				if !decodeJSON(w, r, &changes) {
+					return true
+				}
+				settings, err := a.ids.UpdateUserSettingDefaults(r.Context(), id, changes)
+				if err != nil {
+					writeDomainError(w, err)
+				} else {
+					a.recordAdminActivity(r, "user_settings_updated", "user", id)
+					writeJSON(w, 200, map[string]any{"settings": settings})
+				}
+				return true
+			}
+		}
 		if len(parts) == 2 && parts[1] == "connections" && r.Method == http.MethodGet {
 			if _, err := a.ids.GetUserByID(r.Context(), id); err != nil {
 				writeDomainError(w, err)
@@ -356,6 +575,7 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 			if err != nil {
 				writeDomainError(w, err)
 			} else {
+				a.recordAdminActivity(r, "connection_revoked", "user", id)
 				empty(w)
 			}
 			return true
@@ -373,6 +593,7 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 				writeDomainError(w, err)
 				return true
 			}
+			a.recordAdminActivity(r, "user_updated", "user", id)
 			info, err := a.ids.GetUserByID(r.Context(), u.ID)
 			if err != nil {
 				writeDomainError(w, err)
@@ -391,6 +612,7 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 			if err := a.ids.ResetPassword(r.Context(), id, in.Password); err != nil {
 				writeDomainError(w, err)
 			} else {
+				a.recordAdminActivity(r, "password_reset", "user", id)
 				empty(w)
 			}
 			return true
@@ -407,6 +629,7 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 			if err := a.ids.ResetFactors(r.Context(), id, identity.FactorReset{TOTP: in.TOTP, Passkeys: in.Passkeys, OIDC: in.OIDC}); err != nil {
 				writeDomainError(w, err)
 			} else {
+				a.recordAdminActivity(r, "factor_reset", "user", id)
 				empty(w)
 			}
 			return true

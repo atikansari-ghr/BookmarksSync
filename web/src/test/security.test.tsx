@@ -352,11 +352,11 @@ describe('security page', () => {
     expect(screen.queryByRole('region', { name: 'Linked accounts' })).not.toBeInTheDocument()
   })
 
-  it('has no dashboard, admin area or theme controls', async () => {
+  it('links to the dashboard but keeps workspace themes and admin controls there', async () => {
     mockServer(base())
     render(<App />)
     await screen.findByRole('region', { name: 'Personal API tokens' })
-    expect(screen.queryByText(/dashboard/i)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Dashboard' })).toBeInTheDocument()
     expect(screen.queryByText(/admin/i, { selector: 'a,button,h2' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /theme|dark mode|light mode/i })).not.toBeInTheDocument()
     expect(section('Active sessions')).toBeInTheDocument()

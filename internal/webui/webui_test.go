@@ -100,6 +100,43 @@ func TestAssetsAreCachedImmutablyAndMissingFilesAre404(t *testing.T) {
 	}
 }
 
+// Workspace routes are served exactly (no wildcard fallback), with the same strict
+// headers as the auth pages.
+func TestWorkspaceRoutesServeTheAppShellExactly(t *testing.T) {
+	h := handlerFor(t, testFiles)
+	for _, p := range []string{"/bookmarks", "/duplicates", "/dashboard", "/admin"} {
+		rec := get(t, h, "GET", p)
+		if rec.Code != 200 || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") || !strings.Contains(rec.Body.String(), `<div id="root">`) {
+			t.Fatalf("%s: %d %s %q", p, rec.Code, rec.Header().Get("Content-Type"), rec.Body.String())
+		}
+		for k, v := range map[string]string{
+			"Cache-Control":              "no-store",
+			"X-Frame-Options":            "DENY",
+			"Referrer-Policy":            "no-referrer",
+			"Cross-Origin-Opener-Policy": "same-origin",
+			"Content-Security-Policy":    webui.ContentSecurityPolicy,
+		} {
+			if rec.Header().Get(k) != v {
+				t.Errorf("%s: %s = %q, want %q", p, k, rec.Header().Get(k), v)
+			}
+		}
+		if rec := get(t, h, "HEAD", p); rec.Code != 200 || rec.Body.Len() != 0 {
+			t.Errorf("HEAD %s: %d len %d", p, rec.Code, rec.Body.Len())
+		}
+		if rec := get(t, h, "POST", p); rec.Code != http.StatusMethodNotAllowed && rec.Code != http.StatusNotFound {
+			t.Errorf("POST %s: %d", p, rec.Code)
+		}
+	}
+	for _, p := range []string{
+		"/bookmarks/", "/bookmarks/1", "/bookmarks/index.html", "/bookmarks/assets/app-abc123.js", "/duplicates/", "/duplicates/x",
+		"/dashboard/", "/admin/", "/trash", "/settings", "/Bookmarks", "/bookmarks%2F",
+	} {
+		if rec := get(t, h, "GET", p); rec.Code == 200 {
+			t.Errorf("%s served %d %q", p, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestRootRedirectsToSignIn(t *testing.T) {
 	h := handlerFor(t, testFiles)
 	rec := get(t, h, "GET", "/")

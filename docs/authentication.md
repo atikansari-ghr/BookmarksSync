@@ -88,7 +88,8 @@ bookmarksync user list --data-dir /var/lib/bookmarksync
 Then open the public URL. `/` redirects to `/auth/login`, where you sign in with the username,
 not an email address. Other accounts are created either by an administrator through the API
 (`POST /api/v1/admin/users`, which needs a recent reauthentication) or with the same CLI command
-without `--admin`. The current build has no admin web pages yet; those come in milestone 4.
+without `--admin`. Administrators can also manage accounts and appearance in the **Administration**
+workspace. See the [workspace and administration guide](workspace-guide.md).
 
 Run CLI administration against the data directory of the running service, as the service account.
 

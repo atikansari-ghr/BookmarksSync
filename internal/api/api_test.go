@@ -20,7 +20,9 @@ import (
 	"github.com/atikansari-ghr/BookmarksSync/internal/auth"
 	"github.com/atikansari-ghr/BookmarksSync/internal/bookmarks"
 	"github.com/atikansari-ghr/BookmarksSync/internal/database"
+	"github.com/atikansari-ghr/BookmarksSync/internal/health"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
+	"github.com/atikansari-ghr/BookmarksSync/internal/linkcheck"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
 	"github.com/atikansari-ghr/BookmarksSync/internal/version"
 )
@@ -51,10 +53,12 @@ type tenv struct {
 	db               *database.DB
 	ids              *identity.Service
 	bm               *bookmarks.Service
+	lc               *linkcheck.Service
 	clock            *fakeClock
 	api              *api.API
 	h                http.Handler
 	logs             *bytes.Buffer
+	assetDir         string
 	alice, bob, root identity.User
 }
 
@@ -68,20 +72,22 @@ func newTEnv(t *testing.T) *tenv {
 	clock := &fakeClock{t: time.Date(2026, 11, 17, 9, 0, 0, 0, time.UTC)}
 	ids := identity.New(db.SQL(), identity.WithPasswordCost(8*1024, 1, 1), identity.WithClock(clock.Now))
 	bm := bookmarks.New(db.SQL(), bookmarks.WithClock(clock.Now))
+	lc := linkcheck.NewService(db.SQL(), bm, ids, okChecker{}, linkcheck.WithClock(clock.Now))
 	logs := &bytes.Buffer{}
 	log := slog.New(slog.NewTextHandler(logs, nil))
 	authH, err := auth.New(auth.Options{Identity: ids, PublicOrigin: origin, Now: clock.Now, Logger: log})
 	if err != nil {
 		t.Fatal(err)
 	}
-	a, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, Now: clock.Now, Logger: log,
+	assetDir := filepath.Join(t.TempDir(), "branding")
+	a, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Now: clock.Now, Logger: log, Health: health.New(t.TempDir()), Readiness: db, AssetDir: assetDir,
 		System: api.SystemInfo{Version: "test", PublicOrigin: origin, PasskeysEnabled: false, OIDCProviders: []string{}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := server.NewHandler(server.Options{Version: version.Info{Version: "test"}, Ready: db, Logger: log, BodyLimit: api.BodyLimit,
 		Register: func(r server.Registrar) { authH.Register(r); a.Register(r) }})
-	e := &tenv{t: t, db: db, ids: ids, bm: bm, clock: clock, api: a, h: h, logs: logs}
+	e := &tenv{t: t, db: db, ids: ids, bm: bm, lc: lc, clock: clock, api: a, h: h, logs: logs, assetDir: assetDir}
 	ctx := context.Background()
 	for _, u := range []struct {
 		name  string
@@ -230,6 +236,14 @@ func TestEveryRouteEnforcesItsAuthRules(t *testing.T) {
 				t.Errorf("%s: %s: Cache-Control %q", name, what, rec.Header().Get("Cache-Control"))
 			}
 		}
+		if rt.Public {
+			want := http.StatusOK
+			if strings.Contains(rt.Path, "/presentation/assets/") {
+				want = http.StatusNotFound // no uploaded asset is configured in this matrix fixture
+			}
+			check("public request", e.do(rt.Method, path, nil), want, "")
+			continue
+		}
 		check("no credential", e.do(rt.Method, path, nil), 401, "unauthenticated")
 		check("floccus basic credential", e.do(rt.Method, path, nil, withHeader("Authorization", "Basic YWxpY2U6Ym1zMS4xLnh4eA==")), 401, "unauthenticated")
 		check("malformed bearer", e.do(rt.Method, path, nil, withHeader("Authorization", "Bearer")), 401, "")
@@ -293,6 +307,8 @@ func TestRoutePolicies(t *testing.T) {
 		"POST /api/v1/me/connections":                       {Recent: true},
 		"GET /api/v1/bookmarks":                             {TokenScope: "bookmarks:read"},
 		"POST /api/v1/bookmarks":                            {TokenScope: "bookmarks:write"},
+		"PUT /api/v1/bookmarks/{id}/favorite":               {TokenScope: "bookmarks:write"},
+		"DELETE /api/v1/bookmarks/{id}/favorite":            {TokenScope: "bookmarks:write"},
 		"DELETE /api/v1/trash/{type}/{id}":                  {Recent: true},
 		"DELETE /api/v1/trash":                              {Recent: true},
 		"POST /api/v1/trash/{type}/{id}/restore":            {TokenScope: "bookmarks:write"},
@@ -305,6 +321,13 @@ func TestRoutePolicies(t *testing.T) {
 		"PATCH /api/v1/admin/users/{id}":                    {Admin: true, Recent: true},
 		"POST /api/v1/admin/users/{id}/password-reset":      {Admin: true, Recent: true},
 		"GET /api/v1/admin/system":                          {Admin: true},
+		"GET /api/v1/admin/health":                          {Admin: true},
+		"GET /api/v1/admin/activity":                        {Admin: true},
+		"GET /api/v1/admin/settings":                        {Admin: true},
+		"PATCH /api/v1/admin/settings":                      {Admin: true, Recent: true},
+		"GET /api/v1/admin/users/{id}/settings":             {Admin: true},
+		"PATCH /api/v1/admin/users/{id}/settings":           {Admin: true, Recent: true},
+		"GET /api/v1/auth/presentation":                     {Public: true},
 		"DELETE /api/v1/admin/users/{id}/connections/{cid}": {Admin: true, Recent: true},
 	}
 	for key, w := range want {
@@ -318,9 +341,6 @@ func TestRoutePolicies(t *testing.T) {
 		}
 	}
 	for key := range byKey {
-		if strings.Contains(key, "favorite") {
-			t.Errorf("favorites route %s is out of scope until approved", key)
-		}
 		if strings.HasPrefix(key, "POST /api/v1/admin") || strings.HasPrefix(key, "PATCH /api/v1/admin") || strings.HasPrefix(key, "DELETE /api/v1/admin") {
 			if !byKey[key].Recent {
 				t.Errorf("admin mutation %s without recent auth", key)

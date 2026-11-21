@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/bookmarks"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
@@ -27,11 +28,16 @@ const (
 
 // Adapter serves the Nextcloud-Bookmarks-compatible API.
 type Adapter struct {
-	ids    *identity.Service
-	svc    *bookmarks.Service
-	log    *slog.Logger
-	routes []route
+	ids        *identity.Service
+	svc        *bookmarks.Service
+	log        *slog.Logger
+	routes     []route
+	syncErrors atomic.Uint64
 }
+
+// SyncErrors returns the process-lifetime number of failed synchronization requests
+// that ended in a server error. Client errors and expected lock conflicts are excluded.
+func (a *Adapter) SyncErrors() uint64 { return a.syncErrors.Load() }
 
 func New(ids *identity.Service, svc *bookmarks.Service, log *slog.Logger) *Adapter {
 	if log == nil {
@@ -70,6 +76,9 @@ func (a *Adapter) serve(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		// Path only: never the query (which can carry bookmark URLs) or any header.
 		a.log.Info("floccus request", "method", r.Method, "path", r.URL.Path, "credential", credID, "status", sw.status)
+		if sw.status >= http.StatusInternalServerError {
+			a.syncErrors.Add(1)
+		}
 	}()
 
 	user, secret, ok := r.BasicAuth()
