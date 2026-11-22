@@ -42,9 +42,9 @@ Implemented:
 
 Still planned or awaiting acceptance:
 - Login Flow v2 (the floccus "Connect" wizard; use profile import for now);
-- trusted-proxy and country rules, optional backup encryption, per-user recovery and backup notifications;
+- trusted-proxy and country rules, per-destination backup encryption, and per-user recovery;
 - production single-command installers and admin-triggered updates;
-- notifications and remaining browser/organizer acceptance checks.
+- backup notifications and remaining browser/organizer acceptance checks.
 
 See `docs/design.md` and `docs/implementation-plan.md`.
 

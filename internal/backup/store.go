@@ -60,11 +60,13 @@ func DefaultSchedule() Schedule {
 }
 
 type Destination struct {
-	ID        string          `json:"id,omitempty"`
-	Label     string          `json:"label"`
-	Kind      DestinationKind `json:"kind"`
-	Reference string          `json:"reference"`
-	Enabled   bool            `json:"enabled"`
+	ID                   string          `json:"id,omitempty"`
+	Label                string          `json:"label"`
+	Kind                 DestinationKind `json:"kind"`
+	Reference            string          `json:"reference"`
+	Enabled              bool            `json:"enabled"`
+	Encrypted            bool            `json:"encrypted"`
+	RecoveryKeyAvailable bool            `json:"hasRecoveryKey,omitempty"`
 }
 
 type Run struct {
@@ -171,8 +173,8 @@ func (s *Store) SaveDestination(ctx context.Context, value Destination) (Destina
 			return Destination{}, err
 		}
 		value.ID = id
-		_, err = tx.ExecContext(ctx, `INSERT INTO backup_destinations(id,label,kind,reference,enabled,created_at,updated_at) VALUES(?,?,?,?,?,?,?)`,
-			value.ID, value.Label, string(value.Kind), value.Reference, boolInt(value.Enabled), now, now)
+		_, err = tx.ExecContext(ctx, `INSERT INTO backup_destinations(id,label,kind,reference,enabled,encrypted,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`,
+			value.ID, value.Label, string(value.Kind), value.Reference, boolInt(value.Enabled), boolInt(value.Encrypted), now, now)
 		if err != nil {
 			return Destination{}, err
 		}
@@ -190,8 +192,8 @@ func (s *Store) SaveDestination(ctx context.Context, value Destination) (Destina
 			return Destination{}, ErrDestinationConflict
 		}
 	}
-	result, err := tx.ExecContext(ctx, `UPDATE backup_destinations SET label=?,kind=?,reference=?,enabled=?,updated_at=? WHERE id=?`,
-		value.Label, string(value.Kind), value.Reference, boolInt(value.Enabled), now, value.ID)
+	result, err := tx.ExecContext(ctx, `UPDATE backup_destinations SET label=?,kind=?,reference=?,enabled=?,encrypted=?,updated_at=? WHERE id=?`,
+		value.Label, string(value.Kind), value.Reference, boolInt(value.Enabled), boolInt(value.Encrypted), now, value.ID)
 	if err != nil {
 		return Destination{}, err
 	}
@@ -249,7 +251,7 @@ var (
 )
 
 func (s *Store) ListDestinations(ctx context.Context) ([]Destination, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,label,kind,reference,enabled FROM backup_destinations ORDER BY label,id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,label,kind,reference,enabled,encrypted FROM backup_destinations ORDER BY label,id`)
 	if err != nil {
 		return nil, err
 	}
@@ -257,11 +259,12 @@ func (s *Store) ListDestinations(ctx context.Context) ([]Destination, error) {
 	var out []Destination
 	for rows.Next() {
 		var d Destination
-		var enabled int
-		if err := rows.Scan(&d.ID, &d.Label, &d.Kind, &d.Reference, &enabled); err != nil {
+		var enabled, encrypted int
+		if err := rows.Scan(&d.ID, &d.Label, &d.Kind, &d.Reference, &enabled, &encrypted); err != nil {
 			return nil, err
 		}
 		d.Enabled = enabled != 0
+		d.Encrypted = encrypted != 0
 		out = append(out, d)
 	}
 	return out, rows.Err()
@@ -296,7 +299,7 @@ func (s *Store) StartDestinationRun(ctx context.Context, batchID string, trigger
 		return Run{}, errors.New("backup run destination is invalid")
 	}
 	started = started.UTC()
-	archiveName := backupArchiveName(trigger, started, batchID)
+	archiveName := backupDestinationArchiveName(trigger, started, batchID, destination.Encrypted)
 	if archiveName == "" {
 		return Run{}, errors.New("backup archive name is invalid")
 	}

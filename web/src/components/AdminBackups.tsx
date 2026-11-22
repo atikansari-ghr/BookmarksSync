@@ -3,12 +3,12 @@ import { ApiError } from '../api'
 import { useApp } from '../context'
 
 type Schedule = { weeklyEnabled: boolean; monthlyEnabled: boolean; timezone: string; weeklyDay: number; weeklyHour: number; weeklyMinute: number; monthlyDay: number; monthlyHour: number; monthlyMinute: number; weeklyRetention: number; monthlyRetention: number }
-type Destination = { id?: string; label: string; kind: 'local' | 'nfs' | 'rclone'; reference: string; enabled: boolean }
+type Destination = { id?: string; label: string; kind: 'local' | 'nfs' | 'rclone'; reference: string; enabled: boolean; encrypted: boolean; hasRecoveryKey?: boolean }
 type BackupRun = { id: number; batchId: string; trigger: string; destinationId: string; destinationLabel: string; archiveName: string; state: string; sizeBytes: number; errorCode?: string; startedAt: string; finishedAt?: string }
 type BackupData = { schedule: Schedule; destinations: Destination[]; runs: BackupRun[]; running: boolean }
 
 const defaultSchedule: Schedule = { weeklyEnabled: false, monthlyEnabled: false, timezone: 'Asia/Riyadh', weeklyDay: 0, weeklyHour: 3, weeklyMinute: 0, monthlyDay: 1, monthlyHour: 4, monthlyMinute: 0, weeklyRetention: 8, monthlyRetention: 12 }
-const emptyDestination: Destination = { label: '', kind: 'local', reference: '', enabled: true }
+const emptyDestination: Destination = { label: '', kind: 'local', reference: '', enabled: true, encrypted: false }
 const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
 export function AdminBackups() {
@@ -52,14 +52,29 @@ export function AdminBackups() {
     setBusy(true); setError(''); setNotice('')
     try {
       const path = destination.id ? `/api/v1/admin/backups/destinations/${destination.id}` : '/api/v1/admin/backups/destinations'
-      await client.request(destination.id ? 'PUT' : 'POST', path, destination)
+      const { hasRecoveryKey: _hasRecoveryKey, ...request } = destination
+      await client.request(destination.id ? 'PUT' : 'POST', path, request)
       setDestination(emptyDestination); setEditing(''); setNotice('Backup destination saved.'); await load()
     } catch (e) { setError(e instanceof ApiError ? e.message : 'Backup destination could not be saved.') }
     finally { setBusy(false) }
   }
 
+  async function downloadRecoveryKey(id: string) {
+    if (!window.confirm('Download this destination recovery key now and store it separately from the backup archives? Anyone with the key and an archive can read the backup.')) return
+    setBusy(true); setError(''); setNotice('')
+    try {
+      const response = await client.request<{ recoveryKey: string }>('GET', `/api/v1/admin/backups/destinations/${id}/recovery-key`)
+      const blob = new Blob([`${response.recoveryKey}\n`], { type: 'text/plain;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a'); anchor.href = url; anchor.download = `bookmarksync-${id}-recovery-key.txt`; anchor.click()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+      setNotice('Recovery key downloaded. Store it separately from your backup files.')
+    } catch (e) { setError(e instanceof ApiError ? e.message : 'Recovery key could not be downloaded.') }
+    finally { setBusy(false) }
+  }
+
   async function removeDestination(id: string) {
-    if (!window.confirm('Remove this destination from BookmarksSync? Existing backup files will be left in place.')) return
+    if (!window.confirm('Remove this destination from BookmarksSync? Existing backup files and its host recovery key will be left in place. Download and store the recovery key before removing this destination; it will no longer be downloadable here.')) return
     setBusy(true); setError(''); setNotice('')
     try { await client.request('DELETE', `/api/v1/admin/backups/destinations/${id}`); setNotice('Backup destination removed.'); await load() }
     catch (e) { setError(e instanceof ApiError ? e.message : 'Backup destination could not be removed.') }
@@ -99,7 +114,7 @@ export function AdminBackups() {
       <div className="stack">
         <h3>Destinations</h3>
         <p className="muted small">Local paths must exist. NFS requires an active NFS mount. Configure rclone remotes and credentials on the host, then enter a path such as <code>nas:bookmarks</code>. After a destination has backup history, its type and path are fixed; add a new destination to change where future archives go.</p>
-        {data.destinations.length ? <ul className="admin-activity">{data.destinations.map((item) => <li key={item.id}><span><strong>{item.label}</strong> · {item.kind} · {item.reference} · {item.enabled ? 'Enabled' : 'Disabled'}</span><span className="actions"><button className="btn ghost small" type="button" onClick={() => editDestination(item)}>Edit</button><button className="btn ghost small" type="button" disabled={busy} onClick={() => item.id && void removeDestination(item.id)}>Remove</button></span></li>)}</ul> : <p className="muted">No backup destinations configured.</p>}
+        {data.destinations.length ? <ul className="admin-activity">{data.destinations.map((item) => <li key={item.id}><span><strong>{item.label}</strong> · {item.kind} · {item.reference} · {item.enabled ? 'Enabled' : 'Disabled'} · {item.encrypted ? 'Encrypted' : 'Plain'}{item.encrypted && !item.hasRecoveryKey ? ' · Recovery key unavailable' : ''}</span><span className="actions">{item.encrypted && item.hasRecoveryKey && item.id && <button className="btn ghost small" type="button" disabled={busy} onClick={() => void downloadRecoveryKey(item.id!)}>Download recovery key</button>}<button className="btn ghost small" type="button" onClick={() => editDestination(item)}>Edit</button><button className="btn ghost small" type="button" disabled={busy} onClick={() => item.id && void removeDestination(item.id)}>Remove</button></span></li>)}</ul> : <p className="muted">No backup destinations configured.</p>}
         <form className="stack" onSubmit={(e) => { e.preventDefault(); void saveDestination() }}>
           <h4>{editing ? 'Edit destination' : 'Add destination'}</h4>
           <div className="admin-brand-grid">
@@ -107,7 +122,9 @@ export function AdminBackups() {
             <label className="field"><span>Type</span><select value={destination.kind} onChange={(e) => setDestination({ ...destination, kind: e.target.value as Destination['kind'] })}><option value="local">Local folder</option><option value="nfs">NFS mount</option><option value="rclone">Configured rclone remote</option></select></label>
             <label className="field"><span>{destination.kind === 'rclone' ? 'Remote path' : 'Absolute host folder path'}</span><input value={destination.reference} onChange={(e) => setDestination({ ...destination, reference: e.target.value })} placeholder={destination.kind === 'rclone' ? 'nas:bookmarks' : '/mnt/backup/bookmarksync'} /></label>
             <label className="check"><input type="checkbox" checked={destination.enabled} onChange={(e) => setDestination({ ...destination, enabled: e.target.checked })} />Use for backups</label>
+            <label className="check"><input type="checkbox" checked={destination.encrypted} onChange={(e) => setDestination({ ...destination, encrypted: e.target.checked })} />Encrypt backup archives at this destination</label>
           </div>
+          <p className="muted small">Encryption is off by default. Download the recovery key and store it separately; losing it makes encrypted archives unrecoverable.</p>
           <div className="actions"><button className="btn ghost" type="button" disabled={busy} onClick={() => void testDestination()}>Test destination</button><button className="btn primary" type="submit" disabled={busy}>Save destination</button>{editing && <button className="btn ghost" type="button" onClick={() => { setDestination(emptyDestination); setEditing('') }}>Cancel</button>}</div>
         </form>
       </div>

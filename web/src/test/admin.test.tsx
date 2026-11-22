@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { App } from '../App'
 import { err, go, mockServer, sessionState, type Route } from './server'
 
@@ -19,9 +19,11 @@ function adminRoutes(): Record<string, Route> {
     'GET /api/v1/admin/settings': { status: 200, body: { settings: { 'branding.app-title': 'BookmarksSync' } } },
     'GET /api/v1/admin/network-access': { status: 200, body: { mode: 'allow', countries: ['IN', 'SA'], geoDatabaseAvailable: false, geoDatabaseBuildTime: null, trustedProxyCount: 1 } },
     'GET /api/v1/admin/activity': { status: 200, body: { items: [{ id: 1, actorId: 1, action: 'user_created', targetType: 'user', targetId: 2, createdAt: '2026-11-20T12:00:00Z' }] } },
-    'GET /api/v1/admin/backups': { status: 200, body: { schedule: { weeklyEnabled: false, monthlyEnabled: false, timezone: 'Asia/Riyadh', weeklyDay: 0, weeklyHour: 3, weeklyMinute: 0, monthlyDay: 1, monthlyHour: 4, monthlyMinute: 0, weeklyRetention: 8, monthlyRetention: 12 }, destinations: [{ id: '0123456789abcdef0123456789abcdef', label: 'NAS', kind: 'rclone', reference: 'nas:bookmarks', enabled: true }], runs: [], running: false } },
+    'GET /api/v1/admin/backups': { status: 200, body: { schedule: { weeklyEnabled: false, monthlyEnabled: false, timezone: 'Asia/Riyadh', weeklyDay: 0, weeklyHour: 3, weeklyMinute: 0, monthlyDay: 1, monthlyHour: 4, monthlyMinute: 0, weeklyRetention: 8, monthlyRetention: 12 }, destinations: [{ id: '0123456789abcdef0123456789abcdef', label: 'NAS', kind: 'rclone', reference: 'nas:bookmarks', enabled: true, encrypted: true, hasRecoveryKey: true }], runs: [], running: false } },
+    'GET /api/v1/admin/backups/destinations/0123456789abcdef0123456789abcdef/recovery-key': { status: 200, body: { recoveryKey: 'a'.repeat(64) } },
     'PUT /api/v1/admin/backups/schedule': { status: 200, body: { schedule: { weeklyEnabled: true, monthlyEnabled: false, timezone: 'Asia/Riyadh', weeklyDay: 0, weeklyHour: 3, weeklyMinute: 0, monthlyDay: 1, monthlyHour: 4, monthlyMinute: 0, weeklyRetention: 8, monthlyRetention: 12 } } },
     'POST /api/v1/admin/backups/destinations/test': { status: 200, body: { status: 'ok' } },
+    'POST /api/v1/admin/backups/destinations': { status: 201, body: { id: 'abcdef0123456789abcdef0123456789' } },
     'POST /api/v1/admin/backups/run': { status: 202, body: { batchId: '0123456789abcdef0123456789abcdef', status: 'accepted' } },
     'PATCH /api/v1/admin/settings': { status: 200, body: { settings: {} } },
     'PATCH /api/v1/admin/network-access': { status: 200, body: { mode: 'allow', countries: ['GB'], geoDatabaseAvailable: true, geoDatabaseBuildTime: null, trustedProxyCount: 1 } },
@@ -84,6 +86,37 @@ describe('admin workspace', () => {
     await waitFor(() => expect(api.find('POST', '/api/v1/admin/backups/destinations/test')).toHaveLength(1))
     await user.click(screen.getByRole('button', { name: 'Run backup now' }))
     await waitFor(() => expect(api.find('POST', '/api/v1/admin/backups/run')).toHaveLength(1))
+  })
+
+  it('shows encryption state and confirms before requesting a recovery key', async () => {
+    const api = mockServer(adminRoutes())
+    const user = userEvent.setup()
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:recovery-key')
+    vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined)
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined)
+    render(<App />)
+    const destinationRow = (await screen.findByText('NAS')).closest('li')
+    expect(destinationRow?.textContent).toContain('Encrypted')
+    expect(screen.getByText(/losing it makes encrypted archives unrecoverable/i)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Download recovery key' }))
+    await waitFor(() => expect(api.find('GET', '/api/v1/admin/backups/destinations/0123456789abcdef0123456789abcdef/recovery-key')).toHaveLength(1))
+    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('store it separately'))
+    expect(await screen.findByText('Recovery key downloaded. Store it separately from your backup files.')).toBeInTheDocument()
+  })
+
+  it('keeps destination encryption off by default and saves the selected setting', async () => {
+    const api = mockServer(adminRoutes())
+    render(<App />)
+    await screen.findByRole('heading', { name: 'System backups' })
+    const encryptToggle = await screen.findByRole('checkbox', { name: 'Encrypt backup archives at this destination' })
+    expect(encryptToggle).not.toBeChecked()
+    fireEvent.change(screen.getByLabelText('Label'), { target: { value: 'Encrypted NAS' } })
+    fireEvent.change(screen.getByPlaceholderText('/mnt/backup/bookmarksync'), { target: { value: '/mnt/backup/encrypted' } })
+    fireEvent.click(encryptToggle)
+    fireEvent.click(screen.getByRole('button', { name: 'Save destination' }))
+    await waitFor(() => expect(api.find('POST', '/api/v1/admin/backups/destinations')).toHaveLength(1))
+    expect(api.find('POST', '/api/v1/admin/backups/destinations')[0].body).toMatchObject({ encrypted: true, enabled: true })
   })
 
   it('limits branding text fields to the server accepted lengths', async () => {

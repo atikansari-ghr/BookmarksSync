@@ -294,7 +294,8 @@ func TestOpenAPIOperationsDocumentSuccessContracts(t *testing.T) {
 		"get /admin/backups": {"200"}, "put /admin/backups/schedule": {"200"},
 		"post /admin/backups/destinations": {"201"}, "put /admin/backups/destinations/{id}": {"200"},
 		"delete /admin/backups/destinations/{id}": {"204"}, "post /admin/backups/destinations/test": {"200"}, "post /admin/backups/run": {"202"},
-		"get /auth/presentation": {"200"}, "get /auth/presentation/assets/{id}": {"200"},
+		"get /admin/backups/destinations/{id}/recovery-key": {"200"},
+		"get /auth/presentation":                            {"200"}, "get /auth/presentation/assets/{id}": {"200"},
 	}
 	seenBodies := map[string]bool{}
 	for path, methods := range spec.Paths {

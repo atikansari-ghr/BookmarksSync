@@ -1,6 +1,6 @@
 # Backup and Restore
 
-The Operations slice provides scheduled weekly and monthly full-system backups, manual runs from the admin interface, per-destination retention, archive verification, full-system restore, and user-only recovery. Backups use Deflate compression. Optional encryption and backup notifications remain planned.
+The Operations slice provides scheduled weekly and monthly full-system backups, manual runs from the admin interface, per-destination retention, archive verification, full-system restore, and user-only recovery. Backups use Deflate compression. Destination encryption is optional and off by default; backup notifications remain planned.
 
 ## What the archive contains
 
@@ -41,9 +41,31 @@ For Windows, set the same variables in the service or process environment and re
 
 Use **Test destination** before enabling a target. It creates a random temporary probe, verifies it, and removes it. Each successful archive has a generated name beginning `bookmarksync-`; retention deletes only archive names recorded by this server. Removing a destination stops future runs but leaves its existing files untouched. Backups contain authentication settings and must be protected as secrets.
 
+### Optional destination encryption
+
+Enable **Encrypt backup archives at this destination** to store `.zip.enc` files using AES-256-GCM. Encryption applies separately to each destination; the source archive is temporary and is removed after the run. Each destination receives its own random recovery key, stored in the host data directory under `backup-keys/` and excluded from all archives. The key is available through **Download recovery key** in Admin while the destination remains configured. Recent authentication is required.
+
+Download each recovery key and store it in a secure location separate from the server and backup files. Anyone with both an encrypted archive and its key can read the full-system data. The server does not back up recovery keys. If a key is lost, its archives cannot be decrypted. Disabling encryption affects future runs only; old encrypted files and their keys remain. Download the key before removing a destination, because the key cannot then be exported from Admin.
+
 ```sh
 bookmarksync backup create --data-dir /var/lib/bookmarksync --output /backup/bookmarksync-2026-11-22.zip
 bookmarksync backup verify --file /backup/bookmarksync-2026-11-22.zip
+```
+
+For an encrypted destination, export the key from Admin to a private file and pass it to verification or restore:
+
+```sh
+bookmarksync backup verify --file /backup/bookmarksync-2026-11-22.zip.enc --key-file /secure/recovery-key.txt
+bookmarksync backup restore --file /backup/bookmarksync-2026-11-22.zip.enc --key-file /secure/recovery-key.txt --target-dir /var/lib/bookmarksync-restored
+bookmarksync backup restore-user --file /backup/bookmarksync-2026-11-22.zip.enc --key-file /secure/recovery-key.txt --username alice --data-dir /var/lib/bookmarksync
+```
+
+Keep the key file private and do not place it in the backup destination or server data directory. CLI key files must contain the 64-character hexadecimal key exported by Admin, with an optional final newline.
+
+On Debian/Linux, restrict a downloaded key file before using it:
+
+```sh
+chmod 600 /secure/recovery-key.txt
 ```
 
 The output archive is created as a new private temporary file beside its final path and atomically published without replacing an existing archive. Use a local filesystem that supports atomic no-replace publication for the output; copy the verified archive to NAS/cloud storage afterward. Keep backups outside the server's live data directory. Do not pass secrets as command-line arguments.

@@ -143,11 +143,13 @@ type BackupSchedule struct {
 }
 
 type BackupDestination struct {
-	ID        string `json:"id,omitempty"`
-	Label     string `json:"label"`
-	Kind      string `json:"kind"`
-	Reference string `json:"reference"`
-	Enabled   bool   `json:"enabled"`
+	ID                   string `json:"id,omitempty"`
+	Label                string `json:"label"`
+	Kind                 string `json:"kind"`
+	Reference            string `json:"reference"`
+	Enabled              bool   `json:"enabled"`
+	Encrypted            bool   `json:"encrypted"`
+	RecoveryKeyAvailable bool   `json:"hasRecoveryKey,omitempty"`
 }
 
 type BackupRun struct {
@@ -185,6 +187,7 @@ type BackupOperations interface {
 	UpdateSchedule(context.Context, BackupSchedule) error
 	SaveDestination(context.Context, BackupDestination) (BackupDestination, error)
 	DeleteDestination(context.Context, string) error
+	ExportDestinationRecoveryKey(context.Context, string) (string, error)
 	TestDestination(context.Context, BackupDestination) error
 	StartManual() (string, error)
 }
@@ -289,6 +292,7 @@ var routePolicies = []RouteInfo{
 	{Method: "PUT", Path: "/api/v1/admin/backups/schedule", Admin: true, Recent: true},
 	{Method: "POST", Path: "/api/v1/admin/backups/destinations", Admin: true, Recent: true},
 	{Method: "PUT", Path: "/api/v1/admin/backups/destinations/{id}", Admin: true, Recent: true},
+	{Method: "GET", Path: "/api/v1/admin/backups/destinations/{id}/recovery-key", Admin: true, Recent: true},
 	{Method: "DELETE", Path: "/api/v1/admin/backups/destinations/{id}", Admin: true, Recent: true},
 	{Method: "POST", Path: "/api/v1/admin/backups/destinations/test", Admin: true, Recent: true},
 	{Method: "POST", Path: "/api/v1/admin/backups/run", Admin: true, Recent: true},

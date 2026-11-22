@@ -760,6 +760,8 @@ components:
         kind: {type: string, enum: [local, nfs, rclone]}
         reference: {type: string, maxLength: 1024, description: Host path or configured rclone remote path; credentials stay on the host.}
         enabled: {type: boolean}
+        encrypted: {type: boolean, default: false, description: Encrypt archive files stored at this destination with a destination-specific recovery key.}
+        hasRecoveryKey: {type: boolean, readOnly: true, description: A recovery key is stored separately from system backup archives.}
     BackupRun:
       type: object
       required: [id, batchId, trigger, destinationId, destinationLabel, archiveName, state, sizeBytes, startedAt]
@@ -1070,6 +1072,8 @@ paths:
   /admin/backups/destinations/{id}:
     put: {operationId: adminUpdateBackupDestination, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, parameters: [{name: id, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{16,64}$'}}], requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/BackupDestination'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/BackupDestination'}}}, description: Destination replaced.}, default: {$ref: '#/components/responses/Error'}}, summary: Replace Backup Destination}
     delete: {operationId: adminDeleteBackupDestination, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, parameters: [{name: id, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{16,64}$'}}], responses: {"204": {description: Destination deleted.}, default: {$ref: '#/components/responses/Error'}}, summary: Delete Backup Destination}
+  /admin/backups/destinations/{id}/recovery-key:
+    get: {operationId: adminExportBackupRecoveryKey, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, parameters: [{name: id, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{16,64}$'}}], responses: {"200": {content: {application/json: {schema: {type: object, required: [recoveryKey], properties: {recoveryKey: {type: string, pattern: '^[0-9a-f]{64}$'}}}}}, description: Recovery key for encrypted backups; returned only on explicit request.}, default: {$ref: '#/components/responses/Error'}}, summary: Export Backup Recovery Key}
   /admin/backups/destinations/test:
     post: {operationId: adminTestBackupDestination, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/BackupDestination'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/BackupTestResult'}}}, description: Destination test passed.}, default: {$ref: '#/components/responses/Error'}}, summary: Test Backup Destination}
   /admin/backups/run:

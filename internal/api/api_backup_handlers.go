@@ -20,6 +20,23 @@ func (a *API) serveBackups(w http.ResponseWriter, r *http.Request) bool {
 	}
 	p := r.URL.Path
 	switch {
+	case strings.HasPrefix(p, "/api/v1/admin/backups/destinations/") && strings.HasSuffix(p, "/recovery-key") && r.Method == http.MethodGet:
+		id := r.PathValue("id")
+		if !validBackupDestinationID(id) {
+			server.WriteError(w, http.StatusBadRequest, "invalid_destination", "backup destination id is invalid")
+			return true
+		}
+		key, err := a.backups.ExportDestinationRecoveryKey(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, ErrBackupDestinationNotFound) {
+				server.WriteError(w, http.StatusNotFound, "destination_not_found", "backup destination was not found")
+			} else {
+				server.WriteError(w, http.StatusConflict, "recovery_key_unavailable", "backup recovery key is unavailable")
+			}
+		} else {
+			writeJSON(w, http.StatusOK, map[string]string{"recoveryKey": key})
+		}
+		return true
 	case p == "/api/v1/admin/backups" && r.Method == http.MethodGet:
 		value, err := a.backups.Snapshot(r.Context())
 		if err != nil {

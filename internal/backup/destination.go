@@ -21,13 +21,21 @@ type DestinationDriver interface {
 
 type FilesystemDriver struct{}
 
-var archiveObjectPattern = regexp.MustCompile(`^bookmarksync-(manual|weekly|monthly)-[0-9]{8}T[0-9]{6}\.[0-9]{3}Z-[0-9a-f]{32}\.zip$`)
+var archiveObjectPattern = regexp.MustCompile(`^bookmarksync-(manual|weekly|monthly)-[0-9]{8}T[0-9]{6}\.[0-9]{3}Z-[0-9a-f]{32}\.zip(\.enc)?$`)
 
 func backupArchiveName(trigger Trigger, at time.Time, batchID string) string {
 	if (trigger != TriggerManual && trigger != TriggerWeekly && trigger != TriggerMonthly) || len(batchID) != 32 || !hexString.MatchString(batchID) {
 		return ""
 	}
 	return fmt.Sprintf("bookmarksync-%s-%s-%s.zip", trigger, at.UTC().Format("20060102T150405.000Z"), batchID)
+}
+
+func backupDestinationArchiveName(trigger Trigger, at time.Time, batchID string, encrypted bool) string {
+	name := backupArchiveName(trigger, at, batchID)
+	if encrypted && name != "" {
+		name += ".enc"
+	}
+	return name
 }
 
 func validArchiveName(name string) bool {

@@ -2,6 +2,7 @@ package backup
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"os"
@@ -79,6 +80,9 @@ func (m *Manager) Snapshot(ctx context.Context) (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	for i := range destinations {
+		destinations[i].RecoveryKeyAvailable = destinationRecoveryKeyAvailable(m.dataDir, destinations[i].ID)
+	}
 	runs, err := m.store.ListRuns(ctx, 50)
 	if err != nil {
 		return Snapshot{}, err
@@ -112,7 +116,48 @@ func (m *Manager) RecoverInterrupted(ctx context.Context) (int64, error) {
 }
 
 func (m *Manager) SaveDestination(ctx context.Context, destination Destination) (Destination, error) {
-	return m.store.SaveDestination(ctx, destination)
+	if destination.ID != "" && destination.Encrypted {
+		key, created, err := ensureDestinationKey(m.dataDir, destination.ID)
+		if err != nil {
+			return Destination{}, err
+		}
+		for i := range key {
+			key[i] = 0
+		}
+		saved, err := m.store.SaveDestination(ctx, destination)
+		if err != nil && created {
+			_ = removeDestinationKey(m.dataDir, destination.ID)
+		}
+		saved.RecoveryKeyAvailable = err == nil && destinationRecoveryKeyAvailable(m.dataDir, saved.ID)
+		return saved, err
+	}
+	saved, err := m.store.SaveDestination(ctx, destination)
+	if err != nil || !saved.Encrypted {
+		return saved, err
+	}
+	key, _, keyErr := ensureDestinationKey(m.dataDir, saved.ID)
+	for i := range key {
+		key[i] = 0
+	}
+	if keyErr != nil {
+		_ = m.store.DeleteDestination(ctx, saved.ID)
+		return Destination{}, keyErr
+	}
+	saved.RecoveryKeyAvailable = destinationRecoveryKeyAvailable(m.dataDir, saved.ID)
+	return saved, nil
+}
+
+func (m *Manager) ExportDestinationRecoveryKey(ctx context.Context, id string) (string, error) {
+	destinations, err := m.store.ListDestinations(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, d := range destinations {
+		if d.ID == id {
+			return ExportDestinationRecoveryKey(m.dataDir, id)
+		}
+	}
+	return "", sql.ErrNoRows
 }
 
 func (m *Manager) DeleteDestination(ctx context.Context, id string) error {
@@ -249,8 +294,8 @@ func (m *Manager) runLocked(ctx context.Context, trigger Trigger, batch string) 
 		return errors.New("backup staging directory could not be created")
 	}
 	defer os.RemoveAll(stage)
-	archivePath := filepath.Join(stage, runs[0].ArchiveName)
-	result, err := Create(ctx, Options{DB: m.db, DataDir: m.dataDir, Output: archivePath, Build: m.build, SnapshotLock: m.assetsMu})
+	archivePath := filepath.Join(stage, "source.zip")
+	_, err = Create(ctx, Options{DB: m.db, DataDir: m.dataDir, Output: archivePath, Build: m.build, SnapshotLock: m.assetsMu})
 	if err == nil {
 		_, err = Inspect(ctx, archivePath)
 	}
@@ -289,7 +334,31 @@ func (m *Manager) runLocked(ctx context.Context, trigger Trigger, batch string) 
 			runErr = errors.New("one or more backup destinations are unavailable")
 			continue
 		}
-		if err := driver.Publish(ctx, destination, archivePath, run.ArchiveName); err != nil {
+		publishPath := archivePath
+		if destination.Encrypted {
+			key, err := readDestinationKey(destinationKeyPath(m.dataDir, destination.ID))
+			if err != nil {
+				m.finishOne(run, RunFailed, 0, "transfer_failed")
+				runErr = errors.New("one or more destination encryption keys are unavailable")
+				continue
+			}
+			encryptedPath := filepath.Join(stage, run.ArchiveName)
+			err = EncryptArchive(ctx, archivePath, encryptedPath, key)
+			for i := range key {
+				key[i] = 0
+			}
+			if err != nil {
+				code := "transfer_failed"
+				if ctx.Err() != nil {
+					code = "cancelled"
+				}
+				m.finishOne(run, RunFailed, 0, code)
+				runErr = errors.New("one or more destination archives could not be encrypted")
+				continue
+			}
+			publishPath = encryptedPath
+		}
+		if err := driver.Publish(ctx, destination, publishPath, run.ArchiveName); err != nil {
 			code := "transfer_failed"
 			if strings.Contains(err.Error(), "verification") {
 				code = "verification_failed"
@@ -305,7 +374,13 @@ func (m *Manager) runLocked(ctx context.Context, trigger Trigger, batch string) 
 			runErr = errors.New("one or more backup destinations could not be verified")
 			continue
 		}
-		if err := m.finishOne(run, RunSucceeded, result.Size, ""); err != nil {
+		publishedInfo, statErr := os.Stat(publishPath)
+		if statErr != nil || !publishedInfo.Mode().IsRegular() {
+			m.finishOne(run, RunFailed, 0, "transfer_failed")
+			runErr = errors.New("one or more backup archives could not be verified")
+			continue
+		}
+		if err := m.finishOne(run, RunSucceeded, publishedInfo.Size(), ""); err != nil {
 			runErr = err
 			continue
 		}

@@ -63,6 +63,7 @@ func backupCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fs := flag.NewFlagSet("backup verify", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		archivePath := fs.String("file", "", "backup archive to verify")
+		keyPath := fs.String("key-file", "", "private hex recovery key file for an encrypted archive")
 		if err := fs.Parse(args[1:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return 0
@@ -73,7 +74,12 @@ func backupCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 			fmt.Fprintln(stderr, "backup verify requires --file and no positional arguments")
 			return 2
 		}
-		manifest, err := backup.Inspect(ctx, *archivePath)
+		var manifest backup.Manifest
+		err := withPlainArchive(ctx, *archivePath, *keyPath, func(path string) error {
+			var inspectErr error
+			manifest, inspectErr = backup.Inspect(ctx, path)
+			return inspectErr
+		})
 		if err != nil {
 			fmt.Fprintf(stderr, "backup verify: %v\n", err)
 			return 1
@@ -85,6 +91,7 @@ func backupCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		fs.SetOutput(stderr)
 		archivePath := fs.String("file", "", "backup archive to restore")
 		target := fs.String("target-dir", "", "new, absent server data directory")
+		keyPath := fs.String("key-file", "", "private hex recovery key file for an encrypted archive")
 		if err := fs.Parse(args[1:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return 0
@@ -95,7 +102,7 @@ func backupCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 			fmt.Fprintln(stderr, "backup restore requires --file and --target-dir")
 			return 2
 		}
-		if err := backup.Restore(ctx, *archivePath, *target); err != nil {
+		if err := withPlainArchive(ctx, *archivePath, *keyPath, func(path string) error { return backup.Restore(ctx, path, *target) }); err != nil {
 			fmt.Fprintf(stderr, "backup restore: %v\n", err)
 			return 1
 		}
@@ -107,6 +114,7 @@ func backupCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		archivePath := fs.String("file", "", "full-system backup archive")
 		username := fs.String("username", "", "existing account whose private data should be recovered")
 		dataDir := fs.String("data-dir", "data", "existing live server data directory")
+		keyPath := fs.String("key-file", "", "private hex recovery key file for an encrypted archive")
 		if err := fs.Parse(args[1:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				return 0
@@ -129,7 +137,12 @@ func backupCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 			return 1
 		}
 		defer db.Close()
-		imported, err := backup.RestoreUser(ctx, *archivePath, db, *username)
+		var imported bool
+		err = withPlainArchive(ctx, *archivePath, *keyPath, func(path string) error {
+			var restoreErr error
+			imported, restoreErr = backup.RestoreUser(ctx, path, db, *username)
+			return restoreErr
+		})
 		if err != nil {
 			fmt.Fprintf(stderr, "backup restore-user: %v\n", err)
 			return 1

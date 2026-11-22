@@ -39,7 +39,7 @@ func (b backupAPI) UpdateSchedule(ctx context.Context, value api.BackupSchedule)
 }
 
 func (b backupAPI) SaveDestination(ctx context.Context, value api.BackupDestination) (api.BackupDestination, error) {
-	saved, err := b.manager.SaveDestination(ctx, backup.Destination{ID: value.ID, Label: value.Label, Kind: backup.DestinationKind(value.Kind), Reference: value.Reference, Enabled: value.Enabled})
+	saved, err := b.manager.SaveDestination(ctx, backup.Destination{ID: value.ID, Label: value.Label, Kind: backup.DestinationKind(value.Kind), Reference: value.Reference, Enabled: value.Enabled, Encrypted: value.Encrypted})
 	if err != nil {
 		return api.BackupDestination{}, mapBackupDestinationError(err)
 	}
@@ -52,6 +52,14 @@ func (b backupAPI) DeleteDestination(ctx context.Context, id string) error {
 		return api.ErrBackupDestinationNotFound
 	}
 	return err
+}
+
+func (b backupAPI) ExportDestinationRecoveryKey(ctx context.Context, id string) (string, error) {
+	key, err := b.manager.ExportDestinationRecoveryKey(ctx, id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", api.ErrBackupDestinationNotFound
+	}
+	return key, err
 }
 
 func mapBackupDestinationError(err error) error {
@@ -68,7 +76,7 @@ func mapBackupDestinationError(err error) error {
 }
 
 func (b backupAPI) TestDestination(ctx context.Context, value api.BackupDestination) error {
-	return b.manager.TestDestination(ctx, backup.Destination{ID: value.ID, Label: value.Label, Kind: backup.DestinationKind(value.Kind), Reference: value.Reference, Enabled: value.Enabled})
+	return b.manager.TestDestination(ctx, backup.Destination{ID: value.ID, Label: value.Label, Kind: backup.DestinationKind(value.Kind), Reference: value.Reference, Enabled: value.Enabled, Encrypted: value.Encrypted})
 }
 
 func (b backupAPI) StartManual() (string, error) {
@@ -90,7 +98,8 @@ func apiSchedule(value backup.Schedule) api.BackupSchedule {
 }
 
 func apiDestination(value backup.Destination) api.BackupDestination {
-	return api.BackupDestination{ID: value.ID, Label: value.Label, Kind: string(value.Kind), Reference: value.Reference, Enabled: value.Enabled}
+	return api.BackupDestination{ID: value.ID, Label: value.Label, Kind: string(value.Kind), Reference: value.Reference, Enabled: value.Enabled,
+		Encrypted: value.Encrypted, RecoveryKeyAvailable: value.RecoveryKeyAvailable}
 }
 
 func apiRun(value backup.Run) api.BackupRun {

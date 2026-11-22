@@ -96,6 +96,18 @@ func TestBackupStorePersistsDestinationAndRejectsUnsafeReferences(t *testing.T) 
 	if err != nil || len(items) != 1 || items[0] != created {
 		t.Fatalf("ListDestinations = %#v, %v", items, err)
 	}
+	if created.Encrypted || items[0].Encrypted {
+		t.Fatal("backup encryption must default to off for new and existing destinations")
+	}
+	created.Encrypted = true
+	updated, err := store.SaveDestination(context.Background(), created)
+	if err != nil || !updated.Encrypted {
+		t.Fatalf("encrypted destination update = %#v, %v", updated, err)
+	}
+	items, err = store.ListDestinations(context.Background())
+	if err != nil || len(items) != 1 || !items[0].Encrypted {
+		t.Fatalf("encrypted destination persistence = %#v, %v", items, err)
+	}
 	unsafe := []Destination{
 		{Label: "", Kind: DestinationLocal, Reference: filepath.Join(t.TempDir(), "x")},
 		{Label: "bad", Kind: DestinationLocal, Reference: "relative/path"},

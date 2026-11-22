@@ -3,14 +3,17 @@ package main
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/atikansari-ghr/BookmarksSync/internal/backup"
 	"github.com/atikansari-ghr/BookmarksSync/internal/config"
 	"github.com/atikansari-ghr/BookmarksSync/internal/database"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
+	"github.com/atikansari-ghr/BookmarksSync/internal/securefile"
 )
 
 func TestBackupCLIEndToEndAndExistingTargetProtection(t *testing.T) {
@@ -38,8 +41,33 @@ func TestBackupCLIEndToEndAndExistingTargetProtection(t *testing.T) {
 	if code := run(context.Background(), []string{"backup", "verify", "--file", archive}, strings.NewReader(""), &out, &errb, func(string) string { return "" }); code != 0 {
 		t.Fatalf("verify exit %d: %s", code, errb.String())
 	}
+	key := bytes.Repeat([]byte{0x5a}, backup.RecoveryKeySize)
+	encrypted := filepath.Join(t.TempDir(), "snapshot.zip.enc")
+	if err := backup.EncryptArchive(context.Background(), archive, encrypted, key); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	errbuf := &bytes.Buffer{}
+	if code := run(context.Background(), []string{"backup", "verify", "--file", encrypted}, strings.NewReader(""), &out, errbuf, func(string) string { return "" }); code != 1 {
+		t.Fatalf("encrypted verify without key exit %d: %s", code, errbuf.String())
+	}
+	keyFile := filepath.Join(t.TempDir(), "recovery-key.txt")
+	keyOutput, err := securefile.Create(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.WriteString(keyOutput, fmt.Sprintf("%x\n", key)); err != nil {
+		t.Fatal(err)
+	}
+	if err := keyOutput.Close(); err != nil {
+		t.Fatal(err)
+	}
+	errbuf.Reset()
+	if code := run(context.Background(), []string{"backup", "verify", "--file", encrypted, "--key-file", keyFile}, strings.NewReader(""), &out, errbuf, func(string) string { return "" }); code != 0 {
+		t.Fatalf("encrypted verify exit %d: %s", code, errbuf.String())
+	}
 	restored := filepath.Join(t.TempDir(), "restored")
-	if code := run(context.Background(), []string{"backup", "restore", "--file", archive, "--target-dir", restored}, strings.NewReader(""), io.Discard, &errb, func(string) string { return "" }); code != 0 {
+	if code := run(context.Background(), []string{"backup", "restore", "--file", encrypted, "--key-file", keyFile, "--target-dir", restored}, strings.NewReader(""), io.Discard, &errb, func(string) string { return "" }); code != 0 {
 		t.Fatalf("restore exit %d: %s", code, errb.String())
 	}
 	check, err := database.Open(context.Background(), filepath.Join(restored, "bookmarksync.db"))
@@ -54,7 +82,7 @@ func TestBackupCLIEndToEndAndExistingTargetProtection(t *testing.T) {
 	if value != "works" {
 		t.Fatalf("restored value = %q", value)
 	}
-	if code := run(context.Background(), []string{"backup", "restore", "--file", archive, "--target-dir", restored}, strings.NewReader(""), io.Discard, &errb, func(string) string { return "" }); code == 0 {
+	if code := run(context.Background(), []string{"backup", "restore", "--file", encrypted, "--key-file", keyFile, "--target-dir", restored}, strings.NewReader(""), io.Discard, &errb, func(string) string { return "" }); code == 0 {
 		t.Fatal("restore accepted existing target")
 	}
 }

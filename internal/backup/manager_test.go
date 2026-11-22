@@ -1,11 +1,14 @@
 package backup
 
 import (
+	"archive/zip"
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -100,6 +103,67 @@ func TestManagerCreatesOneVerifiedArchiveForEachEnabledDestination(t *testing.T)
 		}
 		if _, err := Inspect(context.Background(), filepath.Join(d.Reference, entries[0].Name())); err != nil {
 			t.Fatalf("destination %s archive failed verification: %v", d.Label, err)
+		}
+	}
+}
+
+func TestManagerEncryptsOnlyConfiguredDestinationAndKeepsRecoveryKeyOutsideArchive(t *testing.T) {
+	_, dir, m := managerFixture(t)
+	plain := addDestination(t, m, "plain", filepath.Join(dir, "plain"))
+	encryptedPath := filepath.Join(dir, "encrypted")
+	if err := os.MkdirAll(encryptedPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	encrypted, err := m.SaveDestination(context.Background(), Destination{Label: "encrypted", Kind: DestinationLocal, Reference: encryptedPath, Enabled: true, Encrypted: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := m.Snapshot(context.Background())
+	if err != nil || len(snapshot.Destinations) != 2 {
+		t.Fatalf("snapshot = %#v, %v", snapshot, err)
+	}
+	for _, destination := range snapshot.Destinations {
+		if destination.ID == encrypted.ID && (!destination.Encrypted || !destination.RecoveryKeyAvailable) {
+			t.Fatalf("encrypted destination lacks recovery key status: %#v", destination)
+		}
+	}
+	if err := m.Run(context.Background(), TriggerManual); err != nil {
+		t.Fatal(err)
+	}
+	plainEntries, err := os.ReadDir(plain.Reference)
+	if err != nil || len(plainEntries) != 1 || filepath.Ext(plainEntries[0].Name()) != ".zip" {
+		t.Fatalf("plain destination entries=%#v err=%v", plainEntries, err)
+	}
+	if _, err := Inspect(context.Background(), filepath.Join(plain.Reference, plainEntries[0].Name())); err != nil {
+		t.Fatalf("plain archive failed verification: %v", err)
+	}
+	encryptedEntries, err := os.ReadDir(encrypted.Reference)
+	if err != nil || len(encryptedEntries) != 1 || filepath.Ext(encryptedEntries[0].Name()) != ".enc" || !validArchiveName(encryptedEntries[0].Name()) {
+		t.Fatalf("encrypted destination entries=%#v err=%v", encryptedEntries, err)
+	}
+	keyText, err := m.ExportDestinationRecoveryKey(context.Background(), encrypted.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key, err := hex.DecodeString(keyText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decrypted := filepath.Join(t.TempDir(), "restored.zip")
+	if err := DecryptArchive(context.Background(), filepath.Join(encrypted.Reference, encryptedEntries[0].Name()), decrypted, key); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Inspect(context.Background(), decrypted); err != nil {
+		t.Fatalf("decrypted encrypted-destination archive failed verification: %v", err)
+	}
+	zipReader, err := zip.OpenReader(filepath.Join(plain.Reference, plainEntries[0].Name()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zipReader.Close()
+	for _, file := range zipReader.File {
+		if strings.HasPrefix(file.Name, "backup-keys/") {
+			t.Fatalf("recovery key was included in archive entry %q", file.Name)
 		}
 	}
 }
