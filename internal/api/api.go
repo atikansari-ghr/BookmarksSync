@@ -4,6 +4,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -124,6 +125,67 @@ type HealthCollector interface {
 }
 type Readiness interface{ Ping(context.Context) error }
 
+type BackupSchedule struct {
+	WeeklyEnabled    bool   `json:"weeklyEnabled"`
+	MonthlyEnabled   bool   `json:"monthlyEnabled"`
+	Timezone         string `json:"timezone"`
+	WeeklyDay        int    `json:"weeklyDay"`
+	WeeklyHour       int    `json:"weeklyHour"`
+	WeeklyMinute     int    `json:"weeklyMinute"`
+	MonthlyDay       int    `json:"monthlyDay"`
+	MonthlyHour      int    `json:"monthlyHour"`
+	MonthlyMinute    int    `json:"monthlyMinute"`
+	WeeklyRetention  int    `json:"weeklyRetention"`
+	MonthlyRetention int    `json:"monthlyRetention"`
+}
+
+type BackupDestination struct {
+	ID        string `json:"id,omitempty"`
+	Label     string `json:"label"`
+	Kind      string `json:"kind"`
+	Reference string `json:"reference"`
+	Enabled   bool   `json:"enabled"`
+}
+
+type BackupRun struct {
+	ID               int64      `json:"id"`
+	BatchID          string     `json:"batchId"`
+	Trigger          string     `json:"trigger"`
+	DestinationID    string     `json:"destinationId"`
+	DestinationLabel string     `json:"destinationLabel"`
+	ArchiveName      string     `json:"archiveName"`
+	State            string     `json:"state"`
+	SizeBytes        int64      `json:"sizeBytes"`
+	ErrorCode        string     `json:"errorCode,omitempty"`
+	StartedAt        time.Time  `json:"startedAt"`
+	FinishedAt       *time.Time `json:"finishedAt,omitempty"`
+}
+
+type BackupSnapshot struct {
+	Schedule     BackupSchedule      `json:"schedule"`
+	Destinations []BackupDestination `json:"destinations"`
+	Runs         []BackupRun         `json:"runs"`
+	Running      bool                `json:"running"`
+}
+
+var (
+	ErrBackupAlreadyRunning      = errors.New("backup already running")
+	ErrBackupNoDestinations      = errors.New("backup destination required")
+	ErrBackupDestinationNotFound = errors.New("backup destination not found")
+	ErrBackupInvalidSchedule     = errors.New("backup schedule is invalid")
+	ErrBackupInvalidDestination  = errors.New("backup destination is invalid")
+	ErrBackupDestinationConflict = errors.New("backup destination conflicts")
+)
+
+type BackupOperations interface {
+	Snapshot(context.Context) (BackupSnapshot, error)
+	UpdateSchedule(context.Context, BackupSchedule) error
+	SaveDestination(context.Context, BackupDestination) (BackupDestination, error)
+	DeleteDestination(context.Context, string) error
+	TestDestination(context.Context, BackupDestination) error
+	StartManual() (string, error)
+}
+
 type Options struct {
 	Auth      *auth.Handler
 	Identity  Identity
@@ -137,6 +199,8 @@ type Options struct {
 	Readiness  Readiness
 	SyncErrors func() uint64
 	AssetDir   string
+	AssetMu    *sync.Mutex
+	Backups    BackupOperations
 }
 
 type RouteInfo struct {
@@ -161,8 +225,9 @@ type API struct {
 	readiness  Readiness
 	syncErrors func() uint64
 	assetDir   string
+	backups    BackupOperations
 	routes     []RouteInfo
-	assetMu    sync.Mutex
+	assetMu    *sync.Mutex
 }
 
 var routePolicies = []RouteInfo{
@@ -217,6 +282,13 @@ var routePolicies = []RouteInfo{
 	{Method: "GET", Path: "/api/v1/admin/system", Admin: true},
 	{Method: "GET", Path: "/api/v1/admin/health", Admin: true},
 	{Method: "GET", Path: "/api/v1/admin/activity", Admin: true},
+	{Method: "GET", Path: "/api/v1/admin/backups", Admin: true},
+	{Method: "PUT", Path: "/api/v1/admin/backups/schedule", Admin: true, Recent: true},
+	{Method: "POST", Path: "/api/v1/admin/backups/destinations", Admin: true, Recent: true},
+	{Method: "PUT", Path: "/api/v1/admin/backups/destinations/{id}", Admin: true, Recent: true},
+	{Method: "DELETE", Path: "/api/v1/admin/backups/destinations/{id}", Admin: true, Recent: true},
+	{Method: "POST", Path: "/api/v1/admin/backups/destinations/test", Admin: true, Recent: true},
+	{Method: "POST", Path: "/api/v1/admin/backups/run", Admin: true, Recent: true},
 	{Method: "GET", Path: "/api/v1/admin/settings", Admin: true},
 	{Method: "PATCH", Path: "/api/v1/admin/settings", Admin: true, Recent: true},
 	{Method: "POST", Path: "/api/v1/admin/settings/assets", Admin: true, Recent: true},
@@ -239,7 +311,10 @@ func New(opts Options) (*API, error) {
 	if opts.SyncErrors == nil {
 		opts.SyncErrors = func() uint64 { return 0 }
 	}
-	return &API{auth: opts.Auth, ids: opts.Identity, bm: opts.Bookmarks, lc: opts.LinkChecks, now: opts.Now, log: opts.Logger, system: opts.System, health: opts.Health, readiness: opts.Readiness, syncErrors: opts.SyncErrors, assetDir: opts.AssetDir, routes: append([]RouteInfo(nil), routePolicies...)}, nil
+	if opts.AssetMu == nil {
+		opts.AssetMu = &sync.Mutex{}
+	}
+	return &API{auth: opts.Auth, ids: opts.Identity, bm: opts.Bookmarks, lc: opts.LinkChecks, now: opts.Now, log: opts.Logger, system: opts.System, health: opts.Health, readiness: opts.Readiness, syncErrors: opts.SyncErrors, assetDir: opts.AssetDir, backups: opts.Backups, assetMu: opts.AssetMu, routes: append([]RouteInfo(nil), routePolicies...)}, nil
 }
 
 func (a *API) Routes() []RouteInfo { return append([]RouteInfo(nil), a.routes...) }
@@ -334,7 +409,7 @@ func (a *API) authorize(rt RouteInfo, next http.Handler) http.Handler {
 }
 
 func (a *API) serve(w http.ResponseWriter, r *http.Request, rt RouteInfo) {
-	if a.serveBrandingAsset(w, r) || a.servePresentation(w, r) || a.serveBookmarks(w, r) || a.serveFolders(w, r) || a.serveTags(w, r) || a.serveDuplicates(w, r) || a.serveLinkChecks(w, r) || a.serveTrash(w, r) || a.serveShares(w, r) || a.serveMe(w, r) || a.serveTokens(w, r) || a.serveConnections(w, r) || a.serveAdmin(w, r) || a.serveTransfer(w, r) {
+	if a.serveBrandingAsset(w, r) || a.servePresentation(w, r) || a.serveBookmarks(w, r) || a.serveFolders(w, r) || a.serveTags(w, r) || a.serveDuplicates(w, r) || a.serveLinkChecks(w, r) || a.serveTrash(w, r) || a.serveShares(w, r) || a.serveMe(w, r) || a.serveTokens(w, r) || a.serveConnections(w, r) || a.serveBackups(w, r) || a.serveAdmin(w, r) || a.serveTransfer(w, r) {
 		return
 	}
 	server.WriteError(w, http.StatusNotFound, "not_found", "route not found")
@@ -593,6 +668,35 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 		return false
 	}
 	return true
+}
+
+func decodeRequiredJSON(w http.ResponseWriter, r *http.Request, dst any, required ...string) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, jsonBodyLimit)
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		writeJSONError(w, err)
+		return false
+	}
+	dec := json.NewDecoder(bytes.NewReader(data))
+	var fields map[string]json.RawMessage
+	if err := dec.Decode(&fields); err != nil {
+		writeJSONError(w, err)
+		return false
+	}
+	var extra any
+	if err := dec.Decode(&extra); !errors.Is(err, io.EOF) {
+		server.WriteError(w, 400, "invalid_request", "request must contain one JSON value")
+		return false
+	}
+	for _, key := range required {
+		value, ok := fields[key]
+		if !ok || bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			server.WriteError(w, 400, "invalid_request", "request is missing a required field")
+			return false
+		}
+	}
+	r.Body = io.NopCloser(bytes.NewReader(data))
+	return decodeJSON(w, r, dst)
 }
 
 func writeJSONError(w http.ResponseWriter, err error) {

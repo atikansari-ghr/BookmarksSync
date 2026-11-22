@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/config"
@@ -32,6 +33,9 @@ type Options struct {
 	DataDir string
 	Output  string
 	Build   version.Info
+	// SnapshotLock serializes database-backed branding settings and referenced
+	// asset reads with concurrent admin asset replacement.
+	SnapshotLock sync.Locker
 }
 
 type Result struct {
@@ -64,6 +68,16 @@ func Create(ctx context.Context, opts Options) (Result, error) {
 		return Result{}, fmt.Errorf("create local backup staging directory: %w", err)
 	}
 	defer os.RemoveAll(stage)
+	locked := false
+	if opts.SnapshotLock != nil {
+		opts.SnapshotLock.Lock()
+		locked = true
+	}
+	defer func() {
+		if locked {
+			opts.SnapshotLock.Unlock()
+		}
+	}()
 
 	if err := opts.DB.BackupTo(ctx, filepath.Join(stage, databaseName)); err != nil {
 		return Result{}, err
@@ -122,6 +136,10 @@ func Create(ctx context.Context, opts Options) (Result, error) {
 		if !found {
 			return Result{}, errors.New("referenced branding asset is missing")
 		}
+	}
+	if locked {
+		opts.SnapshotLock.Unlock()
+		locked = false
 	}
 	if err := ctx.Err(); err != nil {
 		return Result{}, err

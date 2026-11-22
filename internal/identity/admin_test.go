@@ -391,8 +391,22 @@ func TestAdminActivityIsSanitized(t *testing.T) {
 	if err := e.svc.RecordAdminActivity(ctx, e.alice.ID, "system_settings_updated:secret-value", "system", 0); !errors.Is(err, identity.ErrInvalid) {
 		t.Fatalf("accepted raw activity text: %v", err)
 	}
+	if err := e.svc.RecordAdminActivity(ctx, e.alice.ID, "backup_destination_deleted", "user", e.alice.ID); !errors.Is(err, identity.ErrInvalid) {
+		t.Fatalf("accepted backup action against user target: %v", err)
+	}
+	if err := e.svc.RecordAdminActivity(ctx, e.alice.ID, "password_reset", "backup", 0); !errors.Is(err, identity.ErrInvalid) {
+		t.Fatalf("accepted user action against backup target: %v", err)
+	}
+	for _, event := range []struct{ action, target string }{
+		{"backup_schedule_updated", "backup"}, {"backup_run_started", "backup"},
+		{"backup_destination_created", "backup_destination"}, {"backup_destination_updated", "backup_destination"}, {"backup_destination_deleted", "backup_destination"},
+	} {
+		if err := e.svc.RecordAdminActivity(ctx, e.alice.ID, event.action, event.target, 0); err != nil {
+			t.Fatalf("record %s: %v", event.action, err)
+		}
+	}
 	items, err := e.svc.ListAdminActivity(ctx, 100)
-	if err != nil || len(items) != 1 || items[0].Action != "system_settings_updated" || items[0].TargetType != "system" || items[0].TargetID != nil {
+	if err != nil || len(items) != 6 || items[5].Action != "system_settings_updated" || items[5].TargetType != "system" || items[5].TargetID != nil {
 		t.Fatalf("activity = %+v, %v", items, err)
 	}
 }

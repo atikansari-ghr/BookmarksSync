@@ -18,7 +18,9 @@ import (
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/api"
 	"github.com/atikansari-ghr/BookmarksSync/internal/auth"
+	"github.com/atikansari-ghr/BookmarksSync/internal/backup"
 	"github.com/atikansari-ghr/BookmarksSync/internal/bookmarks"
+	"github.com/atikansari-ghr/BookmarksSync/internal/config"
 	"github.com/atikansari-ghr/BookmarksSync/internal/database"
 	"github.com/atikansari-ghr/BookmarksSync/internal/health"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
@@ -54,6 +56,8 @@ type tenv struct {
 	ids              *identity.Service
 	bm               *bookmarks.Service
 	lc               *linkcheck.Service
+	backupManager    *backup.Manager
+	backupDataDir    string
 	clock            *fakeClock
 	api              *api.API
 	h                http.Handler
@@ -73,6 +77,14 @@ func newTEnv(t *testing.T) *tenv {
 	ids := identity.New(db.SQL(), identity.WithPasswordCost(8*1024, 1, 1), identity.WithClock(clock.Now))
 	bm := bookmarks.New(db.SQL(), bookmarks.WithClock(clock.Now))
 	lc := linkcheck.NewService(db.SQL(), bm, ids, okChecker{}, linkcheck.WithClock(clock.Now))
+	backupDataDir := t.TempDir()
+	if err := config.SaveRuntime(config.RuntimePath(backupDataDir), config.RuntimeConfig{ListenAddr: "127.0.0.1:8080"}); err != nil {
+		t.Fatal(err)
+	}
+	backupManager, err := backup.NewManager(backup.ManagerOptions{DB: db, DataDir: backupDataDir, Now: clock.Now})
+	if err != nil {
+		t.Fatal(err)
+	}
 	logs := &bytes.Buffer{}
 	log := slog.New(slog.NewTextHandler(logs, nil))
 	authH, err := auth.New(auth.Options{Identity: ids, PublicOrigin: origin, Now: clock.Now, Logger: log})
@@ -80,14 +92,14 @@ func newTEnv(t *testing.T) *tenv {
 		t.Fatal(err)
 	}
 	assetDir := filepath.Join(t.TempDir(), "branding")
-	a, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Now: clock.Now, Logger: log, Health: health.New(t.TempDir()), Readiness: db, AssetDir: assetDir,
+	a, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupTestAdapter{manager: backupManager}, Now: clock.Now, Logger: log, Health: health.New(t.TempDir()), Readiness: db, AssetDir: assetDir,
 		System: api.SystemInfo{Version: "test", PublicOrigin: origin, PasskeysEnabled: false, OIDCProviders: []string{}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := server.NewHandler(server.Options{Version: version.Info{Version: "test"}, Ready: db, Logger: log, BodyLimit: api.BodyLimit,
 		Register: func(r server.Registrar) { authH.Register(r); a.Register(r) }})
-	e := &tenv{t: t, db: db, ids: ids, bm: bm, lc: lc, clock: clock, api: a, h: h, logs: logs, assetDir: assetDir}
+	e := &tenv{t: t, db: db, ids: ids, bm: bm, lc: lc, backupManager: backupManager, backupDataDir: backupDataDir, clock: clock, api: a, h: h, logs: logs, assetDir: assetDir}
 	ctx := context.Background()
 	for _, u := range []struct {
 		name  string

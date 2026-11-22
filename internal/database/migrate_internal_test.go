@@ -73,6 +73,50 @@ func TestMigrationsAreContiguousAndEmbedded(t *testing.T) {
 	}
 }
 
+func TestBackupAuditMigrationPreservesLegacyRowsAndConstrainsActionTargets(t *testing.T) {
+	ctx := context.Background()
+	db := rawDB(t)
+	ms, err := loadMigrations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ms) < 8 || ms[5].version != 6 || ms[7].version != 8 {
+		t.Fatalf("workspace/backup migrations missing: %#v", ms)
+	}
+	if err := applyMigrations(ctx, db, ms[:6]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO users(id,username,password_hash,is_admin,active,created_at) VALUES(1,'admin','fixture',1,1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	for _, q := range []string{
+		`INSERT INTO admin_activity(actor_id,action,target_type,target_id,created_at) VALUES(1,'user_created','user',1,1)`,
+		`INSERT INTO admin_activity(actor_id,action,target_type,target_id,created_at) VALUES(1,'branding_asset_uploaded','asset',17,2)`,
+	} {
+		if _, err := db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("legacy event fixture: %v", err)
+		}
+	}
+	if err := applyMigrations(ctx, db, ms[6:]); err != nil {
+		t.Fatalf("upgrade to backup audit schema: %v", err)
+	}
+	var count int
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM admin_activity`).Scan(&count); err != nil || count != 2 {
+		t.Fatalf("legacy events after upgrade=%d err=%v", count, err)
+	}
+	var target string
+	var targetID int64
+	if err := db.QueryRowContext(ctx, `SELECT target_type,target_id FROM admin_activity WHERE action='branding_asset_uploaded'`).Scan(&target, &targetID); err != nil || target != "asset" || targetID != 17 {
+		t.Fatalf("legacy asset event=%s/%d err=%v", target, targetID, err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO admin_activity(actor_id,action,target_type,target_id,created_at) VALUES(1,'backup_destination_deleted','user',1,3)`); err == nil {
+		t.Fatal("database accepted mismatched audit action and target")
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO admin_activity(actor_id,action,target_type,target_id,created_at) VALUES(1,'backup_destination_deleted','backup_destination',NULL,3)`); err != nil {
+		t.Fatalf("database rejected valid backup audit event: %v", err)
+	}
+}
+
 // TestIdentityMigrationUpgradesMilestone2DataIntact applies migrations up to 0002, fills
 // representative milestone-2 data, then upgrades to the latest schema and verifies the
 // existing rows survive and the identity tables exist.
@@ -287,7 +331,7 @@ func TestFavoritesMigrationUpgradesIdentityDataIntact(t *testing.T) {
 		`SELECT secret_hash || ':' || kind FROM credentials WHERE id = 1`:                  "aa:private",
 		`SELECT secret_hash || ':' || scopes FROM api_tokens WHERE id = 1`:                 "tok:bookmarks:read",
 		`SELECT value FROM user_settings WHERE user_id = 1 AND key = 'theme'`:              `"ocean"`,
-		`SELECT CAST(MAX(version) AS TEXT) FROM schema_migrations`:                         "6",
+		`SELECT CAST(MAX(version) AS TEXT) FROM schema_migrations`:                         "8",
 		`SELECT CAST(COUNT(*) AS TEXT) FROM bookmark_favorites`:                            "0",
 		`SELECT CAST(COUNT(*) AS TEXT) FROM pragma_foreign_key_list('bookmark_favorites')`: "2",
 	}
@@ -357,7 +401,7 @@ func TestLinkCheckMigrationUpgradesFavoritesDataIntact(t *testing.T) {
 		t.Fatalf("upgrade: %v", err)
 	}
 	checks := map[string]string{
-		`SELECT CAST(MAX(version) AS TEXT) FROM schema_migrations`:                         "6",
+		`SELECT CAST(MAX(version) AS TEXT) FROM schema_migrations`:                         "8",
 		`SELECT url FROM bookmarks WHERE id = 1`:                                           "https://example.com/",
 		`SELECT CAST(COUNT(*) AS TEXT) FROM bookmark_favorites`:                            "1",
 		`SELECT value FROM user_settings WHERE user_id = 1 AND key = 'bookmarks.view'`:     `"grid"`,

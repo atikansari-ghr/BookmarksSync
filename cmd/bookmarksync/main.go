@@ -12,11 +12,13 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/api"
 	"github.com/atikansari-ghr/BookmarksSync/internal/auth"
+	"github.com/atikansari-ghr/BookmarksSync/internal/backup"
 	"github.com/atikansari-ghr/BookmarksSync/internal/bookmarks"
 	"github.com/atikansari-ghr/BookmarksSync/internal/config"
 	"github.com/atikansari-ghr/BookmarksSync/internal/database"
@@ -138,7 +140,22 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 		return err
 	}
 	defer db.Close()
-
+	backupCtx, cancelBackups := context.WithCancel(ctx)
+	defer cancelBackups()
+	assetMu := &sync.Mutex{}
+	rclone := backup.RcloneDriver{BinaryPath: getenv("BOOKMARKSYNC_RCLONE_BINARY"), ConfigPath: getenv("BOOKMARKSYNC_RCLONE_CONFIG")}
+	backupManager, err := backup.NewManager(backup.ManagerOptions{DB: db, DataDir: cfg.DataDir, Build: version.Current(), SnapshotLock: assetMu,
+		Context: backupCtx, Drivers: map[backup.DestinationKind]backup.DestinationDriver{
+			backup.DestinationLocal: backup.FilesystemDriver{}, backup.DestinationNFS: backup.FilesystemDriver{}, backup.DestinationRclone: rclone,
+		}})
+	if err != nil {
+		return err
+	}
+	if recovered, err := backupManager.RecoverInterrupted(ctx); err != nil {
+		return fmt.Errorf("recover interrupted backups: %w", err)
+	} else if recovered > 0 {
+		log.Warn("marked interrupted backups as failed", "count", recovered)
+	}
 	ln, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
@@ -186,7 +203,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 			return err
 		}
 		go lc.Run(ctx)
-		apiH, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Logger: log, Health: health.New(cfg.DataDir), Readiness: db, SyncErrors: adapter.SyncErrors, AssetDir: filepath.Join(cfg.DataDir, "branding"),
+		apiH, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupAPI{manager: backupManager}, AssetMu: assetMu, Logger: log, Health: health.New(cfg.DataDir), Readiness: db, SyncErrors: adapter.SyncErrors, AssetDir: filepath.Join(cfg.DataDir, "branding"),
 			System: api.SystemInfo{Version: version.Current().Version, PublicOrigin: cfg.PublicOrigin,
 				PasskeysEnabled: passkeysEnabled, OIDCProviders: configuredOIDCNames(cfg.OIDCProviders)}})
 		if err != nil {
@@ -202,6 +219,20 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 	} else {
 		log.Warn("browser sign-in disabled: set " + config.EnvPublicURL + " to enable /api/v1/auth")
 	}
+	schedulerDone := make(chan struct{})
+	go func() {
+		defer close(schedulerDone)
+		scheduler := backup.Scheduler{Load: backupManager.LoadSchedule, RunBackup: func(runCtx context.Context, trigger backup.Trigger) error {
+			if err := backupManager.Run(runCtx, trigger); err != nil {
+				log.Warn("scheduled backup did not complete", "trigger", trigger, "error", err.Error())
+				return err
+			}
+			return nil
+		}, Changed: backupManager.ScheduleChanges()}
+		if err := scheduler.Run(backupCtx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Error("backup scheduler stopped", "error", err.Error())
+		}
+	}()
 	go purgeTrashLoop(ctx, bm, log)
 	h := server.NewHandler(server.Options{
 		Version:   version.Current(),
@@ -215,8 +246,12 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 		Logger: log,
 	})
 	log.Info("listening", "addr", ln.Addr().String(), "version", version.Current().Version)
-	if err := server.Serve(ctx, ln, h, 15*time.Second); err != nil {
-		return err
+	serveErr := server.Serve(ctx, ln, h, 15*time.Second)
+	cancelBackups()
+	<-schedulerDone
+	backupManager.Wait()
+	if serveErr != nil {
+		return serveErr
 	}
 	log.Info("shut down cleanly")
 	return nil

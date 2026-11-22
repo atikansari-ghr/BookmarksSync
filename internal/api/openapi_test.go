@@ -240,7 +240,9 @@ func TestOpenAPIOperationsDocumentSuccessContracts(t *testing.T) {
 		"finishPasskeyLogin": true, "finishPasskeyRegistration": true,
 		"renamePasskey": true, "adminResetPassword": true, "adminResetFactors": true,
 		"importBookmarks": true, "moveBookmarks": true, "submitLinkCheck": true,
-		"adminUploadBrandingAsset": true,
+		"adminUploadBrandingAsset":  true,
+		"adminUpdateBackupSchedule": true, "adminCreateBackupDestination": true,
+		"adminUpdateBackupDestination": true, "adminTestBackupDestination": true,
 	}
 	// Literal status expectations are derived from the real handlers. Login
 	// intentionally has both outcomes because TOTP is configured per account.
@@ -289,6 +291,9 @@ func TestOpenAPIOperationsDocumentSuccessContracts(t *testing.T) {
 		"delete /admin/users/{id}/connections/{cid}": {"204"}, "get /admin/system": {"200"}, "get /admin/health": {"200"}, "get /admin/activity": {"200"},
 		"get /admin/settings": {"200"}, "patch /admin/settings": {"200"}, "post /admin/settings/assets": {"201"},
 		"get /admin/users/{id}/settings": {"200"}, "patch /admin/users/{id}/settings": {"200"},
+		"get /admin/backups": {"200"}, "put /admin/backups/schedule": {"200"},
+		"post /admin/backups/destinations": {"201"}, "put /admin/backups/destinations/{id}": {"200"},
+		"delete /admin/backups/destinations/{id}": {"204"}, "post /admin/backups/destinations/test": {"200"}, "post /admin/backups/run": {"202"},
 		"get /auth/presentation": {"200"}, "get /auth/presentation/assets/{id}": {"200"},
 	}
 	seenBodies := map[string]bool{}

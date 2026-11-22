@@ -3,11 +3,13 @@ package backup
 import (
 	"archive/zip"
 	"context"
+	"database/sql"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/config"
 	"github.com/atikansari-ghr/BookmarksSync/internal/database"
@@ -180,6 +182,67 @@ func TestRestoreCreatesNewDataDirectory(t *testing.T) {
 	}
 	if _, err := identity.LoadOrCreateInstanceKey(target); err != nil {
 		t.Fatalf("restored instance key: %v", err)
+	}
+}
+
+func TestRestoreDisablesBackupTargetsAndFinishesInterruptedRuns(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	db, err := database.Open(ctx, filepath.Join(dir, "bookmarksync.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SQL().Exec(`UPDATE backup_schedule SET weekly_enabled=1, monthly_enabled=1`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SQL().Exec(`INSERT INTO backup_destinations(id,label,kind,reference,enabled,created_at,updated_at) VALUES('0123456789abcdef','Remote','rclone','drive:backups',1,1,1)`); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStore(db.SQL(), time.Now)
+	dest, err := store.ListDestinations(ctx)
+	if err != nil || len(dest) != 1 {
+		t.Fatalf("destinations=%#v err=%v", dest, err)
+	}
+	started := time.Now().UTC()
+	if _, err := store.StartDestinationRun(ctx, "0123456789abcdef0123456789abcdef", TriggerManual, dest[0], started); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.LoadOrCreateInstanceKey(dir); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveRuntime(config.RuntimePath(dir), config.RuntimeConfig{ListenAddr: "127.0.0.1:8080", PublicOrigin: "https://bookmarks.example.org"}); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "backup.zip")
+	if _, err := Create(ctx, Options{DB: db, DataDir: dir, Output: archive}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(t.TempDir(), "restored")
+	if err := Restore(ctx, archive, target); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := database.Open(ctx, filepath.Join(target, "bookmarksync.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	var weekly, monthly, enabled int
+	if err := restored.SQL().QueryRow(`SELECT weekly_enabled,monthly_enabled FROM backup_schedule WHERE id=1`).Scan(&weekly, &monthly); err != nil {
+		t.Fatal(err)
+	}
+	if err := restored.SQL().QueryRow(`SELECT enabled FROM backup_destinations WHERE id='0123456789abcdef'`).Scan(&enabled); err != nil {
+		t.Fatal(err)
+	}
+	var state, code string
+	var finished sql.NullInt64
+	if err := restored.SQL().QueryRow(`SELECT state,error_code,finished_at FROM backup_runs`).Scan(&state, &code, &finished); err != nil {
+		t.Fatal(err)
+	}
+	if weekly != 0 || monthly != 0 || enabled != 0 || state != "failed" || code != "cancelled" || !finished.Valid {
+		t.Fatalf("restored external backup settings active or run unfinished: schedule=%d/%d destination=%d run=%s/%s/%v", weekly, monthly, enabled, state, code, finished)
 	}
 }
 

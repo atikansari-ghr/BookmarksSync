@@ -18,6 +18,10 @@ function adminRoutes(): Record<string, Route> {
     'GET /api/v1/admin/health': { status: 200, body: { cpuPercent: 12, memory: { totalBytes: 1000, usedBytes: 400, percent: 40 }, disk: null, uptimeSeconds: 1000, unavailable: ['disk'], dbReady: true, syncErrors: 2 } },
     'GET /api/v1/admin/settings': { status: 200, body: { settings: { 'branding.app-title': 'BookmarksSync' } } },
     'GET /api/v1/admin/activity': { status: 200, body: { items: [{ id: 1, actorId: 1, action: 'user_created', targetType: 'user', targetId: 2, createdAt: '2026-11-20T12:00:00Z' }] } },
+    'GET /api/v1/admin/backups': { status: 200, body: { schedule: { weeklyEnabled: false, monthlyEnabled: false, timezone: 'Asia/Riyadh', weeklyDay: 0, weeklyHour: 3, weeklyMinute: 0, monthlyDay: 1, monthlyHour: 4, monthlyMinute: 0, weeklyRetention: 8, monthlyRetention: 12 }, destinations: [{ id: '0123456789abcdef0123456789abcdef', label: 'NAS', kind: 'rclone', reference: 'nas:bookmarks', enabled: true }], runs: [], running: false } },
+    'PUT /api/v1/admin/backups/schedule': { status: 200, body: { schedule: { weeklyEnabled: true, monthlyEnabled: false, timezone: 'Asia/Riyadh', weeklyDay: 0, weeklyHour: 3, weeklyMinute: 0, monthlyDay: 1, monthlyHour: 4, monthlyMinute: 0, weeklyRetention: 8, monthlyRetention: 12 } } },
+    'POST /api/v1/admin/backups/destinations/test': { status: 200, body: { status: 'ok' } },
+    'POST /api/v1/admin/backups/run': { status: 202, body: { batchId: '0123456789abcdef0123456789abcdef', status: 'accepted' } },
     'PATCH /api/v1/admin/settings': { status: 200, body: { settings: {} } },
     'POST /api/v1/admin/settings/assets': { status: 201, body: { url: '/api/v1/auth/presentation/assets/0123456789abcdef0123456789abcdef' } },
     'GET /api/v1/admin/users/2/settings': { status: 200, body: { settings: {} } },
@@ -32,11 +36,30 @@ describe('admin workspace', () => {
     mockServer(adminRoutes())
     render(<App />)
     expect(await screen.findByRole('heading', { name: 'Server health' })).toBeInTheDocument()
+    await screen.findByText('No backup runs yet.')
     expect(screen.getByText('12%')).toBeInTheDocument()
     expect(screen.getByText('2 server errors')).toBeInTheDocument()
     expect(screen.getByText('sam')).toBeInTheDocument()
     expect(screen.getByText('2 KB')).toBeInTheDocument()
     expect(screen.getByText('User created')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'System backups' })).toBeInTheDocument()
+    expect(screen.getAllByText(/nas:bookmarks/)).toHaveLength(2)
+  })
+
+  it('saves the backup schedule, tests a destination, and starts a manual run', async () => {
+    const api = mockServer(adminRoutes())
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole('heading', { name: 'System backups' })
+    await screen.findByText('NAS')
+    await user.click(screen.getByLabelText('Weekly backups'))
+    await user.click(screen.getByRole('button', { name: 'Save schedule' }))
+    await waitFor(() => expect(api.find('PUT', '/api/v1/admin/backups/schedule')).toHaveLength(1))
+    expect(api.find('PUT', '/api/v1/admin/backups/schedule')[0].body).toMatchObject({ weeklyEnabled: true, timezone: 'Asia/Riyadh' })
+    await user.click(screen.getByRole('button', { name: 'Test destination' }))
+    await waitFor(() => expect(api.find('POST', '/api/v1/admin/backups/destinations/test')).toHaveLength(1))
+    await user.click(screen.getByRole('button', { name: 'Run backup now' }))
+    await waitFor(() => expect(api.find('POST', '/api/v1/admin/backups/run')).toHaveLength(1))
   })
 
   it('limits branding text fields to the server accepted lengths', async () => {

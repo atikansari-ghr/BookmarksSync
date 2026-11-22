@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/config"
+	"github.com/atikansari-ghr/BookmarksSync/internal/database"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
 	"github.com/atikansari-ghr/BookmarksSync/internal/securefile"
 )
@@ -47,6 +49,9 @@ func Restore(ctx context.Context, archivePath, targetDir string) error {
 	}
 	if err := moveToDataRoot(stage, filepath.FromSlash(runtimeName), "runtime.json"); err != nil {
 		return fmt.Errorf("prepare restored runtime configuration: %w", err)
+	}
+	if err := disableRestoredBackupTargets(ctx, filepath.Join(stage, "bookmarksync.db")); err != nil {
+		return fmt.Errorf("prepare restored backup settings: %w", err)
 	}
 	_ = os.Remove(filepath.Join(stage, "database"))
 	_ = os.Remove(filepath.Join(stage, "config"))
@@ -116,6 +121,22 @@ func Restore(ctx context.Context, archivePath, targetDir string) error {
 		return fmt.Errorf("sync restore parent directory: %w", err)
 	}
 	return nil
+}
+
+func disableRestoredBackupTargets(ctx context.Context, dbPath string) error {
+	db, err := database.Open(ctx, dbPath)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	if _, err := db.SQL().ExecContext(ctx, `UPDATE backup_schedule SET weekly_enabled=0,monthly_enabled=0`); err != nil {
+		return err
+	}
+	if _, err := db.SQL().ExecContext(ctx, `UPDATE backup_destinations SET enabled=0`); err != nil {
+		return err
+	}
+	_, err = db.SQL().ExecContext(ctx, `UPDATE backup_runs SET state='failed',error_code='cancelled',finished_at=COALESCE(finished_at,?) WHERE state='running'`, time.Now().UTC().UnixMilli())
+	return err
 }
 
 func syncTreeDirs(root string) error {

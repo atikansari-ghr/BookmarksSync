@@ -573,17 +573,22 @@ type AdminActivity struct {
 	CreatedAt  time.Time
 }
 
-var adminActivityActions = map[string]bool{
-	"user_created": true, "user_updated": true, "user_settings_updated": true,
-	"system_settings_updated": true, "branding_asset_uploaded": true,
-	"connection_revoked": true, "password_reset": true, "factor_reset": true,
+var adminActivityTargets = map[string]map[string]bool{
+	"user_created": {"user": true}, "user_updated": {"user": true}, "user_settings_updated": {"user": true},
+	"connection_revoked": {"user": true}, "password_reset": {"user": true}, "factor_reset": {"user": true},
+	"system_settings_updated": {"system": true}, "branding_asset_uploaded": {"system": true, "asset": true},
+	"backup_schedule_updated": {"backup": true}, "backup_run_started": {"backup": true},
+	"backup_destination_created": {"backup_destination": true}, "backup_destination_updated": {"backup_destination": true},
+	"backup_destination_deleted": {"backup_destination": true},
 }
 
 // RecordAdminActivity stores only a fixed action code and numeric target identifiers.
 // Callers cannot attach usernames, bookmark content, request data, or secrets.
 func (s *Service) RecordAdminActivity(ctx context.Context, actorID int64, action, targetType string, targetID int64) error {
-	if actorID <= 0 || !adminActivityActions[action] || (targetType != "user" && targetType != "system" && targetType != "asset") ||
-		(targetType == "system" && targetID != 0) || (targetType != "system" && targetID <= 0) {
+	allowedTargets := adminActivityTargets[action]
+	if actorID <= 0 || !allowedTargets[targetType] ||
+		((targetType == "system" || targetType == "backup" || targetType == "backup_destination") && targetID != 0) ||
+		((targetType == "user" || targetType == "asset") && targetID <= 0) {
 		return fmt.Errorf("%w: invalid activity event", ErrInvalid)
 	}
 	var target any

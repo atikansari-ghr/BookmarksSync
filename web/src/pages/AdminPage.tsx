@@ -2,6 +2,7 @@ import { useEffect, useState, type FormEvent } from 'react'
 import { ApiError } from '../api'
 import { Busy } from '../components/common'
 import { Workspace } from '../components/Workspace'
+import { AdminBackups } from '../components/AdminBackups'
 import { useApp } from '../context'
 
 type AdminUser = { id: number; username: string; active: boolean; isAdmin: boolean; bookmarkCount: number; folderCount: number; storageBytes: number; connectionCount: number; themeDefault?: string | null }
@@ -129,6 +130,8 @@ function Admin() {
         </div>
         {!!health?.unavailable.length && <p className="muted small">Unavailable metrics: {health.unavailable.join(', ')}.</p>}
       </section>
+
+      <AdminBackups />
 
       <section className="ws-card glass admin-section" aria-labelledby="accounts-title">
         <h2 id="accounts-title">Accounts</h2>

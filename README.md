@@ -25,7 +25,7 @@ Implemented:
 - Sign-in and account-security pages under `/auth/`, built with React/TypeScript and embedded in the binary. They cover passkeys, the authenticator app, recovery codes, linked accounts, active sessions, personal API tokens, and Floccus connections.
 - Bookmark workspace pages at `/dashboard`, `/bookmarks`, `/duplicates`, and `/admin`; these include configurable dashboard widgets and themes, folder/bookmark organization, duplicate review, and public-only link checks.
 - Admin health and account usage views, per-account theme defaults, sanitized activity, editable login appearance, and private PNG/JPEG/WebP logo/background uploads (up to 2 MiB).
-- Manual compressed full-system ZIP backup, checksum/SQLite verification, and safe restore into a new data directory; see [docs/backup-restore.md](docs/backup-restore.md).
+- Compressed full-system backups with admin-managed weekly/monthly schedules, local/NFS/rclone destinations, verified publishing and per-schedule retention; manual verify/restore tools remain available. See [docs/backup-restore.md](docs/backup-restore.md).
 - User instructions for the bookmark workspace and admin pages: [docs/workspace-guide.md](docs/workspace-guide.md).
 - The versioned `/api/v1` JSON API, documented in [api/openapi.yaml](api/openapi.yaml):
   - profile, password and settings;
@@ -41,7 +41,7 @@ Implemented:
 
 Still planned or awaiting acceptance:
 - Login Flow v2 (the floccus "Connect" wizard; use profile import for now);
-- trusted-proxy and country rules, scheduled weekly/monthly backups, retention, external destinations, optional encryption, and per-user recovery;
+- trusted-proxy and country rules, optional backup encryption, per-user recovery and backup notifications;
 - production single-command installers and admin-triggered updates;
 - notifications and remaining browser/organizer acceptance checks.
 
@@ -143,6 +143,7 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X $V
 - `internal/webui` — embedded sign-in and account-security pages (source in `web/`)
 - `internal/bookmarks` — SQL repositories and transactional bookmark/folder/share/lock operations (protocol-agnostic)
 - `internal/floccus` — Nextcloud-Bookmarks wire adapter for floccus
+- `internal/backup` — compressed full-system snapshots, destination drivers, schedule and retention manager
 - `internal/server` — HTTP handler, JSON helpers, graceful `Serve`
 - `internal/version` — build information
 - `docs/floccus-compatibility.md` — what is implemented and which evidence exists for it

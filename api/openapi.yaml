@@ -528,8 +528,8 @@ components:
       properties:
         id: {type: integer, format: int64}
         actorId: {type: integer, format: int64, minimum: 0}
-        action: {type: string, enum: [user_created, user_updated, user_settings_updated, system_settings_updated, branding_asset_uploaded, connection_revoked, password_reset, factor_reset]}
-        targetType: {type: string, enum: [user, system, asset]}
+        action: {type: string, enum: [user_created, user_updated, user_settings_updated, system_settings_updated, branding_asset_uploaded, connection_revoked, password_reset, factor_reset, backup_schedule_updated, backup_run_started, backup_destination_created, backup_destination_updated, backup_destination_deleted]}
+        targetType: {type: string, enum: [user, system, asset, backup, backup_destination]}
         targetId: {type: [integer, 'null'], format: int64, minimum: 1}
         createdAt: {type: string, format: date-time}
     AdminActivity:
@@ -720,6 +720,64 @@ components:
       required: [file]
       properties:
         file: {type: string, format: binary, description: Netscape HTML or XBEL upload.}
+    BackupSchedule:
+      type: object
+      required: [weeklyEnabled, monthlyEnabled, timezone, weeklyDay, weeklyHour, weeklyMinute, monthlyDay, monthlyHour, monthlyMinute, weeklyRetention, monthlyRetention]
+      properties:
+        weeklyEnabled: {type: boolean}
+        monthlyEnabled: {type: boolean}
+        timezone: {type: string, description: IANA time zone name.}
+        weeklyDay: {type: integer, minimum: 0, maximum: 6, description: Sunday is 0.}
+        weeklyHour: {type: integer, minimum: 0, maximum: 23}
+        weeklyMinute: {type: integer, minimum: 0, maximum: 59}
+        monthlyDay: {type: integer, minimum: 1, maximum: 28}
+        monthlyHour: {type: integer, minimum: 0, maximum: 23}
+        monthlyMinute: {type: integer, minimum: 0, maximum: 59}
+        weeklyRetention: {type: integer, minimum: 1, maximum: 100}
+        monthlyRetention: {type: integer, minimum: 1, maximum: 100}
+    BackupDestination:
+      type: object
+      required: [label, kind, reference, enabled]
+      properties:
+        id: {type: string, pattern: '^[0-9a-f]{16,64}$'}
+        label: {type: string, maxLength: 80}
+        kind: {type: string, enum: [local, nfs, rclone]}
+        reference: {type: string, maxLength: 1024, description: Host path or configured rclone remote path; credentials stay on the host.}
+        enabled: {type: boolean}
+    BackupRun:
+      type: object
+      required: [id, batchId, trigger, destinationId, destinationLabel, archiveName, state, sizeBytes, startedAt]
+      properties:
+        id: {type: integer, format: int64}
+        batchId: {type: string}
+        trigger: {type: string, enum: [manual, weekly, monthly]}
+        destinationId: {type: string}
+        destinationLabel: {type: string}
+        archiveName: {type: string}
+        state: {type: string, enum: [running, succeeded, failed]}
+        sizeBytes: {type: integer, format: int64}
+        errorCode: {type: string}
+        startedAt: {type: string, format: date-time}
+        finishedAt: {type: string, format: date-time}
+    BackupSnapshot:
+      type: object
+      required: [schedule, destinations, runs, running]
+      properties:
+        schedule: {$ref: '#/components/schemas/BackupSchedule'}
+        destinations: {type: array, items: {$ref: '#/components/schemas/BackupDestination'}}
+        runs: {type: array, items: {$ref: '#/components/schemas/BackupRun'}}
+        running: {type: boolean}
+    BackupBatchAccepted:
+      type: object
+      required: [batchId, status]
+      properties:
+        batchId: {type: string}
+        status: {type: string, const: accepted}
+    BackupTestResult:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, const: ok}
   responses:
     Error:
       description: Standard JSON error response.
@@ -984,5 +1042,18 @@ paths:
     patch: {operationId: adminPatchUserSettings, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}], requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/SettingsPatchRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/SystemSettingsResponse'}}}, description: Per-user defaults.}, default: {$ref: '#/components/responses/Error'}}, summary: Update User Setting Defaults}
   /admin/health: {get: {operationId: adminHealth, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/AdminHealth'}}}, description: Host metrics and readiness without user bookmark data.}, default: {$ref: '#/components/responses/Error'}}, summary: Admin Server Health}}
   /admin/activity: {get: {operationId: adminListActivity, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/AdminActivity'}}}, description: Sanitized administrative events with no free-form content.}, default: {$ref: '#/components/responses/Error'}}, summary: Admin List Activity}}
+  /admin/backups:
+    get: {operationId: adminGetBackups, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/BackupSnapshot'}}}, description: Schedule, destinations and recent run history.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Backup Settings}
+  /admin/backups/schedule:
+    put: {operationId: adminUpdateBackupSchedule, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/BackupSchedule'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {type: object, required: [schedule], properties: {schedule: {$ref: '#/components/schemas/BackupSchedule'}}}}}, description: Schedule replaced.}, default: {$ref: '#/components/responses/Error'}}, summary: Replace Backup Schedule}
+  /admin/backups/destinations:
+    post: {operationId: adminCreateBackupDestination, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/BackupDestination'}}}, required: true}, responses: {"201": {content: {application/json: {schema: {$ref: '#/components/schemas/BackupDestination'}}}, description: Destination saved.}, default: {$ref: '#/components/responses/Error'}}, summary: Create Backup Destination}
+  /admin/backups/destinations/{id}:
+    put: {operationId: adminUpdateBackupDestination, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, parameters: [{name: id, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{16,64}$'}}], requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/BackupDestination'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/BackupDestination'}}}, description: Destination replaced.}, default: {$ref: '#/components/responses/Error'}}, summary: Replace Backup Destination}
+    delete: {operationId: adminDeleteBackupDestination, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, parameters: [{name: id, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{16,64}$'}}], responses: {"204": {description: Destination deleted.}, default: {$ref: '#/components/responses/Error'}}, summary: Delete Backup Destination}
+  /admin/backups/destinations/test:
+    post: {operationId: adminTestBackupDestination, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/BackupDestination'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/BackupTestResult'}}}, description: Destination test passed.}, default: {$ref: '#/components/responses/Error'}}, summary: Test Backup Destination}
+  /admin/backups/run:
+    post: {operationId: adminStartBackup, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, responses: {"202": {content: {application/json: {schema: {$ref: '#/components/schemas/BackupBatchAccepted'}}}, description: Backup accepted.}, "409": {description: Another backup is running.}, default: {$ref: '#/components/responses/Error'}}, summary: Start Backup Now}
   /auth/presentation: {get: {operationId: getAuthPresentation, x-public: true, security: [], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/PublicPresentation'}}}, description: Public login appearance and safe version information.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Public Login Presentation}}
   /auth/presentation/assets/{id}: {get: {operationId: getAuthPresentationAsset, x-public: true, security: [], parameters: [{name: id, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}], responses: {"200": {content: {image/png: {schema: {type: string, format: binary}}, image/jpeg: {schema: {type: string, format: binary}}, image/webp: {schema: {type: string, format: binary}}}, description: Login image asset.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Public Login Image}}
