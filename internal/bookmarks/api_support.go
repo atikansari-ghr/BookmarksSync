@@ -651,6 +651,7 @@ type ExportNode struct {
 	Title    string
 	URL      string
 	Tags     []string
+	Favorite bool
 	Children []ExportNode
 }
 
@@ -680,6 +681,7 @@ func (s *Service) ExportTree(ctx context.Context, sc Scope, folderID int64) ([]E
 		}
 		collect(nodes)
 		tags := map[int64][]string{}
+		favorites := map[int64]bool{}
 		if len(ids) > 0 {
 			list, _ := json.Marshal(ids)
 			rows, err := q.QueryContext(ctx, `SELECT bookmark_id, tag FROM bookmark_tags WHERE bookmark_id IN (SELECT value FROM json_each(?))`, string(list))
@@ -699,6 +701,25 @@ func (s *Service) ExportTree(ctx context.Context, sc Scope, folderID int64) ([]E
 			for _, v := range tags {
 				sort.Strings(v)
 			}
+			if sc.Actor > 0 {
+				rows, err := q.QueryContext(ctx, `SELECT bookmark_id FROM bookmark_favorites WHERE user_id = ? AND bookmark_id IN (SELECT value FROM json_each(?))`, sc.Actor, string(list))
+				if err != nil {
+					return err
+				}
+				for rows.Next() {
+					var id int64
+					if err := rows.Scan(&id); err != nil {
+						rows.Close()
+						return err
+					}
+					favorites[id] = true
+				}
+				if err := rows.Err(); err != nil {
+					rows.Close()
+					return err
+				}
+				rows.Close()
+			}
 		}
 		var conv func([]Node) []ExportNode
 		conv = func(ns []Node) []ExportNode {
@@ -707,7 +728,7 @@ func (s *Service) ExportTree(ctx context.Context, sc Scope, folderID int64) ([]E
 				if n.Type == typeFolder {
 					res = append(res, ExportNode{Folder: true, Title: n.Title, Children: conv(n.Children)})
 				} else {
-					res = append(res, ExportNode{Title: n.Title, URL: n.URL, Tags: tags[n.ID]})
+					res = append(res, ExportNode{Title: n.Title, URL: n.URL, Tags: tags[n.ID], Favorite: favorites[n.ID]})
 				}
 			}
 			return res

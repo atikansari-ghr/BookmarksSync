@@ -646,14 +646,8 @@ func (s *Service) UpdateSettings(ctx context.Context, userID int64, changes map[
 	if len(changes) == 0 {
 		return nil, fmt.Errorf("%w: no settings given", ErrInvalid)
 	}
-	for k, v := range changes {
-		valid, ok := settingValidators[k]
-		if !ok {
-			return nil, fmt.Errorf("%w: unknown setting %q", ErrInvalid, k)
-		}
-		if v != nil && !valid(*v) {
-			return nil, fmt.Errorf("%w: invalid value for %s", ErrInvalid, k)
-		}
+	if err := ValidateSettingsChanges(changes); err != nil {
+		return nil, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -678,4 +672,21 @@ func (s *Service) UpdateSettings(ctx context.Context, userID int64, changes map[
 		return nil, err
 	}
 	return s.Settings(ctx, userID)
+}
+
+// ValidateSettingsChanges validates an override batch without applying it.
+func ValidateSettingsChanges(changes map[string]*string) error {
+	if len(changes) == 0 {
+		return fmt.Errorf("%w: no settings given", ErrInvalid)
+	}
+	for k, v := range changes {
+		valid, ok := settingValidators[k]
+		if !ok {
+			return fmt.Errorf("%w: unknown setting %q", ErrInvalid, k)
+		}
+		if v != nil && !valid(*v) {
+			return fmt.Errorf("%w: invalid value for %s", ErrInvalid, k)
+		}
+	}
+	return nil
 }

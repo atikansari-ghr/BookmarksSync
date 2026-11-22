@@ -1,7 +1,9 @@
 package bookmarks_test
 
 import (
+	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/bookmarks"
@@ -13,6 +15,36 @@ func leaf(title, url string) bookmarks.ImportNode {
 }
 func dir(title string, kids ...bookmarks.ImportNode) bookmarks.ImportNode {
 	return bookmarks.ImportNode{Folder: true, Title: title, Children: kids}
+}
+
+func TestMergeUserRestoreIsIdempotentAndScoped(t *testing.T) {
+	e := newEnv(t)
+	alice := e.user("alice")
+	bob := e.user("bob")
+	asc, err := e.svc.PrivateScope(ctx, alice.ID, true)
+	noErr(t, err)
+	bsc := e.private(bob, identity.ModeEdit)
+	abar, aother := e.roots(asc)
+	bbar, _ := e.roots(bsc)
+
+	bar := []bookmarks.ImportNode{dir("Recovered", leaf("Docs", "https://docs.example/"))}
+	other := []bookmarks.ImportNode{leaf("News", "https://news.example/")}
+	imported, err := e.svc.MergeUserRestore(ctx, asc, strings.Repeat("a", 64), bar, other)
+	noErr(t, err)
+	if !imported {
+		t.Fatal("first recovery reported already imported")
+	}
+	imported, err = e.svc.MergeUserRestore(ctx, asc, strings.Repeat("a", 64), bar, other)
+	noErr(t, err)
+	if imported {
+		t.Fatal("repeated recovery imported duplicate content")
+	}
+	assertOrder(t, e, asc, abar, []string{"Recovered"})
+	assertOrder(t, e, asc, aother, []string{"News"})
+	assertOrder(t, e, bsc, bbar, nil)
+	if _, err := e.svc.MergeUserRestore(ctx, asc, "bad", bar, other); !errors.Is(err, bookmarks.ErrInvalid) {
+		t.Fatalf("invalid archive hash error = %v", err)
+	}
 }
 
 func TestImportTreeCreatesNestedOrderedItemsAndReturnsOnlyImported(t *testing.T) {

@@ -11,6 +11,7 @@ type ImportNode struct {
 	Title    string
 	URL      string
 	Tags     []string // applied to newly created bookmarks only
+	Favorite bool     // applied to the authenticated actor when present
 	Children []ImportNode
 }
 
@@ -130,6 +131,15 @@ func (s *Service) importInto(ctx context.Context, tx *sql.Tx, sc Scope, parent f
 		created, err := s.addPlacement(ctx, tx, sc.OwnerID, id, parent.id)
 		if err != nil {
 			return nil, err
+		}
+		if n.Favorite {
+			if sc.Actor == 0 {
+				return nil, invalid("favorite import requires a signed-in user")
+			}
+			if _, err := tx.ExecContext(ctx, `INSERT INTO bookmark_favorites(user_id, bookmark_id, created_at) VALUES (?, ?, ?)
+				ON CONFLICT(user_id, bookmark_id) DO NOTHING`, sc.Actor, id, s.ms()); err != nil {
+				return nil, err
+			}
 		}
 		if !created {
 			continue // already in this folder (or a duplicate within the import)

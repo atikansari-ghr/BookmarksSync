@@ -17,7 +17,7 @@ import (
 
 func backupCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: bookmarksync backup create|verify|restore [options]")
+		fmt.Fprintln(stderr, "usage: bookmarksync backup create|verify|restore|restore-user [options]")
 		return 2
 	}
 	switch args[0] {
@@ -101,8 +101,47 @@ func backupCommand(ctx context.Context, args []string, stdout, stderr io.Writer)
 		}
 		fmt.Fprintf(stdout, "Backup restored to %s\n", *target)
 		return 0
+	case "restore-user":
+		fs := flag.NewFlagSet("backup restore-user", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		archivePath := fs.String("file", "", "full-system backup archive")
+		username := fs.String("username", "", "existing account whose private data should be recovered")
+		dataDir := fs.String("data-dir", "data", "existing live server data directory")
+		if err := fs.Parse(args[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			return 2
+		}
+		if *archivePath == "" || *username == "" || fs.NArg() != 0 {
+			fmt.Fprintln(stderr, "backup restore-user requires --file, --username, and no positional arguments")
+			return 2
+		}
+		databasePath := filepath.Join(*dataDir, "bookmarksync.db")
+		info, err := os.Lstat(databasePath)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			fmt.Fprintln(stderr, "backup restore-user requires an existing regular database file")
+			return 1
+		}
+		db, err := database.Open(ctx, databasePath)
+		if err != nil {
+			fmt.Fprintf(stderr, "backup restore-user: %v\n", err)
+			return 1
+		}
+		defer db.Close()
+		imported, err := backup.RestoreUser(ctx, *archivePath, db, *username)
+		if err != nil {
+			fmt.Fprintf(stderr, "backup restore-user: %v\n", err)
+			return 1
+		}
+		if imported {
+			fmt.Fprintf(stdout, "User recovery applied for %s\n", *username)
+		} else {
+			fmt.Fprintf(stdout, "Bookmark recovery already applied for %s; settings checked\n", *username)
+		}
+		return 0
 	default:
-		fmt.Fprintln(stderr, "usage: bookmarksync backup create|verify|restore [options]")
+		fmt.Fprintln(stderr, "usage: bookmarksync backup create|verify|restore|restore-user [options]")
 		return 2
 	}
 }

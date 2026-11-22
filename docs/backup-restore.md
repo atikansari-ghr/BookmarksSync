@@ -1,6 +1,6 @@
 # Backup and Restore
 
-The Operations slice provides scheduled weekly and monthly full-system backups, manual runs from the admin interface, per-destination retention, archive verification, and clean-directory restore. Backups use Deflate compression. Optional encryption, user-only recovery, and backup notifications remain planned.
+The Operations slice provides scheduled weekly and monthly full-system backups, manual runs from the admin interface, per-destination retention, archive verification, full-system restore, and user-only recovery. Backups use Deflate compression. Optional encryption and backup notifications remain planned.
 
 ## What the archive contains
 
@@ -58,3 +58,13 @@ bookmarksync serve --data-dir /var/lib/bookmarksync-restored --listen 127.0.0.1:
 ```
 
 The restored database may be migrated forward by a newer server build at startup. Archives from a newer database schema are rejected. For safety, restore disables weekly/monthly schedules and every external backup destination; review and re-enable the intended targets in Admin after confirming the new host's mount paths and rclone configuration. Any run recorded as still in progress is marked failed. A restore is published by renaming a private staging directory beside the destination; use a local filesystem for the destination. Keep your reverse-proxy TLS, DNS, and external identity-provider redirect URI configuration operational outside this server restore.
+
+### Recover one user's data
+
+To restore only one account's private bookmarks and personal setting overrides into an already running instance, use the host CLI:
+
+```sh
+bookmarksync backup restore-user --file /backup/bookmarksync-2026-11-22.zip --username alice --data-dir /var/lib/bookmarksync
+```
+
+The archive is fully verified before recovery. The username must exist and be active in both the archive and the current server. Bookmark Bar and Other Bookmarks trees, tags, and that user's favorites are merged into the current user's matching roots; other users, shared collections, system settings, sessions, passwords, passkeys, API tokens, and app credentials are not restored. Existing personal setting overrides are replaced with those from the archive, while server-provided defaults remain in effect. Repeating the same archive does not duplicate its bookmark folders; it rechecks settings so an interrupted run can be retried. This command is for host administrators and records no bookmark content in logs.

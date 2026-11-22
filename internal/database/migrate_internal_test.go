@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -331,9 +332,10 @@ func TestFavoritesMigrationUpgradesIdentityDataIntact(t *testing.T) {
 		`SELECT secret_hash || ':' || kind FROM credentials WHERE id = 1`:                  "aa:private",
 		`SELECT secret_hash || ':' || scopes FROM api_tokens WHERE id = 1`:                 "tok:bookmarks:read",
 		`SELECT value FROM user_settings WHERE user_id = 1 AND key = 'theme'`:              `"ocean"`,
-		`SELECT CAST(MAX(version) AS TEXT) FROM schema_migrations`:                         "8",
+		`SELECT CAST(MAX(version) AS TEXT) FROM schema_migrations`:                         strconv.Itoa(LatestSchemaVersion),
 		`SELECT CAST(COUNT(*) AS TEXT) FROM bookmark_favorites`:                            "0",
 		`SELECT CAST(COUNT(*) AS TEXT) FROM pragma_foreign_key_list('bookmark_favorites')`: "2",
+		`SELECT CAST(COUNT(*) AS TEXT) FROM user_restore_imports`:                          "0",
 	}
 	for q, want := range checks {
 		var got string
@@ -401,7 +403,7 @@ func TestLinkCheckMigrationUpgradesFavoritesDataIntact(t *testing.T) {
 		t.Fatalf("upgrade: %v", err)
 	}
 	checks := map[string]string{
-		`SELECT CAST(MAX(version) AS TEXT) FROM schema_migrations`:                         "8",
+		`SELECT CAST(MAX(version) AS TEXT) FROM schema_migrations`:                         strconv.Itoa(LatestSchemaVersion),
 		`SELECT url FROM bookmarks WHERE id = 1`:                                           "https://example.com/",
 		`SELECT CAST(COUNT(*) AS TEXT) FROM bookmark_favorites`:                            "1",
 		`SELECT value FROM user_settings WHERE user_id = 1 AND key = 'bookmarks.view'`:     `"grid"`,
@@ -409,6 +411,7 @@ func TestLinkCheckMigrationUpgradesFavoritesDataIntact(t *testing.T) {
 		`SELECT CAST(COUNT(*) AS TEXT) FROM link_check_results`:                            "0",
 		`SELECT CAST(COUNT(*) AS TEXT) FROM pragma_foreign_key_list('link_check_jobs')`:    "2",
 		`SELECT CAST(COUNT(*) AS TEXT) FROM pragma_foreign_key_list('link_check_results')`: "1",
+		`SELECT CAST(COUNT(*) AS TEXT) FROM user_restore_imports`:                          "0",
 	}
 	for q, want := range checks {
 		var got string

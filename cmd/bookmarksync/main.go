@@ -39,6 +39,7 @@ const usage = `usage:
   bookmarksync backup create --data-dir dir --output archive.zip
   bookmarksync backup verify --file archive.zip
   bookmarksync backup restore --file archive.zip --target-dir new-data-dir
+  bookmarksync backup restore-user --file archive.zip --username NAME --data-dir live-data-dir
 
 administration (all take --data-dir dir; run "<command> --help" for details):
   bookmarksync user create --username NAME --password-stdin [--admin]

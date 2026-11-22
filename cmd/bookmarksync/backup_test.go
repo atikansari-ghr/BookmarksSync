@@ -10,6 +10,7 @@ import (
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/config"
 	"github.com/atikansari-ghr/BookmarksSync/internal/database"
+	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
 )
 
 func TestBackupCLIEndToEndAndExistingTargetProtection(t *testing.T) {
@@ -55,6 +56,44 @@ func TestBackupCLIEndToEndAndExistingTargetProtection(t *testing.T) {
 	}
 	if code := run(context.Background(), []string{"backup", "restore", "--file", archive, "--target-dir", restored}, strings.NewReader(""), io.Discard, &errb, func(string) string { return "" }); code == 0 {
 		t.Fatal("restore accepted existing target")
+	}
+}
+
+func TestBackupRestoreUserCLIRequiresTargetAndArchivedUser(t *testing.T) {
+	ctx := context.Background()
+	archiveDir := t.TempDir()
+	archiveDB, err := database.Open(ctx, filepath.Join(archiveDir, "bookmarksync.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := config.SaveRuntime(config.RuntimePath(archiveDir), config.RuntimeConfig{ListenAddr: "127.0.0.1:8080"}); err != nil {
+		t.Fatal(err)
+	}
+	archive := filepath.Join(t.TempDir(), "backup.zip")
+	if code := run(ctx, []string{"backup", "create", "--data-dir", archiveDir, "--output", archive}, strings.NewReader(""), io.Discard, io.Discard, func(string) string { return "" }); code != 0 {
+		t.Fatalf("create exit %d", code)
+	}
+	if err := archiveDB.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if code := run(ctx, []string{"backup", "restore-user", "--file", archive}, strings.NewReader(""), io.Discard, io.Discard, func(string) string { return "" }); code != 2 {
+		t.Fatalf("missing username exit %d, want usage error", code)
+	}
+	dataDir := t.TempDir()
+	db, err := database.Open(ctx, filepath.Join(dataDir, "bookmarksync.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := identity.New(db.SQL(), identity.WithPasswordCost(64, 1, 1)).CreateUser(ctx, "alice", "long-enough-password", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	if code := run(ctx, []string{"backup", "restore-user", "--file", archive, "--username", "alice", "--data-dir", dataDir}, strings.NewReader(""), io.Discard, &stderr, func(string) string { return "" }); code != 1 || !strings.Contains(stderr.String(), "not found") {
+		t.Fatalf("missing archived user exit %d: %s", code, stderr.String())
 	}
 }
 
