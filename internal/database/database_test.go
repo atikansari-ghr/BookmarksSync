@@ -37,6 +37,71 @@ func TestOpenCreatesDatabaseAtLatestSchema(t *testing.T) {
 	}
 }
 
+func TestOpenReadOnlyDoesNotApplyPendingMigrations(t *testing.T) {
+	ctx := context.Background()
+	path := tempDB(t)
+	db, err := database.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SQL().ExecContext(ctx, `DELETE FROM schema_migrations WHERE version=?`, database.LatestSchemaVersion); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	readOnly, err := database.OpenReadOnly(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	version, err := readOnly.SchemaVersion(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if version != database.LatestSchemaVersion-1 {
+		t.Fatalf("schema version = %d; read-only open applied a migration", version)
+	}
+	if err := readOnly.Close(); err != nil {
+		t.Fatal(err)
+	}
+	verify, err := database.OpenReadOnly(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer verify.Close()
+	version, err = verify.SchemaVersion(ctx)
+	if err != nil || version != database.LatestSchemaVersion-1 {
+		t.Fatalf("persisted schema version = %d, %v", version, err)
+	}
+}
+
+func TestOpenReadOnlyUsesExactSpecialPath(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "snapshot # percent% unicode-书签.db")
+	db, err := database.Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.SQL().ExecContext(ctx, `INSERT INTO app_metadata(key,value) VALUES('readonly-path','exact')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	readOnly, err := database.OpenReadOnly(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer readOnly.Close()
+	var got string
+	if err := readOnly.SQL().QueryRowContext(ctx, `SELECT value FROM app_metadata WHERE key='readonly-path'`).Scan(&got); err != nil {
+		t.Fatal(err)
+	}
+	if got != "exact" {
+		t.Fatalf("read-only special path value = %q", got)
+	}
+}
+
 func TestReopenKeepsDataAndDoesNotReapplyMigrations(t *testing.T) {
 	ctx := context.Background()
 	path := tempDB(t)

@@ -1,0 +1,108 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+
+	"github.com/atikansari-ghr/BookmarksSync/internal/backup"
+	"github.com/atikansari-ghr/BookmarksSync/internal/config"
+	"github.com/atikansari-ghr/BookmarksSync/internal/database"
+	"github.com/atikansari-ghr/BookmarksSync/internal/version"
+)
+
+func backupCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: bookmarksync backup create|verify|restore [options]")
+		return 2
+	}
+	switch args[0] {
+	case "create":
+		fs := flag.NewFlagSet("backup create", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		dataDir := fs.String("data-dir", "data", "server data directory")
+		output := fs.String("output", "", "destination ZIP archive")
+		if err := fs.Parse(args[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			return 2
+		}
+		if *output == "" || fs.NArg() != 0 {
+			fmt.Fprintln(stderr, "backup create requires --output and no positional arguments")
+			return 2
+		}
+		if _, err := config.LoadRuntime(config.RuntimePath(*dataDir)); err != nil {
+			fmt.Fprintln(stderr, "backup create requires a server runtime config")
+			return 1
+		}
+		databasePath := filepath.Join(*dataDir, "bookmarksync.db")
+		info, err := os.Lstat(databasePath)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			fmt.Fprintln(stderr, "backup create requires an existing regular database file")
+			return 1
+		}
+		db, err := database.OpenReadOnly(ctx, databasePath)
+		if err != nil {
+			fmt.Fprintf(stderr, "backup create: %v\n", err)
+			return 1
+		}
+		defer db.Close()
+		result, err := backup.Create(ctx, backup.Options{DB: db, DataDir: *dataDir, Output: *output, Build: version.Current()})
+		if err != nil {
+			fmt.Fprintf(stderr, "backup create: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "Backup created: %s (%d bytes, schema %d)\n", result.Path, result.Size, result.Manifest.SchemaVersion)
+		return 0
+	case "verify":
+		fs := flag.NewFlagSet("backup verify", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		archivePath := fs.String("file", "", "backup archive to verify")
+		if err := fs.Parse(args[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			return 2
+		}
+		if *archivePath == "" || fs.NArg() != 0 {
+			fmt.Fprintln(stderr, "backup verify requires --file and no positional arguments")
+			return 2
+		}
+		manifest, err := backup.Inspect(ctx, *archivePath)
+		if err != nil {
+			fmt.Fprintf(stderr, "backup verify: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "Backup verified: format %d, schema %d, %d files, created %s\n", manifest.FormatVersion, manifest.SchemaVersion, len(manifest.Entries), manifest.CreatedAt.UTC().Format("2006-01-02 15:04:05Z"))
+		return 0
+	case "restore":
+		fs := flag.NewFlagSet("backup restore", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		archivePath := fs.String("file", "", "backup archive to restore")
+		target := fs.String("target-dir", "", "new, absent server data directory")
+		if err := fs.Parse(args[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return 0
+			}
+			return 2
+		}
+		if *archivePath == "" || *target == "" || fs.NArg() != 0 {
+			fmt.Fprintln(stderr, "backup restore requires --file and --target-dir")
+			return 2
+		}
+		if err := backup.Restore(ctx, *archivePath, *target); err != nil {
+			fmt.Fprintf(stderr, "backup restore: %v\n", err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "Backup restored to %s\n", *target)
+		return 0
+	default:
+		fmt.Fprintln(stderr, "usage: bookmarksync backup create|verify|restore [options]")
+		return 2
+	}
+}

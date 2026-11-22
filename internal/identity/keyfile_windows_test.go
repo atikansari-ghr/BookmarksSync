@@ -99,6 +99,34 @@ func TestInstanceKeyFileHasOwnerOnlyProtectedACLOnWindows(t *testing.T) {
 	}
 }
 
+func TestLegacyDefaultOwnerInstanceKeyRemainsLoadable(t *testing.T) {
+	dir := t.TempDir()
+	want, err := identity.LoadOrCreateInstanceKey(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, identity.InstanceKeyFile)
+	adminSID, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := windows.SECURITY_INFORMATION(windows.OWNER_SECURITY_INFORMATION)
+	if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, info, adminSID, nil, nil, nil); err != nil {
+		t.Skipf("cannot simulate an elevated legacy owner: %v", err)
+	}
+	got, err := identity.LoadOrCreateInstanceKey(dir)
+	if err != nil {
+		t.Fatalf("legacy protected key was rejected: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatal("migration changed instance key contents")
+	}
+	protected, aces := fileACEs(t, path)
+	if !protected || len(aces) != 1 || aces[0].sid != currentSID(t).String() {
+		t.Fatalf("migrated ACL is not current-user-only: protected=%v aces=%+v", protected, aces)
+	}
+}
+
 func TestInstanceKeyWithBroadACLFailsClosedOnWindows(t *testing.T) {
 	for name, extra := range map[string]string{
 		"everyone read": "(A;;FR;;;WD)",

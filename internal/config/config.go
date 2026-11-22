@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -43,24 +44,67 @@ type Config struct {
 // args are the arguments following the "serve" command.
 func Parse(args []string, getenv func(string) string) (Config, error) {
 	cfg := Config{ListenAddr: DefaultListenAddr, DataDir: DefaultDataDir}
-	if v := getenv(EnvListen); v != "" {
-		cfg.ListenAddr = v
-	}
 	if v := getenv(EnvDataDir); v != "" {
 		cfg.DataDir = v
 	}
-	publicURL := getenv(EnvPublicURL)
+	// Resolve the data directory before applying other options so the saved
+	// runtime settings form the default layer beneath environment and CLI values.
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--" {
+			break
+		}
+		if (args[i] == "--data-dir" || args[i] == "-data-dir") && i+1 < len(args) {
+			i++
+			cfg.DataDir = args[i]
+		} else if strings.HasPrefix(args[i], "--data-dir=") {
+			cfg.DataDir = strings.TrimPrefix(args[i], "--data-dir=")
+		} else if strings.HasPrefix(args[i], "-data-dir=") {
+			cfg.DataDir = strings.TrimPrefix(args[i], "-data-dir=")
+		}
+	}
+	if len(args) > 0 && (args[len(args)-1] == "--data-dir" || args[len(args)-1] == "-data-dir") {
+		return Config{}, errors.New("data directory flag requires a value")
+	}
+	if cfg.DataDir == "" {
+		return Config{}, errors.New("data directory must not be empty")
+	}
+	runtimeCfg, runtimeErr := LoadRuntime(RuntimePath(cfg.DataDir))
+	if runtimeErr != nil && !errors.Is(runtimeErr, os.ErrNotExist) {
+		return Config{}, fmt.Errorf("load runtime configuration: %w", runtimeErr)
+	}
+	if runtimeErr == nil {
+		cfg.ListenAddr = runtimeCfg.ListenAddr
+	}
+	if v := getenv(EnvListen); v != "" {
+		cfg.ListenAddr = v
+	}
+	publicURL := ""
+	if runtimeErr == nil {
+		publicURL = runtimeCfg.PublicOrigin
+	}
+	if v := getenv(EnvPublicURL); v != "" {
+		publicURL = v
+	}
+	disableOrigin := false
+	disableGoogle := false
+	disableAuthentik := false
 
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.StringVar(&cfg.ListenAddr, "listen", cfg.ListenAddr, "address to listen on")
 	fs.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "directory for the database and local data")
 	fs.StringVar(&publicURL, "public-url", publicURL, "public origin of the web interface")
+	fs.BoolVar(&disableOrigin, "disable-public-url", false, "disable browser sign-in and saved identity providers")
+	fs.BoolVar(&disableGoogle, "disable-oidc-google", false, "disable the saved Google identity provider")
+	fs.BoolVar(&disableAuthentik, "disable-oidc-authentik", false, "disable the saved Authentik identity provider")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, fmt.Errorf("invalid arguments: %w", err)
 	}
 	if fs.NArg() > 0 {
 		return Config{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
+	if disableOrigin {
+		publicURL = ""
 	}
 	if publicURL != "" {
 		o, err := ParsePublicOrigin(publicURL)
@@ -69,7 +113,53 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 		}
 		cfg.PublicOrigin = o
 	}
-	providers, err := parseOIDC(getenv, cfg.PublicOrigin)
+	providerDefaults := map[string]OIDCProvider{}
+	if runtimeErr == nil {
+		for _, provider := range runtimeCfg.OIDCProviders {
+			providerDefaults[provider.ID] = provider
+		}
+	}
+	googleEnvSet := getenv(EnvOIDCGoogleClientID) != "" || getenv(EnvOIDCGoogleClientSecret) != ""
+	authentikEnvSet := getenv(EnvOIDCAuthentikIssuer) != "" || getenv(EnvOIDCAuthentikClientID) != "" || getenv(EnvOIDCAuthentikClientSecret) != ""
+	if disableOrigin && (googleEnvSet || authentikEnvSet) {
+		return Config{}, errors.New("OIDC environment settings cannot be used with --disable-public-url")
+	}
+	providers, err := parseOIDC(func(key string) string {
+		if disableOrigin || (disableGoogle && (key == EnvOIDCGoogleClientID || key == EnvOIDCGoogleClientSecret)) || (disableAuthentik && (key == EnvOIDCAuthentikIssuer || key == EnvOIDCAuthentikClientID || key == EnvOIDCAuthentikClientSecret)) {
+			return ""
+		}
+		if value := getenv(key); value != "" {
+			return value
+		}
+		if (googleEnvSet && (key == EnvOIDCGoogleClientID || key == EnvOIDCGoogleClientSecret)) || (authentikEnvSet && (key == EnvOIDCAuthentikIssuer || key == EnvOIDCAuthentikClientID || key == EnvOIDCAuthentikClientSecret)) {
+			return ""
+		}
+		for _, p := range providerDefaults {
+			switch key {
+			case EnvOIDCGoogleClientID:
+				if p.ID == "google" {
+					return p.ClientID
+				}
+			case EnvOIDCGoogleClientSecret:
+				if p.ID == "google" {
+					return p.ClientSecret
+				}
+			case EnvOIDCAuthentikIssuer:
+				if p.ID == "authentik" {
+					return p.Issuer
+				}
+			case EnvOIDCAuthentikClientID:
+				if p.ID == "authentik" {
+					return p.ClientID
+				}
+			case EnvOIDCAuthentikClientSecret:
+				if p.ID == "authentik" {
+					return p.ClientSecret
+				}
+			}
+		}
+		return ""
+	}, cfg.PublicOrigin)
 	if err != nil {
 		return Config{}, err
 	}

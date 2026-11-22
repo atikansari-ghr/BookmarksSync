@@ -24,11 +24,11 @@ const (
 // OIDCProvider is one configured OpenID Connect provider. ClientSecret must never be
 // logged or shown.
 type OIDCProvider struct {
-	ID           string // "google" or "authentik"; used in callback paths
-	Name         string // display name
-	Issuer       string // exact issuer URL
-	ClientID     string
-	ClientSecret string
+	ID           string `json:"id"` // "google" or "authentik"; used in callback paths
+	Name         string `json:"name"`
+	Issuer       string `json:"issuer"`
+	ClientID     string `json:"clientId"`
+	ClientSecret string `json:"clientSecret"`
 }
 
 // String hides the client secret if a provider is ever formatted.

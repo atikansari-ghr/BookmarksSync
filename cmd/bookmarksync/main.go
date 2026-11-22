@@ -33,6 +33,9 @@ const usage = `usage:
   bookmarksync --version
   bookmarksync --help
   bookmarksync serve [--listen host:port] [--data-dir dir] [--public-url URL]
+  bookmarksync backup create --data-dir dir --output archive.zip
+  bookmarksync backup verify --file archive.zip
+  bookmarksync backup restore --file archive.zip --target-dir new-data-dir
 
 administration (all take --data-dir dir; run "<command> --help" for details):
   bookmarksync user create --username NAME --password-stdin [--admin]
@@ -52,6 +55,7 @@ shown again.
 `
 
 const serveUsage = `usage: bookmarksync serve [--listen host:port] [--data-dir dir] [--public-url URL]
+              [--disable-public-url] [--disable-oidc-google] [--disable-oidc-authentik]
 
   --listen      address to listen on (default 127.0.0.1:8080, env BOOKMARKSYNC_LISTEN)
   --data-dir    directory for the database (default ./data, env BOOKMARKSYNC_DATA_DIR)
@@ -60,6 +64,9 @@ const serveUsage = `usage: bookmarksync serve [--listen host:port] [--data-dir d
                 browser sign-in under /api/v1/auth (password, TOTP, and passkeys when
                 the host is a domain name) and the sign-in pages under /auth/;
                 unset leaves both disabled.
+  --disable-public-url       clear a saved public origin and saved OIDC settings
+  --disable-oidc-google       remove the saved Google provider on startup
+  --disable-oidc-authentik    remove the saved Authentik provider on startup
 
 OpenID Connect sign-in (requires --public-url; environment variables only, so client
 secrets never appear in process listings):
@@ -108,6 +115,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return 0
 	case "user", "credential", "share":
 		return admin(ctx, args, stdin, stdout, stderr, getenv)
+	case "backup":
+		return backupCommand(ctx, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "bookmarksync: unknown command %q\n%s", args[0], usage)
 		return 2
@@ -118,6 +127,9 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 	cfg, err := config.Parse(args, getenv)
 	if err != nil {
 		return err
+	}
+	if err := config.SaveRuntime(config.RuntimePath(cfg.DataDir), config.RuntimeConfig{ListenAddr: cfg.ListenAddr, PublicOrigin: cfg.PublicOrigin, OIDCProviders: cfg.OIDCProviders}); err != nil {
+		return fmt.Errorf("save runtime configuration: %w", err)
 	}
 	log := slog.New(slog.NewTextHandler(stderr, nil))
 

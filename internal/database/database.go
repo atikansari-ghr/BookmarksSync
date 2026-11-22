@@ -4,13 +4,14 @@ package database
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
+	"github.com/atikansari-ghr/BookmarksSync/internal/securefile"
 	_ "modernc.org/sqlite" // pure-Go SQLite driver
 )
 
@@ -27,19 +28,32 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+	if err := securefile.MkdirAll(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("create data directory: %w", err)
 	}
-	// Create the file ourselves so it is never world-readable, even briefly.
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("create database file: %w", err)
+	info, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		f, createErr := securefile.Create(path)
+		if createErr != nil {
+			return nil, fmt.Errorf("create database file: %w", createErr)
+		}
+		if closeErr := f.Close(); closeErr != nil {
+			_ = os.Remove(path)
+			return nil, fmt.Errorf("close database file: %w", closeErr)
+		}
+	} else if err != nil {
+		return nil, fmt.Errorf("inspect database file: %w", err)
+	} else if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("database must be a regular file")
 	}
-	f.Close()
-	// OpenFile's mode only applies to new files; tighten a pre-existing one.
-	// Windows ignores POSIX bits, so a failure there is not actionable.
-	if err := os.Chmod(path, 0o600); err != nil && runtime.GOOS != "windows" {
-		return nil, fmt.Errorf("restrict database file permissions: %w", err)
+	info, err = os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("inspect database file: %w", err)
+	}
+	if err := securefile.Check(path, info); err != nil {
+		if restrictErr := securefile.RestrictFile(path); restrictErr != nil {
+			return nil, fmt.Errorf("restrict database file permissions: %w", restrictErr)
+		}
 	}
 
 	// Pragmas are passed in the DSN so every pooled connection gets them.

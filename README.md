@@ -25,6 +25,7 @@ Implemented:
 - Sign-in and account-security pages under `/auth/`, built with React/TypeScript and embedded in the binary. They cover passkeys, the authenticator app, recovery codes, linked accounts, active sessions, personal API tokens, and Floccus connections.
 - Bookmark workspace pages at `/dashboard`, `/bookmarks`, `/duplicates`, and `/admin`; these include configurable dashboard widgets and themes, folder/bookmark organization, duplicate review, and public-only link checks.
 - Admin health and account usage views, per-account theme defaults, sanitized activity, editable login appearance, and private PNG/JPEG/WebP logo/background uploads (up to 2 MiB).
+- Manual compressed full-system ZIP backup, checksum/SQLite verification, and safe restore into a new data directory; see [docs/backup-restore.md](docs/backup-restore.md).
 - User instructions for the bookmark workspace and admin pages: [docs/workspace-guide.md](docs/workspace-guide.md).
 - The versioned `/api/v1` JSON API, documented in [api/openapi.yaml](api/openapi.yaml):
   - profile, password and settings;
@@ -40,7 +41,7 @@ Implemented:
 
 Still planned or awaiting acceptance:
 - Login Flow v2 (the floccus "Connect" wizard; use profile import for now);
-- trusted-proxy and country rules, scheduled backups and restore;
+- trusted-proxy and country rules, scheduled weekly/monthly backups, retention, external destinations, optional encryption, and per-user recovery;
 - production single-command installers and admin-triggered updates;
 - notifications and remaining browser/organizer acceptance checks.
 

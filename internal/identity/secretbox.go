@@ -43,6 +43,34 @@ func LoadOrCreateInstanceKey(dataDir string) ([]byte, error) {
 	return loadInstanceKey(path)
 }
 
+// RestoreInstanceKey installs a previously validated instance key using the
+// platform's private-file creation rules. It refuses to replace any existing key.
+func RestoreInstanceKey(dataDir string, key []byte) error {
+	if err := validKey(key); err != nil {
+		return fmt.Errorf("instance key is malformed: %w", err)
+	}
+	if fi, err := os.Stat(dataDir); err != nil || !fi.IsDir() {
+		return fmt.Errorf("instance key: data directory %q is not available", dataDir)
+	}
+	path := filepath.Join(dataDir, InstanceKeyFile)
+	f, err := createPrivateFile(path)
+	if err != nil {
+		return fmt.Errorf("instance key: cannot create private restored key: %w", err)
+	}
+	_, writeErr := f.Write(key)
+	syncErr := f.Sync()
+	closeErr := f.Close()
+	if writeErr != nil || syncErr != nil || closeErr != nil {
+		_ = os.Remove(path)
+		return errors.New("instance key: cannot write restored key")
+	}
+	if _, err := loadInstanceKey(path); err != nil {
+		_ = os.Remove(path)
+		return fmt.Errorf("instance key: restored key is not private: %w", err)
+	}
+	return nil
+}
+
 func loadInstanceKey(path string) ([]byte, error) {
 	fi, err := os.Lstat(path)
 	if err != nil {

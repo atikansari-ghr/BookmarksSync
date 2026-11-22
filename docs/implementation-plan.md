@@ -6,7 +6,7 @@
 
 ## Global constraints
 - User identity/attribution and MIT per spec. Never commit social drafts.
-- Work on build/bookmarksync in the user-selected workspace; do not force-push, mutate global settings, expose secrets, or deploy before tests.
+- Work on `build/bookmarksync` in the user-selected workspace; do not force-push, mutate global settings, or expose secrets. The user authorized isolated testing on LXC `192.168.10.226`; never deploy to production without separate authorization.
 - Do not represent unfinished features as working. No hardcoded demo authentication or fake successful operations.
 - Existing floccus compatibility is a release gate. No substantial UI until compatibility decision.
 - Tests cover behavior and failure paths; use failing regression tests before behavior fixes.
@@ -14,20 +14,13 @@
 ## Milestones and acceptance
 - [x] 1 Foundation: connect remote preserving files; portable Go tooling; Go module, health/readiness/version endpoints, SQLite migrations/store, CLI serve, test/build CI, MIT, README. Verify persistence/reopen, graceful shutdown, JSON errors, Windows and Linux builds. Accepted at 9b90baa after independent review and checks; Ubuntu/Windows CI tests passed.
 - [x] 2 Compatibility: Nextcloud floccus capabilities/bookmark/folder/order/hash/lock APIs, per-connection credentials, roots, permissions and protocol tests. Negative wire folder IDs and the Floccus DELETE-only same-folder duplicate policy are implemented; two real-server browser matrices passed 72/72 each in Chrome, Edge, Brave, and Firefox. Completed in `8e884eb` through `b0eab92`; see `docs/floccus-compatibility.md`.
-- [ ] 3 Identity/API: admin bootstrap, password/passkeys/TOTP/recovery, OIDC linking, private ownership/sharing, revocable sessions/tokens, /api/v1 + OpenAPI. Test isolation/revocation and auth failures.
-  - **Status:** implemented on `build/bookmarksync` (`fd22d4b` through the Task 7 acceptance commit) per `docs/design/identity-api.md` and `docs/superpowers/plans/2026-11-17-identity-api.md`. Guide: `docs/authentication.md`.
-  - **Verified locally:**
-    - a fresh database and a real milestone-2 → current upgrade, where the existing Floccus credential still syncs;
-    - Go tests, vet, govulncheck, and CGO-free Linux/Windows builds;
-    - the web UI tests and a real-Chromium sign-in/factor smoke;
-    - the Floccus browser matrix.
-  - **Still open:**
-    - GitHub-hosted CI and the configured Ubuntu race job (the branch has not been pushed); `go test -race ./...` did pass locally on Windows/amd64 with MSYS2 GCC 16.2;
-    - review and acceptance of per-user bookmark-level Favorites (migration 0004, `favorite` field/filter, `PUT`/`DELETE /api/v1/bookmarks/{id}/favorite`), implemented locally and uncommitted; see `docs/superpowers/plans/2026-11-18-bookmark-favorites.md`;
-    - real Google/Authentik, non-Chromium passkey, and reverse-proxy checks.
-- [ ] 4 Workspace/UI: native-style organizer and dashboards matching references; CRUD/multi-select/drag/drop/search/tags/favorites/import/export, duplicates, SSRF-safe link checks, Trash, persisted widgets/theme/branding. Browser/accessibility and negative authorization tests.
-  - **Progress:** Dashboard summary/recent-changes API, scoped duplicate-review API, atomic placement-aware bulk-move API, organizer/duplicate-review UI, public-only link-check backend and organizer controls, configurable dashboard widgets, user theme preferences, admin health/settings/defaults/activity, and login branding with bounded image uploads are implemented locally and uncommitted. Full Go (including vet) and web suites pass; web typecheck/build and Linux/Windows builds pass. Chromium exercised login/security, admin health, branding upload, and safe asset serving; desktop and phone screenshots were reviewed. Real API/stock-Floccus organizer verification, real-browser link-check/dashboard smoke, and link-check job/result retention remain open; see `docs/superpowers/plans/2026-11-17-workspace-ui.md`.
+- [x] 3 Identity/API: admin bootstrap, password/passkeys/TOTP/recovery, OIDC linking, private ownership/sharing, revocable sessions/tokens, /api/v1 + OpenAPI. Implemented and committed through `fa78de8`; see `docs/design/identity-api.md`, `docs/superpowers/plans/2026-11-17-identity-api.md`, and `docs/authentication.md`.
+  - Verified with Go tests/vet, Linux/Windows builds, real Chromium sign-in/security/admin smoke, and stock-Floccus browser sync. Real Google/Authentik credentials and public reverse-proxy OIDC/passkey checks depend on operator configuration; GitHub-hosted CI remains pending until an authorized push.
+- [x] 4 Workspace/UI: organizer, dashboards, CRUD/multi-select/drag/drop/search/tags/favorites/import/export, duplicates, SSRF-safe link checks, Trash, persisted widgets/themes/branding. Implemented and committed through `a14bb00`; see `docs/superpowers/plans/2026-11-17-workspace-ui.md`, `docs/superpowers/plans/2026-11-18-bookmark-favorites.md`, and `docs/workspace-guide.md`.
+  - Go/web tests, vet, typecheck/build, real UI smoke, and the current stock-Floccus Chrome/Edge/Brave/Firefox sync matrix passed. Live checks against operator-configured exclusions and public reverse-proxy workflows remain operator validation.
 - [ ] 5 Operations: consistent snapshots, weekly/monthly destination backup/encryption/retention, full and user recovery, notifications, country access/trusted-proxy rules. Recovery to clean instance, corrupt archive, failed target, geo spoofing tests.
+  - **Delivered first slice:** manual compressed full-system archive, verify, and clean-directory restore. Includes SQLite online snapshots, runtime/OIDC settings and secrets, instance key, referenced branding assets, integrity/schema checks, and private no-replace publication. Commands and limits: `docs/backup-restore.md`; implementation notes: `docs/superpowers/plans/2026-11-22-backup-core.md`.
+  - **Still pending:** scheduled weekly/monthly jobs, retention and NAS/cloud destinations, optional encryption, user-only recovery, geo/trusted-proxy rules, notifications, and admin UI. Do not mark Operations complete until these scoped follow-ups and their acceptance checks are delivered.
 - [ ] 6 Distribution: Debian/LXC/Docker/Windows installers and maintenance, successful-main CI packages with provenance/admin update confirmation/rollback; complete documentation. Each platform installs/upgrades/repairs/restores independently.
 
 ## Review focus
@@ -41,4 +34,4 @@
 Keep scoped briefs, reviews, and progress in ignored .superpowers/sdd/bookmarksync/. Implementers follow their brief without spawning extra workers, pushing, deploying, or changing unrelated settings. Report changed files, test commands/results, and concerns; independently inspect and run acceptance checks before advancement. Security prompts require session authorization review, never bypass modes.
 
 ## Verification
-Backend: go test ./..., go vet ./..., focused integration suites, Linux/Windows cross-builds. Frontend: typecheck/unit/build and browser workflows. Real floccus separately. CI must not claim unavailable platform checks ran. LXC deployment awaits authorized SSH credentials; local independent work continues.
+Backend: go test ./..., go vet ./..., focused integration suites, Linux/Windows cross-builds. Frontend: typecheck/unit/build and browser workflows. Real Floccus separately. CI must not claim unavailable platform checks ran. An isolated build is running on the authorized test LXC; only that instance may be changed without fresh production authorization.

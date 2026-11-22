@@ -51,7 +51,7 @@ func (a *API) brandingAssetExists(id string) bool {
 
 // Remove only generated assets that are no longer referenced by either login
 // setting. Callers serialize settings changes with assetMu to prevent races with
-// another upload or settings update. Callers must hold assetMu through cleanup.
+// another upload or settings update. Callers must hold it through cleanup.
 func (a *API) cleanupUnreferencedBrandingAssets(candidates []string, settings map[string]string) {
 	for _, id := range candidates {
 		if !assetID(id) || brandingAssetReferenced(id, settings) {
