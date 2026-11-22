@@ -27,6 +27,9 @@ func makeTestBackup(t *testing.T) (string, string) {
 	if _, err := db.SQL().Exec(`INSERT INTO app_metadata(key,value) VALUES('archive-test','preserved')`); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.SQL().Exec(`INSERT INTO system_settings(key,value,updated_at) VALUES('network.geo-mode','block',1),('network.geo-countries','US',1)`); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := identity.LoadOrCreateInstanceKey(dir); err != nil {
 		t.Fatal(err)
 	}
@@ -172,6 +175,16 @@ func TestRestoreCreatesNewDataDirectory(t *testing.T) {
 	}
 	if got != "preserved" {
 		t.Fatalf("restored data = %q", got)
+	}
+	var geoMode, countries string
+	if err := db.SQL().QueryRow(`SELECT value FROM system_settings WHERE key='network.geo-mode'`).Scan(&geoMode); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SQL().QueryRow(`SELECT value FROM system_settings WHERE key='network.geo-countries'`).Scan(&countries); err != nil {
+		t.Fatal(err)
+	}
+	if geoMode != "block" || countries != "US" {
+		t.Fatalf("restored geo policy = %q/%q", geoMode, countries)
 	}
 	if _, err := config.LoadRuntime(config.RuntimePath(target)); err != nil {
 		t.Fatal(err)

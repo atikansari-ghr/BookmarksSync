@@ -55,11 +55,11 @@ Manager, Pangolin or Cloudflare Tunnel) in front of it, and:
 3. Keep `--listen` on loopback or a private interface that only the proxy can reach.
 4. Don't cache responses. Auth and API responses already send `Cache-Control: no-store`.
 
-**Known limitation: there is no trusted-proxy support yet** (planned for milestone 5). Rate
-limits are keyed by the direct TCP peer, so behind a proxy all clients share the proxy's address.
-The per-peer limits in §10 then apply to the whole site, while per-account limits still apply.
-This can reduce availability during an attack, but forged forwarding headers can't bypass a
-limit.
+Configure `BOOKMARKSYNC_TRUSTED_PROXIES` with the proxy peers that connect to BookmarksSync.
+For those peers the server accepts only a valid `X-Forwarded-For` chain and uses the resolved
+visitor address for country checks and authentication rate limits. Configure each proxy hop to
+append its connecting peer. Forwarding headers from untrusted peers are ignored. Country policy,
+GeoIP database setup, and management CIDRs are described in [docs/network-access.md](network-access.md).
 
 ### Instance key (back it up)
 

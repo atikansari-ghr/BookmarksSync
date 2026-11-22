@@ -26,6 +26,7 @@ import (
 	"github.com/atikansari-ghr/BookmarksSync/internal/health"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
 	"github.com/atikansari-ghr/BookmarksSync/internal/linkcheck"
+	"github.com/atikansari-ghr/BookmarksSync/internal/network"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
 	"github.com/atikansari-ghr/BookmarksSync/internal/version"
 	"github.com/atikansari-ghr/BookmarksSync/internal/webui"
@@ -50,6 +51,7 @@ administration (all take --data-dir dir; run "<command> --help" for details):
   bookmarksync share grant --owner NAME --folder-id ID --user NAME --mode view|edit
   bookmarksync share revoke --owner NAME --folder-id ID --user NAME
   bookmarksync share list --owner NAME
+  bookmarksync network reset-geo
 
 Passwords are only ever read from standard input (--password-stdin), never from
 arguments. A credential's secret is printed once on standard output and cannot be
@@ -115,7 +117,7 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 			return 1
 		}
 		return 0
-	case "user", "credential", "share":
+	case "user", "credential", "share", "network":
 		return admin(ctx, args, stdin, stdout, stderr, getenv)
 	case "backup":
 		return backupCommand(ctx, args[1:], stdout, stderr)
@@ -180,6 +182,28 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 		}
 	}
 	ids := identity.New(db.SQL(), idOpts...)
+	var geoDB *network.CountryDatabase
+	var countryLookup network.CountryLookup
+	if cfg.GeoIPDBPath == "" {
+		log.Warn("GeoIP country database is not configured; all clients outside configured management CIDRs will be denied")
+	} else if opened, err := network.OpenCountryDatabase(cfg.GeoIPDBPath); err != nil {
+		log.Warn("GeoIP country database unavailable; all clients outside configured management CIDRs will be denied", "error", err.Error())
+	} else {
+		geoDB = opened
+		countryLookup = geoDB
+		defer geoDB.Close()
+		log.Info("GeoIP country database loaded", "build_time", geoDB.BuildTime().UTC().Format(time.RFC3339))
+	}
+	networkGate := &network.Gate{
+		TrustedProxies: cfg.TrustedProxies, ManagementCIDRs: cfg.ManagementCIDRs, Lookup: countryLookup, Logger: log,
+		LoadPolicy: func(policyCtx context.Context) (network.Policy, error) {
+			settings, err := ids.SystemSettings(policyCtx)
+			if err != nil {
+				return network.Policy{}, err
+			}
+			return network.PolicyFromSettings(settings)
+		},
+	}
 	bm := bookmarks.New(db.SQL())
 	adapter := floccus.New(ids, bm, log)
 	register := []func(server.Registrar){adapter.Register}
@@ -205,7 +229,8 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 		go lc.Run(ctx)
 		apiH, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupAPI{manager: backupManager}, AssetMu: assetMu, Logger: log, Health: health.New(cfg.DataDir), Readiness: db, SyncErrors: adapter.SyncErrors, AssetDir: filepath.Join(cfg.DataDir, "branding"),
 			System: api.SystemInfo{Version: version.Current().Version, PublicOrigin: cfg.PublicOrigin,
-				PasskeysEnabled: passkeysEnabled, OIDCProviders: configuredOIDCNames(cfg.OIDCProviders)}})
+				PasskeysEnabled: passkeysEnabled, OIDCProviders: configuredOIDCNames(cfg.OIDCProviders),
+				GeoIPAvailable: geoDB != nil, GeoIPBuildTime: geoBuildTime(geoDB), TrustedProxyCount: len(cfg.TrustedProxies)}})
 		if err != nil {
 			_ = ln.Close()
 			return err
@@ -235,9 +260,10 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 	}()
 	go purgeTrashLoop(ctx, bm, log)
 	h := server.NewHandler(server.Options{
-		Version:   version.Current(),
-		Ready:     db,
-		BodyLimit: api.BodyLimit,
+		Version:       version.Current(),
+		Ready:         db,
+		BodyLimit:     api.BodyLimit,
+		NetworkAccess: networkGate,
 		Register: func(r server.Registrar) {
 			for _, reg := range register {
 				reg(r)
@@ -263,6 +289,13 @@ func configuredOIDCNames(providers []config.OIDCProvider) []string {
 		names = append(names, p.ID)
 	}
 	return names
+}
+
+func geoBuildTime(db *network.CountryDatabase) time.Time {
+	if db == nil {
+		return time.Time{}
+	}
+	return db.BuildTime()
 }
 
 func purgeTrashLoop(ctx context.Context, bm *bookmarks.Service, log *slog.Logger) {

@@ -22,6 +22,7 @@ Implemented:
   - accounts created by an administrator only;
   - server-side sessions, revocable per device (12 hours idle, 30 days absolute);
   - CSRF and exact-origin checks, and recent reauthentication for sensitive changes.
+- A country access gate applies to every HTTP route, including Floccus and health checks. Provision a MaxMind Country database or explicitly configure management CIDRs: without either, all requests (including loopback) are denied. See [docs/network-access.md](docs/network-access.md).
 - Sign-in and account-security pages under `/auth/`, built with React/TypeScript and embedded in the binary. They cover passkeys, the authenticator app, recovery codes, linked accounts, active sessions, personal API tokens, and Floccus connections.
 - Bookmark workspace pages at `/dashboard`, `/bookmarks`, `/duplicates`, and `/admin`; these include configurable dashboard widgets and themes, folder/bookmark organization, duplicate review, and public-only link checks.
 - Admin health and account usage views, per-account theme defaults, sanitized activity, editable login appearance, and private PNG/JPEG/WebP logo/background uploads (up to 2 MiB).
@@ -59,10 +60,12 @@ Node.js is only needed to:
 ## Run
 
 ```sh
-go run ./cmd/bookmarksync serve --listen 127.0.0.1:8080 --data-dir ./data
+BOOKMARKSYNC_MANAGEMENT_CIDRS=127.0.0.0/8,::1/128 go run ./cmd/bookmarksync serve --listen 127.0.0.1:8080 --data-dir ./data
 ```
 
 Defaults: listen on `127.0.0.1:8080` (loopback only) and store data in `./data`. `BOOKMARKSYNC_LISTEN` and `BOOKMARKSYNC_DATA_DIR` set the defaults; flags override them. The data directory is created with mode `0700` and the database file `0600` on POSIX systems (Windows ignores these bits). The database must live on local disk.
+
+**Upgrade note:** country gating is active immediately. Before upgrading, provision `BOOKMARKSYNC_GEOIP_DB` or set `BOOKMARKSYNC_MANAGEMENT_CIDRS` to the exact local/proxy client ranges that must remain reachable. An absent database with no management range blocks every request; private and loopback clients are not exempt automatically.
 
 Provision a user and an app credential (the password comes from standard input, the secret is printed once and never again):
 
@@ -94,6 +97,7 @@ go run ./cmd/bookmarksync serve --data-dir ./data --public-url https://bookmarks
 
 [docs/authentication.md](docs/authentication.md) covers:
 - reverse-proxy requirements;
+- trusted proxy and country access setup in [docs/network-access.md](docs/network-access.md);
 - provider setup;
 - passkey domain rules;
 - TOTP and recovery codes;
@@ -144,6 +148,7 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X $V
 - `internal/bookmarks` — SQL repositories and transactional bookmark/folder/share/lock operations (protocol-agnostic)
 - `internal/floccus` — Nextcloud-Bookmarks wire adapter for floccus
 - `internal/backup` — compressed full-system snapshots, destination drivers, schedule and retention manager
+- `internal/network` — trusted-proxy client resolution, offline country checks, and request-wide access policy
 - `internal/server` — HTTP handler, JSON helpers, graceful `Serve`
 - `internal/version` — build information
 - `docs/floccus-compatibility.md` — what is implemented and which evidence exists for it
@@ -153,9 +158,9 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X $V
 
 - POSIX file-permission tests run only on Linux/macOS (CI Linux job); on Windows they are skipped.
 - The server speaks plain HTTP and is intended to sit behind a TLS-terminating proxy.
-- There is no trusted-proxy support yet. Forwarded headers are ignored, so behind a proxy the per-peer rate limits apply to all clients together.
+- Trusted proxies are supported when their CIDRs are explicitly configured; only their `X-Forwarded-For` chain is used. See [docs/network-access.md](docs/network-access.md).
 - Floccus authentication is per request (HTTP Basic with a per-device app secret) and is independent of website sessions and API tokens.
-- Administration happens through the CLI on the server host, or through the admin `/api/v1` routes. There are no admin web pages yet, and no CLI password reset.
+- Administration is available through the web interface and CLI. Password/factor resets and emergency geo-policy recovery remain host-side operations.
 - Floccus browser compatibility is verified only for the flows listed in the compatibility guide.
 - Passkeys and provider sign-in were tested in Chromium with a virtual authenticator and a local fake OpenID provider only. See the untested list in `docs/authentication.md`.
 

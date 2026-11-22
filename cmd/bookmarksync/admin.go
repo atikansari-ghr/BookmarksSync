@@ -14,6 +14,7 @@ import (
 	"github.com/atikansari-ghr/BookmarksSync/internal/config"
 	"github.com/atikansari-ghr/BookmarksSync/internal/database"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
+	"github.com/atikansari-ghr/BookmarksSync/internal/network"
 )
 
 // errUsage marks a mistake in how a command was invoked (exit status 2).
@@ -102,6 +103,9 @@ var adminGroups = map[string][]adminCmd{
 		{name: "list", summary: "list the grants an owner has made",
 			flags: "  --owner NAME\n",
 			setup: func(fs *flag.FlagSet, o *cmdOpts) { fs.StringVar(&o.owner, "owner", "", "") }, run: shareList},
+	},
+	"network": {
+		{name: "reset-geo", summary: "restore the default country access policy (allow Saudi Arabia and India)", setup: func(fs *flag.FlagSet, o *cmdOpts) {}, run: networkResetGeo},
 	},
 }
 
@@ -231,6 +235,20 @@ func userCreate(e *adminEnv, _ *flag.FlagSet) error {
 		return err
 	}
 	fmt.Fprintf(e.stdout, "created user %s (id %d, admin=%t)\n", u.Username, u.ID, u.IsAdmin)
+	return nil
+}
+
+func networkResetGeo(e *adminEnv, _ *flag.FlagSet) error {
+	mode, countries := "allow", "IN,SA"
+	if _, err := e.ids.UpdateSystemSettings(e.ctx, map[string]*string{
+		network.SettingGeoMode: &mode, network.SettingGeoCountries: &countries,
+	}); err != nil {
+		return err
+	}
+	if err := e.ids.RecordSystemActivity(e.ctx, "system_settings_updated", "system", 0); err != nil {
+		return err
+	}
+	fmt.Fprintln(e.stdout, "country access policy reset to allow IN,SA")
 	return nil
 }
 

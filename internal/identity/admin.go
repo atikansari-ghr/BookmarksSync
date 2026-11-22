@@ -10,6 +10,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/atikansari-ghr/BookmarksSync/internal/network"
 	_ "time/tzdata" // IANA zones for ui.timezone validation on every platform
 	"unicode"
 	"unicode/utf8"
@@ -338,6 +340,8 @@ var defaultSettingKeys = map[string]bool{
 }
 
 var systemSettingValidators = map[string]func(string) bool{
+	network.SettingGeoMode:      func(v string) bool { return v == "allow" || v == "block" },
+	network.SettingGeoCountries: func(v string) bool { _, err := network.ParseCountryCodes(v); return err == nil },
 	"branding.app-title":        func(v string) bool { return validPlainSetting(v, 80) },
 	"branding.signin-title":     func(v string) bool { return validPlainSetting(v, 100) },
 	"branding.tagline":          func(v string) bool { return validPlainSetting(v, 160) },
@@ -596,6 +600,16 @@ func (s *Service) RecordAdminActivity(ctx context.Context, actorID int64, action
 		target = targetID
 	}
 	_, err := s.db.ExecContext(ctx, `INSERT INTO admin_activity(actor_id,action,target_type,target_id,created_at) VALUES (?,?,?,?,?)`, actorID, action, targetType, target, s.now().UnixMilli())
+	return err
+}
+
+// RecordSystemActivity records the approved local geo-policy reset without a
+// signed-in administrator; the existing action code and schema stay compatible.
+func (s *Service) RecordSystemActivity(ctx context.Context, action, targetType string, targetID int64) error {
+	if action != "system_settings_updated" || targetType != "system" || targetID != 0 {
+		return fmt.Errorf("%w: invalid system activity event", ErrInvalid)
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO admin_activity(actor_id,action,target_type,target_id,created_at) VALUES (NULL,?,?,NULL,?)`, action, targetType, s.now().UnixMilli())
 	return err
 }
 

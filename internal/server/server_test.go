@@ -8,12 +8,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/database"
+	"github.com/atikansari-ghr/BookmarksSync/internal/network"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
 	"github.com/atikansari-ghr/BookmarksSync/internal/version"
 )
@@ -205,6 +207,64 @@ func TestRegisteredRoutesGetAPIMiddlewareButVersionDoesNot(t *testing.T) {
 		t.Errorf("POST whoami: status = %d, want 405", rec.Code)
 	}
 }
+
+func TestNetworkGateRunsBeforeBuiltInRegisteredAndFallbackHandlers(t *testing.T) {
+	called := false
+	gate := &network.Gate{Lookup: testCountryMap{"192.0.2.1": "US", "192.0.2.2": "SA"}, LoadPolicy: func(context.Context) (network.Policy, error) { return network.DefaultPolicy(), nil }}
+	h := newHandler(t, server.Options{NetworkAccess: gate, Register: func(r server.Registrar) {
+		for _, route := range []string{"GET /{$}", "POST /api/v1/auth/login", "GET /ocs/v2.php/cloud/capabilities"} {
+			r.Handle(route, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				called = true
+				http.SetCookie(w, &http.Cookie{Name: "should-not-set", Value: "1"})
+				server.WriteJSON(w, http.StatusOK, map[string]string{"ok": "yes"})
+			}))
+		}
+	}})
+	for _, target := range []string{"/", "/api/v1/auth/login", "/ocs/v2.php/cloud/capabilities", "/healthz", "/readyz", "/api/v1/version", "/api/v1/does-not-exist"} {
+		method := http.MethodGet
+		if target == "/api/v1/auth/login" {
+			method = http.MethodPost
+		}
+		req := httptest.NewRequest(method, target, nil)
+		req.RemoteAddr = "192.0.2.1:5000"
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("%s: status = %d, want 403", target, rec.Code)
+		}
+		if rec.Header().Get("Set-Cookie") != "" {
+			t.Errorf("%s: denied request set a cookie", target)
+		}
+	}
+	if called {
+		t.Fatal("blocked client reached a route handler")
+	}
+	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req.RemoteAddr = "192.0.2.2:5000"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("allowed client /healthz: status=%d body=%s", rec.Code, rec.Body)
+	}
+}
+
+func TestNetworkGateReturnsUnavailableWhenPolicyStorageFails(t *testing.T) {
+	gate := &network.Gate{LoadPolicy: func(context.Context) (network.Policy, error) {
+		return network.Policy{}, errors.New("sqlite unavailable")
+	}}
+	h := newHandler(t, server.Options{NetworkAccess: gate})
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/version", nil)
+	req.RemoteAddr = "192.0.2.1:5000"
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503", rec.Code)
+	}
+}
+
+type testCountryMap map[string]string
+
+func (m testCountryMap) LookupCountry(ip netip.Addr) (string, error) { return m[ip.String()], nil }
 
 func TestRequestBodyIsLimited(t *testing.T) {
 	var readErr error

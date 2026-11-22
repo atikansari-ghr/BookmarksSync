@@ -55,6 +55,7 @@ func TestHelpIsClearForEveryCommand(t *testing.T) {
 		{"serve", "--help"}, {"user", "--help"}, {"user", "create", "--help"}, {"user", "list", "--help"}, {"user", "set-active", "--help"},
 		{"credential", "--help"}, {"credential", "create", "--help"}, {"credential", "revoke", "--help"}, {"credential", "list", "--help"},
 		{"share", "--help"}, {"share", "grant", "--help"}, {"share", "revoke", "--help"}, {"share", "list", "--help"},
+		{"network", "--help"}, {"network", "reset-geo", "--help"},
 	} {
 		var out, errb bytes.Buffer
 		code := run(context.Background(), args, strings.NewReader(""), &out, &errb, func(string) string { return "" })
@@ -68,7 +69,7 @@ func TestHelpIsClearForEveryCommand(t *testing.T) {
 	}
 	var out bytes.Buffer
 	run(context.Background(), []string{"--help"}, strings.NewReader(""), &out, &bytes.Buffer{}, func(string) string { return "" })
-	for _, want := range []string{"serve", "user create", "credential create", "credential revoke", "share grant", "--password-stdin"} {
+	for _, want := range []string{"serve", "user create", "credential create", "credential revoke", "share grant", "network reset-geo", "--password-stdin"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("top-level help does not mention %q:\n%s", want, out.String())
 		}
@@ -77,6 +78,36 @@ func TestHelpIsClearForEveryCommand(t *testing.T) {
 	run(context.Background(), []string{"credential", "create", "--help"}, strings.NewReader(""), &cred, &bytes.Buffer{}, func(string) string { return "" })
 	if !strings.Contains(cred.String(), "once") || !strings.Contains(cred.String(), "--mode") {
 		t.Errorf("credential create help must explain the one-time secret and --mode:\n%s", cred.String())
+	}
+}
+
+func TestNetworkResetGeoRestoresDefaultsAndAuditsRecovery(t *testing.T) {
+	c := newCLI(t)
+	db := c.db()
+	if _, err := db.SQL().Exec(`INSERT INTO system_settings(key,value,updated_at) VALUES('network.geo-mode','block',1),('network.geo-countries','US',1)`); err != nil {
+		t.Fatal(err)
+	}
+	db.Close()
+	out, _ := c.mustRun("", "network", "reset-geo")
+	if !strings.Contains(out, "reset to allow IN,SA") {
+		t.Fatalf("reset output = %q", out)
+	}
+	check := c.db()
+	defer check.Close()
+	var mode, countries string
+	if err := check.SQL().QueryRow(`SELECT value FROM system_settings WHERE key='network.geo-mode'`).Scan(&mode); err != nil {
+		t.Fatal(err)
+	}
+	if err := check.SQL().QueryRow(`SELECT value FROM system_settings WHERE key='network.geo-countries'`).Scan(&countries); err != nil {
+		t.Fatal(err)
+	}
+	var actor any
+	var action string
+	if err := check.SQL().QueryRow(`SELECT actor_id,action FROM admin_activity ORDER BY id DESC LIMIT 1`).Scan(&actor, &action); err != nil {
+		t.Fatal(err)
+	}
+	if mode != "allow" || countries != "IN,SA" || actor != nil || action != "system_settings_updated" {
+		t.Fatalf("reset state = mode %q countries %q audit (%v,%q)", mode, countries, actor, action)
 	}
 }
 

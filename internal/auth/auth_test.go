@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -19,6 +20,7 @@ import (
 	"github.com/atikansari-ghr/BookmarksSync/internal/auth"
 	"github.com/atikansari-ghr/BookmarksSync/internal/database"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
+	"github.com/atikansari-ghr/BookmarksSync/internal/network"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
 	"github.com/atikansari-ghr/BookmarksSync/internal/version"
 )
@@ -708,6 +710,39 @@ func TestUsernameFailuresAreScopedToTheDirectPeer(t *testing.T) {
 	e.clock.Advance(15*time.Minute + time.Second)
 	if rec := e.tryLogin("alice", alicePass, attacker); rec.Code != http.StatusOK {
 		t.Fatalf("after window: %d", rec.Code)
+	}
+}
+
+type allowedCountryLookup struct{}
+
+func (allowedCountryLookup) LookupCountry(netip.Addr) (string, error) { return "SA", nil }
+
+func TestTrustedProxyResolvedAddressSeparatesLoginRateLimits(t *testing.T) {
+	e := newEnv(t, rateLimited(auth.Limits{MaxKeys: 100, Window: 15 * time.Minute, UserFailures: 2, PeerFailures: 20}))
+	gate := (&network.Gate{TrustedProxies: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")}, Lookup: allowedCountryLookup{}}).Middleware(e.h)
+	login := func(client, socketPort, user, password string) *httptest.ResponseRecorder {
+		return e.serve(gate, "POST", "/api/v1/auth/login", map[string]string{"username": user, "password": password},
+			withPeer("10.0.0.9:"+socketPort), withHeader("X-Forwarded-For", client+", 10.0.0.8"))
+	}
+	for i := 0; i < 2; i++ {
+		if rec := login("198.51.100.10", fmt.Sprint(4000+i), "alice", "wrong password!!"); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("trusted client failure %d = %d", i, rec.Code)
+		}
+	}
+	if rec := login("198.51.100.10", "4999", "alice", alicePass); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("same resolved client should be throttled across proxy ports: %d", rec.Code)
+	}
+	if rec := login("198.51.100.11", "4000", "alice", alicePass); rec.Code != http.StatusOK {
+		t.Fatalf("different resolved client inherited another client's failures: %d %s", rec.Code, rec.Body.String())
+	}
+	// An untrusted direct peer cannot spend the trusted client's bucket by forging XFF.
+	for i := 0; i < 2; i++ {
+		if rec := e.tryLogin("alice", "wrong password!!", "203.0.113.9:4100", withHeader("X-Forwarded-For", "198.51.100.10")); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("untrusted spoof attempt %d = %d", i, rec.Code)
+		}
+	}
+	if rec := login("198.51.100.10", "5000", "alice", alicePass); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("untrusted XFF spoof changed trusted client's bucket: %d", rec.Code)
 	}
 }
 

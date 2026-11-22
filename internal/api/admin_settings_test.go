@@ -38,6 +38,37 @@ func TestAdminPerUserDefaultsRequireAdminAndRespectOverrides(t *testing.T) {
 	}
 }
 
+func TestAdminNetworkAccessPolicyControlsAndValidation(t *testing.T) {
+	e := newTEnv(t)
+	alice, root := e.login(e.alice), e.login(e.root)
+	if rec := e.do("GET", "/api/v1/admin/network-access", nil, alice.mods()...); rec.Code != http.StatusForbidden {
+		t.Fatalf("non-admin network policy read = %d %s", rec.Code, rec.Body.String())
+	}
+	initial := e.do("GET", "/api/v1/admin/network-access", nil, root.mods()...)
+	if initial.Code != http.StatusOK || !strings.Contains(initial.Body.String(), `"countries":["IN","SA"]`) {
+		t.Fatalf("default network policy = %d %s", initial.Code, initial.Body.String())
+	}
+	if strings.Contains(initial.Body.String(), e.backupDataDir) || strings.Contains(initial.Body.String(), "127.0.0.1") {
+		t.Fatal("network policy response exposed local filesystem or proxy configuration")
+	}
+	if rec := e.do("PATCH", "/api/v1/admin/network-access", map[string]any{"mode": "block", "countries": []string{}}, root.mods()...); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"countries":[]`) {
+		t.Fatalf("empty block list = %d %s", rec.Code, rec.Body.String())
+	}
+	settings, err := e.ids.SystemSettings(t.Context())
+	if err != nil || settings["network.geo-mode"] != "block" || settings["network.geo-countries"] != "" {
+		t.Fatalf("stored policy = %v, %v", settings, err)
+	}
+	for _, body := range []map[string]any{{"mode": "permit", "countries": []string{"SA"}}, {"mode": "allow", "countries": []string{"ZZ"}}, {"mode": "allow", "countries": nil}, {"mode": "allow", "countries": []string{""}}, {"mode": "allow", "countries": []string{"IN,SA"}}, {"mode": "allow", "countries": []string{" in"}}} {
+		if rec := e.do("PATCH", "/api/v1/admin/network-access", body, root.mods()...); rec.Code != http.StatusBadRequest {
+			t.Errorf("invalid policy %#v = %d %s", body, rec.Code, rec.Body.String())
+		}
+	}
+	activity := e.do("GET", "/api/v1/admin/activity", nil, root.mods()...)
+	if activity.Code != http.StatusOK || !strings.Contains(activity.Body.String(), "system_settings_updated") {
+		t.Fatalf("network policy audit event missing: %d %s", activity.Code, activity.Body.String())
+	}
+}
+
 func TestAdminUserListIncludesThemeDefaults(t *testing.T) {
 	e := newTEnv(t)
 	theme := "midnight-glass"

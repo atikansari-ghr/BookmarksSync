@@ -23,6 +23,52 @@ func TestDefaultsListenOnLoopback(t *testing.T) {
 	}
 }
 
+func TestNetworkAccessEnvironmentConfiguration(t *testing.T) {
+	env := func(k string) string {
+		switch k {
+		case config.EnvTrustedProxies:
+			return "10.0.0.0/8, 2001:db8::/32"
+		case config.EnvManagementCIDRs:
+			return "192.168.10.0/24"
+		case config.EnvGeoIPDB:
+			return "./GeoLite2-Country.mmdb"
+		}
+		return ""
+	}
+	cfg, err := config.Parse(nil, env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.TrustedProxies) != 2 || cfg.TrustedProxies[0].String() != "10.0.0.0/8" || cfg.TrustedProxies[1].String() != "2001:db8::/32" {
+		t.Errorf("trusted proxies = %v", cfg.TrustedProxies)
+	}
+	if len(cfg.ManagementCIDRs) != 1 || cfg.ManagementCIDRs[0].String() != "192.168.10.0/24" {
+		t.Errorf("management CIDRs = %v", cfg.ManagementCIDRs)
+	}
+	if cfg.GeoIPDBPath != "./GeoLite2-Country.mmdb" {
+		t.Errorf("GeoIPDBPath = %q", cfg.GeoIPDBPath)
+	}
+}
+
+func TestInvalidNetworkCIDRConfigurationIsRejected(t *testing.T) {
+	for _, tc := range []struct{ name, key, value string }{
+		{"trusted proxy", config.EnvTrustedProxies, "192.0.2.1"},
+		{"management network", config.EnvManagementCIDRs, "10.0.0.0/99"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := config.Parse(nil, func(k string) string {
+				if k == tc.key {
+					return tc.value
+				}
+				return ""
+			})
+			if err == nil {
+				t.Fatalf("Parse accepted invalid %s CIDR", tc.name)
+			}
+		})
+	}
+}
+
 func TestFlagsOverrideDefaults(t *testing.T) {
 	dir := t.TempDir()
 	cfg, err := config.Parse([]string{"--listen", "127.0.0.1:9191", "--data-dir", dir}, noEnv)

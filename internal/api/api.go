@@ -114,10 +114,13 @@ type LinkChecks interface {
 }
 
 type SystemInfo struct {
-	Version         string
-	PublicOrigin    string
-	PasskeysEnabled bool
-	OIDCProviders   []string
+	Version           string
+	PublicOrigin      string
+	PasskeysEnabled   bool
+	OIDCProviders     []string
+	GeoIPAvailable    bool
+	GeoIPBuildTime    time.Time
+	TrustedProxyCount int
 }
 
 type HealthCollector interface {
@@ -291,6 +294,8 @@ var routePolicies = []RouteInfo{
 	{Method: "POST", Path: "/api/v1/admin/backups/run", Admin: true, Recent: true},
 	{Method: "GET", Path: "/api/v1/admin/settings", Admin: true},
 	{Method: "PATCH", Path: "/api/v1/admin/settings", Admin: true, Recent: true},
+	{Method: "GET", Path: "/api/v1/admin/network-access", Admin: true},
+	{Method: "PATCH", Path: "/api/v1/admin/network-access", Admin: true, Recent: true},
 	{Method: "POST", Path: "/api/v1/admin/settings/assets", Admin: true, Recent: true},
 	{Method: "GET", Path: "/api/v1/admin/users/{id}/settings", Admin: true},
 	{Method: "PATCH", Path: "/api/v1/admin/users/{id}/settings", Admin: true, Recent: true},

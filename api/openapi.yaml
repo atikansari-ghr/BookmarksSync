@@ -500,6 +500,22 @@ components:
       required: [settings]
       properties:
         settings: {type: object, additionalProperties: {type: string}}
+    NetworkAccessPolicy:
+      type: object
+      required: [mode, countries, geoDatabaseAvailable, geoDatabaseBuildTime, trustedProxyCount]
+      properties:
+        mode: {type: string, enum: [allow, block]}
+        countries: {type: array, items: {type: string, pattern: '^[A-Z]{2}$'}}
+        geoDatabaseAvailable: {type: boolean}
+        geoDatabaseBuildTime: {type: [string, 'null'], format: date-time}
+        trustedProxyCount: {type: integer, minimum: 0}
+    NetworkAccessPolicyPatch:
+      type: object
+      required: [mode, countries]
+      additionalProperties: false
+      properties:
+        mode: {type: string, enum: [allow, block]}
+        countries: {type: array, items: {type: string, pattern: '^[A-Za-z]{2}$'}}
     PublicPresentation:
       type: object
       required: [appTitle, signinTitle, tagline, supportingLine, loginLayout, primaryColor, accentColor, backgroundColor, version, copyright]
@@ -1035,6 +1051,9 @@ paths:
   /admin/settings:
     get: {operationId: adminGetSettings, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/SystemSettingsResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Get System Settings}
     patch: {operationId: adminPatchSettings, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/SettingsPatchRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/SystemSettingsResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Update System Settings}
+  /admin/network-access:
+    get: {operationId: adminGetNetworkAccess, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/NetworkAccessPolicy'}}}, description: Network access policy and sanitized database status.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Network Access Policy}
+    patch: {operationId: adminUpdateNetworkAccess, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/NetworkAccessPolicyPatch'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/NetworkAccessPolicy'}}}, description: Updated policy.}, default: {$ref: '#/components/responses/Error'}}, summary: Update Network Access Policy}
   /admin/settings/assets:
     post: {operationId: adminUploadBrandingAsset, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {multipart/form-data: {schema: {type: object, required: [kind, asset], properties: {kind: {type: string, enum: [logo, background]}, asset: {type: string, format: binary}}}}}, required: true}, responses: {"201": {content: {application/json: {schema: {$ref: '#/components/schemas/BrandingAssetUpload'}}}, description: Image stored as a private, randomly named file.}, default: {$ref: '#/components/responses/Error'}}, summary: Upload Login Branding Asset}
   /admin/users/{id}/settings:

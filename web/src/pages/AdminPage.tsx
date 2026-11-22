@@ -9,6 +9,7 @@ type AdminUser = { id: number; username: string; active: boolean; isAdmin: boole
 type Health = { cpuPercent: number | null; memory: { totalBytes: number; usedBytes: number; percent: number } | null; disk: { totalBytes: number; usedBytes: number; percent: number } | null; uptimeSeconds: number | null; unavailable: string[]; dbReady: boolean; syncErrors: number }
 type Activity = { id: number; action: string; targetType: string; targetId: number | null; createdAt: string }
 type Branding = Record<string, string>
+type NetworkAccess = { mode: 'allow' | 'block'; countries: string[]; geoDatabaseAvailable: boolean; geoDatabaseBuildTime: string | null; trustedProxyCount: number }
 
 const defaults: Branding = {
   'branding.app-title': 'BookmarksSync',
@@ -32,6 +33,9 @@ function Admin() {
   const [activity, setActivity] = useState<Activity[]>([])
   const [branding, setBranding] = useState<Branding>(defaults)
   const [savedBranding, setSavedBranding] = useState<Branding>({})
+  const [networkAccess, setNetworkAccess] = useState<NetworkAccess | null>(null)
+  const [networkError, setNetworkError] = useState('')
+  const [countryText, setCountryText] = useState('IN, SA')
   const [userDefaults, setUserDefaults] = useState<Record<number, string>>({})
   const [busy, setBusy] = useState(true)
   const [error, setError] = useState('')
@@ -48,12 +52,19 @@ function Admin() {
       }
       throw new Error('The account list exceeds the supported page count.')
     }
+    void client.request<NetworkAccess>('GET', '/api/v1/admin/network-access').then((n) => {
+      if (!live) return
+      setNetworkAccess(n)
+      setCountryText((n.countries ?? []).join(', '))
+    }).catch(() => {
+      if (live) setNetworkError('Country access status could not be loaded. Reload the page to try again.')
+    })
     void Promise.all([
       loadAllUsers(),
       client.request<Health>('GET', '/api/v1/admin/health'),
       client.request<{ items: Activity[] }>('GET', '/api/v1/admin/activity'),
       client.request<{ settings: Branding }>('GET', '/api/v1/admin/settings'),
-    ]).then(async ([u, h, a, b]) => {
+    ]).then(([u, h, a, b]) => {
       if (!live) return
       setUsers(u)
       setUserDefaults(Object.fromEntries(u.map((user) => [user.id, user.themeDefault ?? ''])))
@@ -114,6 +125,14 @@ function Admin() {
       setNotice(`${kind === 'logo' ? 'Logo' : 'Background'} uploaded.`)
     } catch (e) { setError(e instanceof ApiError ? e.message : 'Branding image could not be uploaded.') }
   }
+  async function saveNetworkAccess(e: FormEvent) {
+    e.preventDefault(); setError(''); setNotice('')
+    const countries = countryText.split(',').map((code) => code.trim().toUpperCase()).filter(Boolean)
+    try {
+      const result = await client.request<NetworkAccess>('PATCH', '/api/v1/admin/network-access', { mode: networkAccess?.mode ?? 'allow', countries })
+      setNetworkAccess(result); setCountryText(result.countries.join(', ')); setNotice('Network access policy saved.')
+    } catch (e) { setError(e instanceof ApiError ? e.message : 'Network access policy could not be saved.') }
+  }
 
   return <>
     {error && <p className="error" role="alert">{error}</p>}
@@ -132,6 +151,19 @@ function Admin() {
       </section>
 
       <AdminBackups />
+
+      <section className="ws-card glass admin-section" aria-labelledby="network-access-title">
+        <form className="stack" onSubmit={saveNetworkAccess}>
+          <div><h2 id="network-access-title">Country access</h2><p className="muted small">Restrict visitors by country. Changes can block your current connection; keep local CLI access available for recovery.</p></div>
+          {networkError && <p className="error" role="alert">{networkError}</p>}
+          <div className="admin-brand-grid">
+            <label className="field"><span>Country rule</span><select aria-label="Country rule" disabled={!networkAccess} value={networkAccess?.mode ?? 'allow'} onChange={(e) => setNetworkAccess((v) => v ? { ...v, mode: e.target.value as NetworkAccess['mode'] } : v)}><option value="allow">Allow only listed countries</option><option value="block">Block listed countries</option></select></label>
+            <label className="field"><span>Country codes</span><input aria-label="Country codes" disabled={!networkAccess} value={countryText} onChange={(e) => setCountryText(e.target.value)} placeholder="IN, SA" /><span className="muted small">Comma-separated ISO country codes. Empty allow list blocks all public countries.</span></label>
+          </div>
+          <p className="muted small">GeoIP database: {networkAccess?.geoDatabaseAvailable ? `available${networkAccess.geoDatabaseBuildTime ? ` (built ${new Date(networkAccess.geoDatabaseBuildTime).toLocaleDateString()})` : ''}` : 'not available; public visitors will be denied'}. Trusted proxy entries: {networkAccess?.trustedProxyCount ?? 0}.</p>
+          <div className="actions"><button className="btn primary" type="submit" disabled={!networkAccess}>Save country access</button></div>
+        </form>
+      </section>
 
       <section className="ws-card glass admin-section" aria-labelledby="accounts-title">
         <h2 id="accounts-title">Accounts</h2>
@@ -173,4 +205,4 @@ function BrandText({ label, setting, maxLength, value, set }: { label: string; s
 function BrandColor({ label, setting, value, set }: { label: string; setting: string; value: Branding; set: (k: string, v: string) => void }) { return <label className="field"><span>{label} (hex)</span><input aria-label={label} pattern="#[0-9a-fA-F]{6}" maxLength={7} value={value[setting] ?? ''} onChange={(e) => set(setting, e.target.value)} /></label> }
 function formatBytes(value: number) { if (!value) return '0 B'; const n = Math.floor(Math.log(value) / Math.log(1024)); return `${(value / 1024 ** n).toLocaleString(undefined, { maximumFractionDigits: n ? 1 : 0 })} ${['B','KB','MB','GB','TB'][n]}` }
 function formatDuration(seconds: number) { const days = Math.floor(seconds / 86400); const hours = Math.floor((seconds % 86400) / 3600); return days ? `${days}d ${hours}h` : `${hours}h ${Math.floor(seconds % 3600 / 60)}m` }
-function activityLabel(action: string) { return ({ user_created: 'User created', user_updated: 'User updated', user_settings_updated: 'User defaults updated', system_settings_updated: 'System appearance updated', branding_asset_uploaded: 'Branding image uploaded', connection_revoked: 'Browser connection revoked', password_reset: 'Password reset', factor_reset: 'Sign-in factors reset' } as Record<string, string>)[action] ?? 'Administrative event' }
+function activityLabel(action: string) { return ({ user_created: 'User created', user_updated: 'User updated', user_settings_updated: 'User defaults updated', system_settings_updated: 'System settings updated', branding_asset_uploaded: 'Branding image uploaded', connection_revoked: 'Browser connection revoked', password_reset: 'Password reset', factor_reset: 'Sign-in factors reset' } as Record<string, string>)[action] ?? 'Administrative event' }

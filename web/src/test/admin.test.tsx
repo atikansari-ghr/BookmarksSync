@@ -17,12 +17,14 @@ function adminRoutes(): Record<string, Route> {
     'GET /api/v1/admin/users': { status: 200, body: { users: [{ id: 2, username: 'sam', active: true, isAdmin: false, bookmarkCount: 12, folderCount: 4, storageBytes: 2048, connectionCount: 1 }], page: 0, limit: 50, hasMore: false } },
     'GET /api/v1/admin/health': { status: 200, body: { cpuPercent: 12, memory: { totalBytes: 1000, usedBytes: 400, percent: 40 }, disk: null, uptimeSeconds: 1000, unavailable: ['disk'], dbReady: true, syncErrors: 2 } },
     'GET /api/v1/admin/settings': { status: 200, body: { settings: { 'branding.app-title': 'BookmarksSync' } } },
+    'GET /api/v1/admin/network-access': { status: 200, body: { mode: 'allow', countries: ['IN', 'SA'], geoDatabaseAvailable: false, geoDatabaseBuildTime: null, trustedProxyCount: 1 } },
     'GET /api/v1/admin/activity': { status: 200, body: { items: [{ id: 1, actorId: 1, action: 'user_created', targetType: 'user', targetId: 2, createdAt: '2026-11-20T12:00:00Z' }] } },
     'GET /api/v1/admin/backups': { status: 200, body: { schedule: { weeklyEnabled: false, monthlyEnabled: false, timezone: 'Asia/Riyadh', weeklyDay: 0, weeklyHour: 3, weeklyMinute: 0, monthlyDay: 1, monthlyHour: 4, monthlyMinute: 0, weeklyRetention: 8, monthlyRetention: 12 }, destinations: [{ id: '0123456789abcdef0123456789abcdef', label: 'NAS', kind: 'rclone', reference: 'nas:bookmarks', enabled: true }], runs: [], running: false } },
     'PUT /api/v1/admin/backups/schedule': { status: 200, body: { schedule: { weeklyEnabled: true, monthlyEnabled: false, timezone: 'Asia/Riyadh', weeklyDay: 0, weeklyHour: 3, weeklyMinute: 0, monthlyDay: 1, monthlyHour: 4, monthlyMinute: 0, weeklyRetention: 8, monthlyRetention: 12 } } },
     'POST /api/v1/admin/backups/destinations/test': { status: 200, body: { status: 'ok' } },
     'POST /api/v1/admin/backups/run': { status: 202, body: { batchId: '0123456789abcdef0123456789abcdef', status: 'accepted' } },
     'PATCH /api/v1/admin/settings': { status: 200, body: { settings: {} } },
+    'PATCH /api/v1/admin/network-access': { status: 200, body: { mode: 'allow', countries: ['GB'], geoDatabaseAvailable: true, geoDatabaseBuildTime: null, trustedProxyCount: 1 } },
     'POST /api/v1/admin/settings/assets': { status: 201, body: { url: '/api/v1/auth/presentation/assets/0123456789abcdef0123456789abcdef' } },
     'GET /api/v1/admin/users/2/settings': { status: 200, body: { settings: {} } },
     'PATCH /api/v1/admin/users/2/settings': { status: 200, body: { settings: { 'ui.theme': 'midnight-glass' } } },
@@ -44,6 +46,28 @@ describe('admin workspace', () => {
     expect(screen.getByText('User created')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'System backups' })).toBeInTheDocument()
     expect(screen.getAllByText(/nas:bookmarks/)).toHaveLength(2)
+  })
+
+  it('saves country access rules and shows sanitized GeoIP status', async () => {
+    const api = mockServer(adminRoutes())
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Country access' })
+    expect(screen.getByText(/GeoIP database: not available/)).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Country rule'), { target: { value: 'block' } })
+    fireEvent.change(screen.getByLabelText('Country codes'), { target: { value: 'gb, us' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Save country access' }))
+    await waitFor(() => expect(api.find('PATCH', '/api/v1/admin/network-access')).toHaveLength(1))
+    expect(api.find('PATCH', '/api/v1/admin/network-access')[0].body).toEqual({ mode: 'block', countries: ['GB', 'US'] })
+  })
+
+  it('keeps other admin sections available if the network status request fails', async () => {
+    const routes = adminRoutes()
+    routes['GET /api/v1/admin/network-access'] = err(503, 'service_unavailable')
+    mockServer(routes)
+    render(<App />)
+    expect(await screen.findByRole('heading', { name: 'Server health' })).toBeInTheDocument()
+    expect(screen.getByText('sam')).toBeInTheDocument()
+    expect(await screen.findByText(/Country access status could not be loaded/)).toBeInTheDocument()
   })
 
   it('saves the backup schedule, tests a destination, and starts a manual run', async () => {

@@ -337,6 +337,8 @@ func TestRoutePolicies(t *testing.T) {
 		"GET /api/v1/admin/activity":                        {Admin: true},
 		"GET /api/v1/admin/settings":                        {Admin: true},
 		"PATCH /api/v1/admin/settings":                      {Admin: true, Recent: true},
+		"GET /api/v1/admin/network-access":                  {Admin: true},
+		"PATCH /api/v1/admin/network-access":                {Admin: true, Recent: true},
 		"GET /api/v1/admin/users/{id}/settings":             {Admin: true},
 		"PATCH /api/v1/admin/users/{id}/settings":           {Admin: true, Recent: true},
 		"GET /api/v1/auth/presentation":                     {Public: true},

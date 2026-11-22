@@ -72,7 +72,12 @@ func TestServeStartsAnsweringAndStopsOnCancel(t *testing.T) {
 	done := make(chan int, 1)
 	var errb bytes.Buffer
 	go func() {
-		done <- run(ctx, []string{"serve", "--listen", addr, "--data-dir", dir}, strings.NewReader(""), io.Discard, &errb, func(string) string { return "" })
+		done <- run(ctx, []string{"serve", "--listen", addr, "--data-dir", dir}, strings.NewReader(""), io.Discard, &errb, func(k string) string {
+			if k == "BOOKMARKSYNC_MANAGEMENT_CIDRS" {
+				return "127.0.0.0/8,::1/128"
+			}
+			return ""
+		})
 	}()
 
 	url := fmt.Sprintf("http://%s/readyz", addr)
@@ -110,6 +115,12 @@ func startServe(t *testing.T, env map[string]string) (string, func() string) {
 // startServeIn is startServe with an explicit data directory.
 func startServeIn(t *testing.T, dir string, env map[string]string) (string, func() string) {
 	t.Helper()
+	if env == nil {
+		env = map[string]string{}
+	}
+	if _, ok := env["BOOKMARKSYNC_MANAGEMENT_CIDRS"]; !ok {
+		env["BOOKMARKSYNC_MANAGEMENT_CIDRS"] = "127.0.0.0/8,::1/128"
+	}
 	addr := freePort(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
@@ -120,7 +131,11 @@ func startServeIn(t *testing.T, dir string, env map[string]string) (string, func
 	}()
 	base := "http://" + addr
 	for i := 0; i < 100; i++ {
-		if resp, err := http.Get(base + "/readyz"); err == nil {
+		req, _ := http.NewRequest(http.MethodGet, base+"/readyz", nil)
+		if env["BOOKMARKSYNC_TRUSTED_PROXIES"] != "" {
+			req.Header.Set("X-Forwarded-For", "81.2.69.160, 127.0.0.1")
+		}
+		if resp, err := http.DefaultClient.Do(req); err == nil {
 			resp.Body.Close()
 			if resp.StatusCode == http.StatusOK {
 				var once sync.Once
@@ -217,6 +232,53 @@ func TestServeLeavesAuthAPIOffWithoutPublicURL(t *testing.T) {
 	defer stop()
 	if code := postLogin(t, base, base); code != http.StatusNotFound {
 		t.Fatalf("login without public URL: %d, want 404", code)
+	}
+}
+
+func TestGeoGateStillProtectsFloccusWithoutPublicURL(t *testing.T) {
+	geoPath := filepath.Join("..", "..", "internal", "network", "testdata", "GeoLite2-Country-Test.mmdb")
+	admin := newCLI(t)
+	db := admin.db()
+	mode, countries := "allow", "GB"
+	if _, err := identity.New(db.SQL()).UpdateSystemSettings(context.Background(), map[string]*string{"network.geo-mode": &mode, "network.geo-countries": &countries}); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+	base, stop := startServeIn(t, admin.dir, map[string]string{
+		"BOOKMARKSYNC_TRUSTED_PROXIES": "127.0.0.0/8",
+		"BOOKMARKSYNC_GEOIP_DB":        geoPath,
+	})
+	defer stop()
+	request := func() int {
+		req, err := http.NewRequest(http.MethodGet, base+"/ocs/v2.php/cloud/capabilities?format=json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("X-Forwarded-For", "81.2.69.160, 127.0.0.1")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		return resp.StatusCode
+	}
+	if code := request(); code != http.StatusUnauthorized {
+		t.Fatalf("allowed Floccus request should reach credential validation (401), got %d", code)
+	}
+	block, empty := "block", ""
+	db = admin.db()
+	if _, err := identity.New(db.SQL()).UpdateSystemSettings(context.Background(), map[string]*string{"network.geo-mode": &block, "network.geo-countries": &empty}); err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	db.Close()
+	if code := request(); code != http.StatusUnauthorized {
+		t.Fatalf("empty block list should allow known country before CLI reset, got %d", code)
+	}
+	admin.mustRun("", "network", "reset-geo")
+	if code := request(); code != http.StatusForbidden {
+		t.Fatalf("CLI reset should immediately restore IN,SA while server is live; Floccus status = %d", code)
 	}
 }
 

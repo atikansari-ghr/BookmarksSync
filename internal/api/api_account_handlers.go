@@ -14,6 +14,7 @@ import (
 	"github.com/atikansari-ghr/BookmarksSync/internal/bookmarks"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
 	"github.com/atikansari-ghr/BookmarksSync/internal/interchange"
+	"github.com/atikansari-ghr/BookmarksSync/internal/network"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
 )
 
@@ -334,6 +335,61 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 	if !strings.HasPrefix(p, "/api/v1/admin/") {
 		return false
 	}
+	if p == "/api/v1/admin/network-access" {
+		switch r.Method {
+		case http.MethodGet:
+			settings, err := a.ids.SystemSettings(r.Context())
+			if err != nil {
+				writeDomainError(w, err)
+				return true
+			}
+			policy, err := network.PolicyFromSettings(settings)
+			if err != nil {
+				server.WriteError(w, http.StatusServiceUnavailable, "network_policy_unavailable", "network policy is unavailable")
+				return true
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"mode": policy.Mode, "countries": policy.Countries,
+				"geoDatabaseAvailable": a.system.GeoIPAvailable, "geoDatabaseBuildTime": geoBuildTime(a.system.GeoIPBuildTime),
+				"trustedProxyCount": a.system.TrustedProxyCount})
+			return true
+		case http.MethodPatch:
+			var in struct {
+				Mode      string   `json:"mode"`
+				Countries []string `json:"countries"`
+			}
+			if !decodeJSON(w, r, &in) {
+				return true
+			}
+			if in.Countries == nil {
+				server.WriteError(w, http.StatusBadRequest, "invalid_request", "countries must be a list")
+				return true
+			}
+			codes, err := network.NormalizeCountryCodes(in.Countries)
+			policy := network.Policy{Mode: in.Mode, Countries: codes}
+			if err != nil || network.ValidatePolicy(policy) != nil {
+				server.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid country access policy")
+				return true
+			}
+			mode, countries := policy.Mode, strings.Join(policy.Countries, ",")
+			settings, err := a.ids.UpdateSystemSettings(r.Context(), map[string]*string{
+				network.SettingGeoMode: &mode, network.SettingGeoCountries: &countries,
+			})
+			if err != nil {
+				writeDomainError(w, err)
+				return true
+			}
+			a.recordAdminActivity(r, "system_settings_updated", "system", 0)
+			updated, err := network.PolicyFromSettings(settings)
+			if err != nil {
+				server.WriteError(w, http.StatusInternalServerError, "network_policy_unavailable", "network policy could not be loaded")
+			} else {
+				writeJSON(w, http.StatusOK, map[string]any{"mode": updated.Mode, "countries": updated.Countries,
+					"geoDatabaseAvailable": a.system.GeoIPAvailable, "geoDatabaseBuildTime": geoBuildTime(a.system.GeoIPBuildTime),
+					"trustedProxyCount": a.system.TrustedProxyCount})
+			}
+			return true
+		}
+	}
 	if p == "/api/v1/admin/health" && r.Method == http.MethodGet {
 		if a.health == nil {
 			server.WriteError(w, http.StatusServiceUnavailable, "health_unavailable", "host health collector is unavailable")
@@ -644,6 +700,13 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 		}
 	}
 	return false
+}
+
+func geoBuildTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value.UTC().Format(time.RFC3339)
 }
 
 func (a *API) serveTransfer(w http.ResponseWriter, r *http.Request) bool {

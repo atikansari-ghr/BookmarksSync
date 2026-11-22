@@ -7,11 +7,14 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/atikansari-ghr/BookmarksSync/internal/network"
 )
 
 const (
@@ -19,9 +22,12 @@ const (
 	DefaultListenAddr = "127.0.0.1:8080"
 	DefaultDataDir    = "data"
 
-	EnvListen    = "BOOKMARKSYNC_LISTEN"
-	EnvDataDir   = "BOOKMARKSYNC_DATA_DIR"
-	EnvPublicURL = "BOOKMARKSYNC_PUBLIC_URL"
+	EnvListen          = "BOOKMARKSYNC_LISTEN"
+	EnvDataDir         = "BOOKMARKSYNC_DATA_DIR"
+	EnvPublicURL       = "BOOKMARKSYNC_PUBLIC_URL"
+	EnvTrustedProxies  = "BOOKMARKSYNC_TRUSTED_PROXIES"
+	EnvManagementCIDRs = "BOOKMARKSYNC_MANAGEMENT_CIDRS"
+	EnvGeoIPDB         = "BOOKMARKSYNC_GEOIP_DB"
 
 	databaseFile = "bookmarksync.db"
 )
@@ -38,6 +44,12 @@ type Config struct {
 	// OIDCProviders are the operator-configured OpenID Connect providers (Google,
 	// Authentik), from environment variables only. They require PublicOrigin.
 	OIDCProviders []OIDCProvider
+	// TrustedProxies are the only peers allowed to supply X-Forwarded-For.
+	TrustedProxies []netip.Prefix
+	// ManagementCIDRs are explicit resolved client networks exempt from country rules.
+	ManagementCIDRs []netip.Prefix
+	// GeoIPDBPath points to a separately provisioned MaxMind Country MMDB file.
+	GeoIPDBPath string
 }
 
 // Parse builds a Config from defaults, then environment, then flags (flags win).
@@ -164,6 +176,15 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 		return Config{}, err
 	}
 	cfg.OIDCProviders = providers
+	cfg.TrustedProxies, err = network.ParseCIDRs(getenv(EnvTrustedProxies))
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid %s: %w", EnvTrustedProxies, err)
+	}
+	cfg.ManagementCIDRs, err = network.ParseCIDRs(getenv(EnvManagementCIDRs))
+	if err != nil {
+		return Config{}, fmt.Errorf("invalid %s: %w", EnvManagementCIDRs, err)
+	}
+	cfg.GeoIPDBPath = strings.TrimSpace(getenv(EnvGeoIPDB))
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}

@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atikansari-ghr/BookmarksSync/internal/network"
 	"github.com/atikansari-ghr/BookmarksSync/internal/version"
 )
 
@@ -48,6 +49,8 @@ type Options struct {
 	// overrides MaxBodyBytes; zero or a negative result uses the default limit.
 	BodyLimit func(*http.Request) int64
 	Logger    *slog.Logger
+	// NetworkAccess is evaluated before all built-in and registered routes.
+	NetworkAccess *network.Gate
 }
 
 type registrar struct {
@@ -107,6 +110,9 @@ func NewHandler(opts Options) http.Handler {
 		r.Body = http.MaxBytesReader(w, r.Body, limit)
 		next.ServeHTTP(w, r)
 	})
+	if opts.NetworkAccess != nil {
+		h = opts.NetworkAccess.Middleware(h)
+	}
 	h = recoverer(h, opts.Logger)
 	h = baseHeaders(h)
 	return h
