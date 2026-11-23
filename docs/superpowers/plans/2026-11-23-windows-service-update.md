@@ -92,11 +92,11 @@
 
 **Files:** `docs/distribution.md`, `docs/implementation-plan.md`, this plan, and installer help text.
 
-- [ ] Document prerequisites, install/upgrade/repair commands, identities and paths, Admin-page approvals, firewall/reverse proxy, backup/restore, and GeoLite limitations.
-- [ ] Run `gofmt -l cmd internal`, `go test ./... -count=1`, `go vet ./...`, Windows amd64 tests/build, Linux amd64 build, `powershell -NoProfile -File scripts/windows/tests/run.ps1`, workflow validation, and `git diff --check`.
+- [x] Document prerequisites, install/upgrade/repair commands, identities and paths, Admin-page approvals, firewall/reverse proxy, backup/restore, and GeoLite limitations.
+- [x] Run `gofmt -l cmd internal`, `go test ./... -count=1`, `go vet ./...`, Windows amd64 tests/build, Linux amd64 build, `powershell -NoProfile -File scripts/windows/tests/run.ps1`, `actionlint .github/workflows/ci.yml`, and `git diff --check`.
 - [ ] Run an elevated disposable Windows service lifecycle smoke: install, start, submit an approved update, force a readiness failure, verify rollback, and remove only test-owned services/files.
-- [ ] Mark actual SCM lifecycle acceptance pending if an elevated Windows test host is unavailable; do not substitute the Linux LXC or claim service installation was tested.
-- [ ] Commit as `Document Windows deployment lifecycle`.
+- [x] Mark actual SCM lifecycle acceptance pending because this workstation is not elevated; do not substitute the Linux LXC or claim service installation was tested.
+- [x] Commit as `Document Windows deployment lifecycle`.
 
 ## Completion Gate
 
