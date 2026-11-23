@@ -196,6 +196,7 @@ function Invoke-BookmarksSyncInstall {
         & $Operations.PrepareRclone $rcloneStage
         if ($fresh) {
             New-Item -ItemType Directory -Force -Path $paths.root,$paths.data,$paths.rclone,$paths.snapshots,$paths.staging,$paths.install | Out-Null
+            New-Item -ItemType File -Force -Path (Join-Path $paths.rclone 'rclone.conf') | Out-Null
             $cidrs = '127.0.0.1/32,::1/128'
             if ($ManagementCidrs) { $cidrs += ',' + $ManagementCidrs }
             $lines = @('BOOKMARKSYNC_LISTEN=0.0.0.0:18080',"BOOKMARKSYNC_DATA_DIR=$($paths.data)","BOOKMARKSYNC_MANAGEMENT_CIDRS=$cidrs")

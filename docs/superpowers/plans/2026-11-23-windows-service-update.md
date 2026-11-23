@@ -84,7 +84,7 @@
 
 - [x] Add isolated tests for fresh install, explicit-tag upgrade, repair, checksum/attestation failures, existing unmanaged services, and path-junction rejection. Tests use temporary roots and fake service operations; they do not touch host services or ProgramData.
 - [x] Run `powershell -NoProfile -File scripts/windows/tests/run.ps1`; 13 isolated cases pass. No initial RED transcript was recorded during this resumed implementation pass.
-- [x] Implement `install`, `upgrade --tag`, and `repair --tag`; configure both services, virtual service SID, startup recovery, protected ProgramData paths and environment file, require GitHub CLI before host mutation, verify the pinned official Windows rclone archive, add loopback management CIDRs, and pipe first-admin input through stdin.
+- [x] Implement `install`, `upgrade --tag`, and `repair --tag`; configure both services, virtual service SID, startup recovery, protected ProgramData paths and environment file, create the initial empty rclone config for snapshot completeness, require GitHub CLI before host mutation, verify the pinned official Windows rclone archive, add loopback management CIDRs, and pipe first-admin input through stdin.
 - [x] Test verified-download ordering, data/config rollback behavior, simulated service/ACL operations, readiness rollback, repeat repair, rclone license installation, snapshot manifest/checksum rejection, and junction rejection. Real SCM/ACL state is reserved for the elevated Task 6 lifecycle gate.
 - [x] Commit as `Add Windows service installer`.
 

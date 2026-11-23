@@ -58,6 +58,7 @@ TestCase 'fresh install protects configuration and passes first-admin password t
     $envText=Get-Content -Raw (Join-Path $root 'bookmarksync.env')
     Assert ($envText.Contains('BOOKMARKSYNC_MANAGEMENT_CIDRS=127.0.0.1/32,::1/128,192.168.1.0/24')) 'loopback or requested management CIDRs absent'
     Assert ($envText.Contains('BOOKMARKSYNC_RCLONE_CONFIG=')) 'rclone config path missing'
+    Assert (Test-Path (Join-Path $root 'rclone\rclone.conf')) 'fresh install must create an empty rclone config so the updater can snapshot it'
     Assert ($state.Events.IndexOf('verify') -lt $state.Events.IndexOf('acl') -and $state.Events.IndexOf('rclone') -lt $state.Events.IndexOf('acl')) 'host mutation occurred before release and rclone verification'
     Assert ($state.AdminUser -eq 'admin' -and $state.PasswordSeen -eq 'TestOnlyPassword123') 'initial admin input was not delivered'
     Remove-Item $root -Recurse -Force
