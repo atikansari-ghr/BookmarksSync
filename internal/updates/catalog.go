@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -57,6 +58,26 @@ func (c CatalogClient) timeout() time.Duration {
 }
 
 func (c CatalogClient) List(ctx context.Context, installedCommit string) (Catalog, error) {
+	return c.ListForPlatform(ctx, installedCommit, runtime.GOOS, runtime.GOARCH)
+}
+
+// RequiredReleaseAssets returns the exact assets needed for an installable
+// release on a supported host. Unsupported architectures expose no releases.
+func RequiredReleaseAssets(goos, goarch string) []string {
+	if goarch != "amd64" {
+		return nil
+	}
+	switch goos {
+	case "linux":
+		return []string{"bookmarksync-linux-amd64", "BUILD_INFO.txt", "SHA256SUMS"}
+	case "windows":
+		return []string{"bookmarksync-windows-amd64.exe", "bookmarksync-updater-windows-amd64.exe", "BUILD_INFO.txt", "SHA256SUMS"}
+	default:
+		return nil
+	}
+}
+
+func (c CatalogClient) ListForPlatform(ctx context.Context, installedCommit, goos, goarch string) (Catalog, error) {
 	url := c.BaseURL
 	if url == "" {
 		url = defaultURL
@@ -97,6 +118,10 @@ func (c CatalogClient) List(ctx context.Context, installedCommit string) (Catalo
 	}
 
 	catalog := Catalog{InstalledCommit: installedCommit, Releases: make([]Release, 0, len(raw))}
+	required := RequiredReleaseAssets(goos, goarch)
+	if len(required) == 0 {
+		return catalog, nil
+	}
 	for _, r := range raw {
 		match := buildTagPattern.FindStringSubmatch(r.Tag)
 		if len(match) != 2 || r.Draft || !r.Prerelease || r.PublishedAt == "" {
@@ -106,7 +131,14 @@ func (c CatalogClient) List(ctx context.Context, installedCommit string) (Catalo
 		for _, a := range r.Assets {
 			assets[a.Name] = true
 		}
-		if !assets["bookmarksync-linux-amd64"] || !assets["BUILD_INFO.txt"] || !assets["SHA256SUMS"] {
+		complete := true
+		for _, name := range required {
+			if !assets[name] {
+				complete = false
+				break
+			}
+		}
+		if !complete {
 			continue
 		}
 		publishedAt, err := time.Parse(time.RFC3339, r.PublishedAt)

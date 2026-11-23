@@ -72,11 +72,11 @@
 
 **Interfaces:** Add `updates.RequiredReleaseAssets(goos, goarch string) []string`. Windows amd64 requires `bookmarksync-windows-amd64.exe`, `bookmarksync-updater-windows-amd64.exe`, `BUILD_INFO.txt`, and `SHA256SUMS`; Linux amd64 keeps its existing asset set.
 
-- [ ] Test that each platform lists only releases containing all of its required assets and unsupported platforms expose no apply action.
-- [ ] Run catalog tests and Windows/Linux command builds to confirm the new updater entry point is absent or safely stubbed on other operating systems.
-- [ ] Extend the successful-main workflow to build and attest the updater executable, include it in SHA256SUMS, and publish it with the server binaries and metadata.
-- [ ] Validate workflow syntax/asset names and `go test ./internal/updates ./cmd/bookmarksync/... ./cmd/bookmarksync-updater/...`.
-- [ ] Commit as `Publish Windows updater asset`.
+- [x] Test that each platform lists only releases containing all of its required assets and unsupported platforms expose no apply action.
+- [x] Run catalog tests and Windows/Linux command builds to confirm the new updater entry point is absent or safely stubbed on other operating systems.
+- [x] Extend the successful-main workflow to build and attest the updater executable, include it in SHA256SUMS, and publish it with the server binaries and metadata.
+- [x] Validate workflow syntax/asset names and `go test ./internal/updates ./cmd/bookmarksync/... ./cmd/bookmarksync-updater/...`.
+- [x] Commit as `Publish Windows updater asset`.
 
 ### Task 5: Add Windows install, upgrade, and repair commands
 

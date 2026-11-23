@@ -25,7 +25,7 @@ func TestCatalogListsOnlyPublishedCompleteSHAReleases(t *testing.T) {
 	}))
 	defer server.Close()
 
-	got, err := (CatalogClient{BaseURL: server.URL + "/releases?per_page=100", HTTPClient: server.Client()}).List(context.Background(), "dddddddddddddddddddddddddddddddddddddddd")
+	got, err := (CatalogClient{BaseURL: server.URL + "/releases?per_page=100", HTTPClient: server.Client()}).ListForPlatform(context.Background(), "dddddddddddddddddddddddddddddddddddddddd", "linux", "amd64")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,6 +75,42 @@ func TestCatalogClientUsesBoundedTimeoutByDefault(t *testing.T) {
 	if got := client.timeout(); got <= 0 || got > 15*time.Second {
 		t.Fatalf("timeout = %s", got)
 	}
+}
+
+func TestRequiredReleaseAssetsAndCatalogPlatformFiltering(t *testing.T) {
+	if got := RequiredReleaseAssets("windows", "amd64"); !sameStrings(got, []string{"bookmarksync-windows-amd64.exe", "bookmarksync-updater-windows-amd64.exe", "BUILD_INFO.txt", "SHA256SUMS"}) {
+		t.Fatalf("Windows assets = %v", got)
+	}
+	if got := RequiredReleaseAssets("linux", "amd64"); !sameStrings(got, []string{"bookmarksync-linux-amd64", "BUILD_INFO.txt", "SHA256SUMS"}) {
+		t.Fatalf("Linux assets = %v", got)
+	}
+	if got := RequiredReleaseAssets("windows", "arm64"); len(got) != 0 {
+		t.Fatalf("unsupported platform assets = %v", got)
+	}
+	body := `[{"tag_name":"build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","draft":false,"prerelease":true,"published_at":"2026-11-23T12:00:00Z","assets":[{"name":"bookmarksync-windows-amd64.exe"},{"name":"bookmarksync-updater-windows-amd64.exe"},{"name":"BUILD_INFO.txt"},{"name":"SHA256SUMS"}]}]`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(body)) }))
+	defer server.Close()
+	client := CatalogClient{BaseURL: server.URL, HTTPClient: server.Client()}
+	got, err := client.ListForPlatform(context.Background(), "", "windows", "amd64")
+	if err != nil || len(got.Releases) != 1 {
+		t.Fatalf("Windows catalog = %+v, %v", got, err)
+	}
+	got, err = client.ListForPlatform(context.Background(), "", "windows", "arm64")
+	if err != nil || len(got.Releases) != 0 {
+		t.Fatalf("unsupported catalog = %+v, %v", got, err)
+	}
+}
+
+func sameStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestCatalogErrorDoesNotExposeResponseBody(t *testing.T) {

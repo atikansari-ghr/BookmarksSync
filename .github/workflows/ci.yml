@@ -221,6 +221,20 @@ jobs:
           path: dist/bookmarksync-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
           if-no-files-found: error
           retention-days: 7
+      - name: Build Windows updater service
+        if: matrix.goos == 'windows'
+        env:
+          GOOS: windows
+          GOARCH: amd64
+        run: go build -trimpath -o dist/bookmarksync-updater-windows-amd64.exe ./cmd/bookmarksync-updater
+      - name: Upload Windows updater for release assembly
+        if: matrix.goos == 'windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bookmarksync-updater-windows-amd64
+          path: dist/bookmarksync-updater-windows-amd64.exe
+          if-no-files-found: error
+          retention-days: 7
 
   publish-build:
     # A successful push to main becomes a SHA-addressed prerelease. Pull requests
@@ -247,10 +261,11 @@ jobs:
           set -euo pipefail
           test -s dist/bookmarksync-linux-amd64
           test -s dist/bookmarksync-windows-amd64.exe
+          test -s dist/bookmarksync-updater-windows-amd64.exe
           BUILD_DATE="$(git show -s --format=%cI "$COMMIT")"
           printf 'commit=%s\nbuild_date=%s\nversion=0.0.0-%s\n' \
             "$COMMIT" "$BUILD_DATE" "${COMMIT:0:12}" > dist/BUILD_INFO.txt
-          (cd dist && sha256sum bookmarksync-linux-amd64 bookmarksync-windows-amd64.exe BUILD_INFO.txt > SHA256SUMS)
+          (cd dist && sha256sum bookmarksync-linux-amd64 bookmarksync-windows-amd64.exe bookmarksync-updater-windows-amd64.exe BUILD_INFO.txt > SHA256SUMS)
       - name: Attest release files
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
@@ -262,7 +277,7 @@ jobs:
         run: |
           set -euo pipefail
           tag="build-${COMMIT}"
-          gh release create "$tag" dist/bookmarksync-linux-amd64 dist/bookmarksync-windows-amd64.exe dist/BUILD_INFO.txt dist/SHA256SUMS \
+          gh release create "$tag" dist/bookmarksync-linux-amd64 dist/bookmarksync-windows-amd64.exe dist/bookmarksync-updater-windows-amd64.exe dist/BUILD_INFO.txt dist/SHA256SUMS \
             --draft --prerelease --latest=false --target "$COMMIT" \
             --title "Build ${COMMIT:0:12}" \
             --notes "Successful main-branch build for commit ${COMMIT}. Verify binary provenance with: gh attestation verify <binary> -R atikansari-ghr/BookmarksSync"
