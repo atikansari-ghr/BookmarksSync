@@ -8,11 +8,15 @@ on:
 permissions:
   contents: read
 
-# Actions are pinned to full commit SHAs, verified against the official
-# actions/* repositories (tag -> commit) on 2026-11-16. All three run on node24.
+# Actions are pinned to full commit SHAs, verified against official actions/*
+# repositories (tag -> commit). The release action pins were checked 2026-11-23.
 #   actions/checkout   v7.0.1 3d3c42e5aac5ba805825da76410c181273ba90b1
 #   actions/setup-go   v7.0.0 b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
 #   actions/setup-node v7.1.0 949feb2413d6458794dcd2491c4babbbce0c15c1
+#   actions/upload-artifact v7.0.2 cf430e030ddbb5b0abf93d22962f4752f3646cd9
+#   actions/download-artifact v8.0.1 3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+#   actions/attest v4.2.1 508db95dd578ae2727ebd6217d5ba78e4fbda05d
+# All six actions run on node24.
 # govulncheck is pinned to golang.org/x/vuln v1.9.0 (Go module proxy @latest).
 # Node 26 (LTS "Lithium") satisfies selenium-webdriver 4.46.0 and playwright
 # 1.65.1, which declare engines node >=20.
@@ -208,5 +212,58 @@ jobs:
           BUILD_DATE="$(git show -s --format=%cI "$COMMIT")"
           pkg=github.com/atikansari-ghr/BookmarksSync/internal/version
           go build -trimpath \
-            -ldflags "-s -w -X ${pkg}.Version=0.0.0-ci -X ${pkg}.Commit=${COMMIT} -X ${pkg}.Date=${BUILD_DATE}" \
+            -ldflags "-s -w -X ${pkg}.Version=0.0.0-${COMMIT:0:12} -X ${pkg}.Commit=${COMMIT} -X ${pkg}.Date=${BUILD_DATE}" \
             -o "$OUT" ./cmd/bookmarksync
+      - name: Upload build for release assembly
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bookmarksync-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/bookmarksync-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-build:
+    # A successful push to main becomes a SHA-addressed prerelease. Pull requests
+    # and manually dispatched workflows never publish assets.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Prepare release manifest and checksums
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -s dist/bookmarksync-linux-amd64
+          test -s dist/bookmarksync-windows-amd64.exe
+          BUILD_DATE="$(git show -s --format=%cI "$COMMIT")"
+          printf 'commit=%s\nbuild_date=%s\nversion=0.0.0-%s\n' \
+            "$COMMIT" "$BUILD_DATE" "${COMMIT:0:12}" > dist/BUILD_INFO.txt
+          (cd dist && sha256sum bookmarksync-linux-amd64 bookmarksync-windows-amd64.exe BUILD_INFO.txt > SHA256SUMS)
+      - name: Attest release files
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: 'dist/*'
+      - name: Create and publish immutable-ready prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag="build-${COMMIT}"
+          gh release create "$tag" dist/bookmarksync-linux-amd64 dist/bookmarksync-windows-amd64.exe dist/BUILD_INFO.txt dist/SHA256SUMS \
+            --draft --prerelease --latest=false --target "$COMMIT" \
+            --title "Build ${COMMIT:0:12}" \
+            --notes "Successful main-branch build for commit ${COMMIT}. Verify binary provenance with: gh attestation verify <binary> -R atikansari-ghr/BookmarksSync"
+          gh release edit "$tag" --draft=false

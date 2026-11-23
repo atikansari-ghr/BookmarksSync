@@ -25,6 +25,9 @@
   - **Verified:** full Go and web suites, vet, typecheck/build, Linux/Windows cross-builds, plus isolated LXC health/API/rclone archive verification and restore-policy checks. Existing LXC test data was backed up before updating its dedicated service.
   - **Still pending:** final public country/proxy acceptance and Docker/Windows GeoLite scheduling. Do not mark Operations complete until these follow-ups are delivered.
 - [ ] 6 Distribution: Debian/LXC/Docker/Windows installers and maintenance, successful-main CI packages with provenance/admin update confirmation/rollback; complete documentation. Each platform installs/upgrades/repairs/restores independently.
+  - **Delivered (release pipeline slice):** successful `main` CI builds assemble full-SHA prereleases with Linux/Windows binaries, checksums, build metadata, and GitHub artifact attestations. See `docs/distribution.md` and `docs/superpowers/plans/2026-11-23-main-build-releases.md`.
+  - **Verified:** GitHub immutable releases are enabled for the repository; released assets and SHA tags will be locked after draft publication.
+  - **Pending:** run the publishing workflow after an authorized merge/push; admin update catalog/approval UI, installers, snapshots, write pause, health check, and rollback.
 
 ## Review focus
 1. Offline browser cache following restore: test normal automatic continuation; document accepted risk.
