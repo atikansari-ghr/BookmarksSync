@@ -41,7 +41,7 @@
 - [x] Include the rclone MIT license in the final image and retain the upstream notice in the repository.
 - [x] Include the project `LICENSE` and `THIRD_PARTY_NOTICES.md` in the runtime image, and pass version/commit/date build args to the binary.
 - [x] Run the final image as UID/GID 65532, use read-only root filesystem-compatible paths, expose 8080, and declare `/var/lib/bookmarksync` as the data volume.
-- [x] Exclude local data, keys, MMDB, `.env`, `.tools`, and browser artifacts from the build context.
+- [x] Exclude local data, keys, MMDB, `.env`, credential JSON, `.tools`, and browser artifacts from the build context.
 - [x] Verify pinned rclone checksums against downloaded official amd64 and arm64 archives and check expected executable paths.
 
 ### Task 2: Add Compose deployment configuration
@@ -58,8 +58,9 @@
 
 **Files:** No additional files required.
 
-- [ ] When Docker is available, build the image, start it under an isolated Compose project and temporary named volume, create an admin via `docker compose exec`, verify readiness and persistence after recreation, and remove only the isolated project.
-- [x] If no Docker engine is available, record the limitation and leave image build/runtime acceptance pending; do not substitute a mock for this gate.
+- [x] On the authorized Debian 13 LXC, build the complete image, start an isolated Compose project, create test admins via `docker compose exec`, verify fail-closed/open readiness and persistence after forced recreation, then remove only the isolated project and volumes.
+- [x] Confirm runtime hardening (UID 65532, read-only root, dropped capabilities, no-new-privileges, loopback-only host port) and version endpoint.
+- [x] Inject credential/tool sentinels into the build context, rebuild without cache, and verify the sentinels are absent while embedded assets and migrations remain.
 
 ### Task 4: Document operations and limitations
 
@@ -70,6 +71,6 @@
 - [x] Run the Go suite, vet, Linux/Windows builds, Compose config validation, and `git diff --check`; frontend verification is unnecessary unless embedded assets change.
 
 ## Verification
-- `docker compose config` with and without optional variables (both render; missing GeoIP/CIDR access remains denied by the server policy).
-- `docker build` with local BuildKit, then isolated startup, admin provisioning and persistence checks when the Docker daemon is available.
+- `docker compose config` with and without optional variables; missing GeoIP/CIDR access returned 403 and configured test policy returned 200 on `/readyz`.
+- Debian 13 LXC Docker image build, isolated startup, CLI admin provisioning, volume persistence across forced recreation, build-context sentinel checks, and runtime hardening inspection all passed. Debian Docker used its legacy builder because BuildKit/buildx was not installed.
 - `go test ./... -count=1`, `go vet ./...`, Linux/Windows builds, and frontend check only if the existing embedded bundle changes.
