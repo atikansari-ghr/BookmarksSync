@@ -32,4 +32,7 @@
 **/*.db
 **/*.sqlite
 **/floccus.export.json
+**/credentials.json
+**/.tools
+**/.tools/**
 **/*_test.go
