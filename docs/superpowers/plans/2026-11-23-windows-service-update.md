@@ -46,13 +46,13 @@
 
 **Files:** `internal/updateipc/protocol.go`, `protocol_test.go`, `pipe_windows.go`, `pipe_other.go`, `internal/updates/runner.go`, platform runner files and tests.
 
-**Interfaces:** `updateipc.DecodeRequest(io.Reader) (Request, error)` and `EncodeRequest(io.Writer, string) error` use a maximum 256-byte JSON message with exactly one full release tag. `updates.InstalledHostRunner(...)` returns an `UpdateRunner` interface with `Start(context.Context, string) (string, error)`; Windows sends only the validated tag to `\\.\pipe\BookmarksSyncUpdater`, waits no longer than 10 seconds, and returns the existing job identifier format.
+**Interfaces:** `updateipc.DecodeRequest(io.Reader) (Request, error)` and `EncodeRequest(io.Writer, string) error` use a 2-byte length prefix and a JSON body capped at 256 bytes. `EncodeResponse`/`DecodeResponse` carry an accepted flag and job id; one request and one response share a connection. `updates.InstalledHostRunner(...)` returns an `UpdateRunner` interface with `Start(context.Context, string) (string, error)`; Windows sends only the validated tag to `\\.\pipe\BookmarksSyncUpdater`, waits no longer than 10 seconds for acknowledgement, and returns the existing job identifier format.
 
-- [ ] Test invalid tags, unknown fields, trailing data, empty and oversized messages, and bounded reads.
-- [ ] Run focused protocol tests and record the expected RED before adding protocol code.
-- [ ] Implement Windows pipe creation with an explicit DACL for SYSTEM, Administrators, and the app service SID, plus `PIPE_REJECT_REMOTE_CLIENTS`; add the Windows client with deadlines.
-- [ ] Test local request/reply, unauthorized identity denial, remote-client rejection, and missing updater behavior on Windows; keep non-Windows tests green.
-- [ ] Commit as `Add restricted Windows update pipe`.
+- [x] Test invalid tags, unknown fields, trailing data, empty and oversized messages, and bounded reads.
+- [x] Run focused protocol tests and record the expected RED before adding protocol code (initial compile failed on the missing protocol API).
+- [x] Implement Windows pipe creation with an explicit DACL for SYSTEM, Administrators, and the app service SID, plus `PIPE_REJECT_REMOTE_CLIENTS`; add the Windows client with deadlines.
+- [x] Test local request/reply, unauthorized identity denial, remote-client rejection, and missing updater behavior on Windows; keep non-Windows tests green.
+- [x] Commit as `Add restricted Windows update pipe`.
 
 ### Task 3: Build the LocalSystem updater and transactional worker
 

@@ -10,6 +10,10 @@ import (
 
 var ErrRunnerUnavailable = errors.New("host update runner is unavailable")
 
+type UpdateRunner interface {
+	Start(context.Context, string) (string, error)
+}
+
 // HostRunner can ask a fixed, root-owned helper to schedule one systemd job.
 // It does not invoke a shell and never accepts a command from the request.
 type HostRunner struct {

@@ -14,7 +14,7 @@ const installedHelperPath = "/usr/local/sbin/bookmarksync-update"
 
 // InstalledHostRunner enables approval only when both sudo and the fixed helper
 // are root-owned, non-writable by group/others, and executable regular files.
-func InstalledHostRunner(serviceUser string) *HostRunner {
+func InstalledHostRunner(serviceUser string) UpdateRunner {
 	if serviceUser == "" {
 		serviceUser = "bookmarksync"
 	}
