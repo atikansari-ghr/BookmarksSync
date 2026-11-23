@@ -26,7 +26,7 @@
 
 ## Files
 - Create `Dockerfile` for reproducible multi-stage image build, non-root runtime and declared data mount.
-- Create `.dockerignore` as a positive source allowlist so local state, credentials, generated tools, and browser artifacts stay out of build context.
+- Create `.dockerignore` as a positive source allowlist for Go sources, migrations, exact UI asset types, and licenses; exclude local state, credentials, generated tools, tests, and browser artifacts from the build context.
 - Create `compose.yaml` with persistent volumes, fail-closed access-policy settings, optional read-only GeoIP mount, configurable public URL/OIDC settings, and port mapping.
 - Update `docs/distribution.md`, `README.md`, and `docs/implementation-plan.md` with build, first-admin, proxy, data, backup and update limitations.
 

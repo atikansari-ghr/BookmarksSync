@@ -50,7 +50,7 @@ BOOKMARKSYNC_TRUSTED_PROXIES=192.0.2.10/32
 
 Put `GeoLite2-Country.mmdb` in `./geoip/` if using GeoIP. Build and start the local image from the repository root. Set build identity from the checked-out commit so the UI, CLI and backup manifest can identify the source:
 
-```sh
+```bash
 commit="$(git rev-parse HEAD)"
 export BOOKMARKSYNC_COMMIT="$commit"
 export BOOKMARKSYNC_VERSION="0.0.0-${commit:0:12}"
@@ -65,11 +65,9 @@ Set `BOOKMARKSYNC_PUBLIC_URL` to the external HTTPS origin when using browser si
 
 Google and Authentik client settings can be provided through the matching `BOOKMARKSYNC_OIDC_*` variables in the host environment or a private Compose `.env` file. OIDC callback URLs must match the configured public URL. Full-system backup and verification use `/tmp` for private staging; the Compose tmpfs defaults to 1 GiB. Increase `BOOKMARKSYNC_TMPFS_SIZE` above the uncompressed database plus archive working space when the data volume is larger.
 
-Google and Authentik client settings can be provided through the matching `BOOKMARKSYNC_OIDC_*` variables in the host environment or a private Compose `.env` file. OIDC callback URLs must match the configured public URL. Full-system backup and verification use `/tmp` for private staging; the Compose tmpfs defaults to 1 GiB. Increase `BOOKMARKSYNC_TMPFS_SIZE` above the uncompressed database plus archive working space when the data volume is larger.
-
 Create the first administrator using a masked prompt; the password is piped to the CLI and is not placed in an argument or environment variable:
 
-```sh
+```bash
 read -r -s -p "Admin password: " ADMIN_PASSWORD
 printf '\n'
 printf '%s\n' "$ADMIN_PASSWORD" | docker compose exec -T bookmarksync /usr/local/bin/bookmarksync user create --username admin --password-stdin --admin --data-dir /var/lib/bookmarksync
