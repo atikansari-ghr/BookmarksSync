@@ -1,0 +1,569 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly repository="atikansari-ghr/BookmarksSync"
+readonly api_releases="https://api.github.com/repos/${repository}/releases?per_page=100"
+readonly signer_workflow="${repository}/.github/workflows/ci.yml"
+readonly service_user="${BOOKMARKSYNC_SERVICE_USER:-bookmarksync}"
+readonly service_group="${BOOKMARKSYNC_SERVICE_GROUP:-bookmarksync}"
+readonly service_name="${BOOKMARKSYNC_SERVICE:-bookmarksync.service}"
+readonly binary_path="${BOOKMARKSYNC_BINARY_PATH:-/usr/local/bin/bookmarksync}"
+readonly data_path="${BOOKMARKSYNC_DATA_PATH:-/var/lib/bookmarksync}"
+readonly env_path="${BOOKMARKSYNC_ENV_PATH:-/etc/bookmarksync/bookmarksync.env}"
+readonly unit_dir="${BOOKMARKSYNC_SYSTEMD_DIR:-/etc/systemd/system}"
+readonly updates_path="${BOOKMARKSYNC_UPDATES_PATH:-/var/lib/bookmarksync-updates}"
+cleanup_directory=""
+
+cleanup_temporary_directory() {
+  [[ -z "$cleanup_directory" ]] || rm -rf -- "$cleanup_directory"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: bookmarksync <command> [options]
+
+Commands:
+  install                 Install the latest published verified build
+  upgrade --tag TAG       Upgrade to an explicit SHA-addressed release
+  repair --tag TAG         Reinstall a verified release and managed service files
+  help                     Show this help
+
+Run as root on Debian amd64 with systemd. Upgrades preserve data and create a
+full-system rollback snapshot before changing the installed binary.
+EOF
+}
+
+fail() {
+  printf 'bookmarksync: %s\n' "$1" >&2
+  exit 1
+}
+
+check_platform() {
+  local os_id arch
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]]; then
+    os_id="${BOOKMARKSYNC_TEST_OS:-debian}"
+    arch="${BOOKMARKSYNC_TEST_ARCH:-amd64}"
+  else
+    [[ -r /etc/os-release ]] || fail "cannot identify operating system"
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    os_id="${ID:-}"
+    arch="$(dpkg --print-architecture 2>/dev/null || true)"
+  fi
+  [[ "$os_id" == debian ]] || fail "this command supports Debian only"
+  [[ "$arch" == amd64 ]] || fail "this command supports Debian amd64 only"
+  command -v systemctl >/dev/null 2>&1 || [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]] || fail "systemd is required"
+}
+
+require_user_root() {
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]]; then
+    [[ -n "${BOOKMARKSYNC_INSTALL_ROOT:-}" && "${BOOKMARKSYNC_INSTALL_ROOT}" != / ]] || fail "tests must use an isolated install root"
+    return
+  fi
+  [[ "$(id -u)" -eq 0 ]] || fail "run as root (for example: sudo scripts/debian/bookmarksync install)"
+}
+
+resolve_release_tag() {
+  local requested="$1" payload selected
+  command -v curl >/dev/null 2>&1 || fail "curl is required"
+  command -v python3 >/dev/null 2>&1 || fail "Python 3 is required"
+  payload="$(curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
+    -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' "$api_releases")" || fail "cannot query the public BookmarksSync releases"
+  selected="$(python3 -c '
+import json, re, sys
+requested = sys.argv[1]
+try:
+    releases = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(2)
+base = [r for r in releases if isinstance(r, dict) and
+        re.fullmatch(r"build-[0-9a-f]{40}", str(r.get("tag_name", ""))) and
+        r.get("draft") is False and r.get("prerelease") is True and
+        isinstance(r.get("published_at"), str)]
+required = {"bookmarksync-linux-amd64", "BUILD_INFO.txt", "SHA256SUMS"}
+def complete(r):
+    assets = r.get("assets", [])
+    names = {a.get("name") for a in assets if isinstance(a, dict)}
+    return required.issubset(names)
+valid = [r for r in base if complete(r)]
+if requested:
+    candidates = [r for r in base if r["tag_name"] == requested]
+    matches = [r for r in candidates if complete(r)]
+    if not matches:
+        raise SystemExit(5 if candidates else 3)
+    print(matches[0]["tag_name"])
+else:
+    valid.sort(key=lambda r: r["published_at"], reverse=True)
+    if not valid:
+        raise SystemExit(4)
+    print(valid[0]["tag_name"])
+' "$requested" <<<"$payload")" || {
+    case "$?" in
+      3) fail "requested release tag was not found among published SHA builds" ;;
+      4) fail "no published SHA build is available" ;;
+      5) fail "requested release is missing required assets" ;;
+      *) fail "release API response is invalid" ;;
+    esac
+  }
+  [[ "$selected" =~ ^build-[0-9a-f]{40}$ ]] || fail "release API returned an invalid tag"
+  printf '%s\n' "$selected"
+}
+
+download_and_verify_release() {
+  local tag="$1" directory="$2" commit asset_url
+  mkdir -p -- "$directory"
+  chmod 0700 "$directory"
+  commit="${tag#build-}"
+  for asset in bookmarksync-linux-amd64 BUILD_INFO.txt SHA256SUMS; do
+    asset_url="https://github.com/${repository}/releases/download/${tag}/${asset}"
+    curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
+      "$asset_url" --output "${directory}/${asset}" || fail "cannot download release asset ${asset}"
+  done
+  (cd -- "$directory" && sha256sum --check SHA256SUMS) || fail "release checksum verification failed"
+  grep -Fxq "commit=${commit}" "${directory}/BUILD_INFO.txt" || fail "build metadata does not match the release tag"
+  grep -Fxq "version=0.0.0-${commit:0:12}" "${directory}/BUILD_INFO.txt" || fail "release version does not match its commit"
+  command -v gh >/dev/null 2>&1 || fail "GitHub CLI is required for release provenance verification"
+  gh release verify "$tag" --repo "$repository" >/dev/null || fail "GitHub release attestation verification failed"
+  gh attestation verify "${directory}/bookmarksync-linux-amd64" --repo "$repository" \
+    --signer-workflow "$signer_workflow" --source-ref refs/heads/main >/dev/null || fail "binary provenance verification failed"
+}
+
+managed_path() {
+  local path="$1"
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]]; then
+    printf '%s%s\n' "${BOOKMARKSYNC_INSTALL_ROOT%/}" "$path"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
+check_managed_path() {
+  local path="$1"
+  [[ ! -L "$path" ]] || fail "refusing to follow managed path symlink: $path"
+}
+
+ensure_github_cli() {
+  command -v gh >/dev/null 2>&1 && return
+  [[ "${BOOKMARKSYNC_TESTING:-0}" != 1 ]] || fail "test harness must provide a fake gh command"
+  command -v apt-get >/dev/null 2>&1 || fail "install GitHub CLI (gh) from its official Debian repository, then retry"
+  local keyring=/etc/apt/keyrings/githubcli-archive-keyring.gpg source=/etc/apt/sources.list.d/github-cli.list temp
+  temp="$(mktemp)"
+  curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
+    https://cli.github.com/packages/githubcli-archive-keyring.gpg --output "$temp" || fail "cannot download GitHub CLI signing keyring"
+  printf '%s  %s\n' 6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b "$temp" | sha256sum --check --status || fail "GitHub CLI keyring checksum changed; review the official key and update this installer"
+  install -d -m 0755 /etc/apt/keyrings /etc/apt/sources.list.d
+  if [[ -e "$keyring" ]]; then
+    check_managed_path "$keyring"
+    printf '%s  %s\n' 6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b "$keyring" | sha256sum --check --status || fail "existing GitHub CLI keyring is not the pinned official keyring"
+  else
+    install -m 0644 "$temp" "$keyring"
+  fi
+  local source_text="deb [arch=amd64 signed-by=${keyring}] https://cli.github.com/packages stable main"
+  if [[ -e "$source" ]]; then
+    check_managed_path "$source"
+    [[ "$(cat -- "$source")" == "$source_text" ]] || fail "existing GitHub CLI APT source differs; review it before retrying"
+  else
+    printf '%s\n' "$source_text" > "${source}.next"
+    chmod 0644 "${source}.next"
+    mv -- "${source}.next" "$source"
+  fi
+  rm -f -- "$temp"
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install --yes gh
+  command -v gh >/dev/null 2>&1 || fail "GitHub CLI installation did not provide gh"
+}
+
+validate_initial_settings() {
+  local public_url="$1" listen="$2" cidrs="$3"
+  python3 - "$public_url" "$listen" "$cidrs" <<'PY' || fail "public URL, listen address, or management CIDRs are invalid"
+import ipaddress, re, sys
+from urllib.parse import urlsplit
+
+public_url, listen, cidrs = sys.argv[1:]
+try:
+    public = urlsplit(public_url)
+    host = public.hostname
+    loopback = host == "localhost"
+    if host:
+        try:
+            loopback = loopback or ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            pass
+    if (public.scheme != "https" and not (public.scheme == "http" and loopback)) or not host or "?" in public_url or "#" in public_url or public.username or public.password or public.path not in ("", "/") or public.query or public.fragment:
+        raise ValueError("invalid public origin")
+    _ = public.port
+    if not re.fullmatch(r"[A-Za-z0-9.\[\]:-]+", host):
+        raise ValueError("invalid public host")
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        if not re.fullmatch(r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", host):
+            raise ValueError("invalid public hostname")
+    if not re.fullmatch(r"[A-Za-z0-9.\[\]:_-]+", listen):
+        raise ValueError("invalid listen address")
+    parsed_listen = urlsplit("//" + listen)
+    if not parsed_listen.hostname or parsed_listen.port is None or parsed_listen.path:
+        raise ValueError("invalid listen address")
+    for part in filter(None, cidrs.split(',')):
+        ipaddress.ip_network(part, strict=False)
+except ValueError:
+    raise SystemExit(1)
+PY
+}
+
+initial_env_file() {
+  local path public_url listen cidrs
+  path="$(managed_path "$env_path")"
+  if [[ -e "$path" ]]; then
+    check_managed_path "$path"
+    [[ -f "$path" ]] || fail "environment path is not a regular file"
+    if [[ "${BOOKMARKSYNC_TESTING:-0}" != 1 ]]; then
+      [[ "$(stat -c '%u' -- "$path")" == 0 ]] || fail "existing environment file must be owned by root"
+    fi
+    chmod 0600 -- "$path"
+    return
+  fi
+  public_url="${BOOKMARKSYNC_PUBLIC_URL:-}"
+  listen="${BOOKMARKSYNC_LISTEN:-0.0.0.0:8080}"
+  cidrs="${BOOKMARKSYNC_MANAGEMENT_CIDRS:-}"
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" != 1 ]]; then
+    [[ -n "$public_url" ]] || { [[ -t 0 ]] && read -r -p 'Public HTTPS origin (for example https://bookmarks.example.com): ' public_url; }
+    [[ -n "$cidrs" ]] || { [[ -t 0 ]] && read -r -p 'Management CIDRs allowed when GeoIP is unavailable (LAN CIDR or blank): ' cidrs; }
+  fi
+  [[ -n "$public_url" ]] || fail "set BOOKMARKSYNC_PUBLIC_URL or run interactively to provide the public HTTPS origin"
+  validate_initial_settings "$public_url" "$listen" "$cidrs"
+  [[ ",$cidrs," == *,127.0.0.1/32,* ]] || cidrs="${cidrs:+${cidrs},}127.0.0.1/32"
+  [[ ",$cidrs," == *,::1/128,* ]] || cidrs="${cidrs:+${cidrs},}::1/128"
+  install -d -m 0750 "$(dirname -- "$path")"
+  local next="${path}.next"
+  check_managed_path "$next"
+  printf 'BOOKMARKSYNC_PUBLIC_URL=%s\nBOOKMARKSYNC_LISTEN=%s\nBOOKMARKSYNC_DATA_DIR=%s\nBOOKMARKSYNC_MANAGEMENT_CIDRS=%s\nBOOKMARKSYNC_GEOIP_DB=/var/lib/bookmarksync-geoip/GeoLite2-Country.mmdb\n' \
+    "$public_url" "$listen" "$data_path" "$cidrs" > "$next"
+  chmod 0600 "$next"
+  mv -- "$next" "$path"
+}
+
+write_managed_unit() {
+  local unit
+  unit="$(managed_path "${unit_dir%/}/${service_name}")"
+  check_managed_path "$unit"
+  check_managed_path "${unit}.next"
+  if [[ -e "$unit" ]] && ! grep -Fq '# Managed by BookmarksSync installer' "$unit"; then
+    fail "refusing to overwrite an unmanaged systemd unit: $unit"
+  fi
+  install -d -m 0755 -o root -g root "$(dirname -- "$unit")"
+  cat > "${unit}.next" <<EOF
+# Managed by BookmarksSync installer
+[Unit]
+Description=BookmarksSync self-hosted bookmark server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${service_user}
+Group=${service_group}
+EnvironmentFile=${env_path}
+ExecStart=${binary_path} serve
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=${data_path} ${updates_path}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "${unit}.next"
+  mv -f -- "${unit}.next" "$unit"
+}
+
+save_managed_state() {
+  local env_file="$1" unit_file="$2" env_snapshot="$3" unit_snapshot="$4"
+  install -m 0600 "$env_file" "$env_snapshot" || return 1
+  install -m 0644 "$unit_file" "$unit_snapshot" || return 1
+}
+
+ensure_service_account() {
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]]; then return 0; fi
+  if ! getent passwd "$service_user" >/dev/null; then
+    useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin --user-group "$service_user"
+  fi
+  getent group "$service_group" >/dev/null || fail "service group $service_group does not exist"
+}
+
+service_chown() {
+  [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]] && return 0
+  chown "$service_user:$service_group" "$@"
+}
+
+bootstrap_admin() {
+  local username password confirm binary
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]]; then return 0; fi
+  [[ -t 0 ]] || fail "first install requires an interactive terminal to create the administrator"
+  binary="$(managed_path "$binary_path")"
+  read -r -p 'Initial administrator username: ' username
+  [[ "$username" =~ ^[A-Za-z0-9._-]{1,80}$ ]] || fail "administrator username has unsupported characters"
+  while :; do
+    IFS= read -r -s -p 'Initial administrator password (minimum 12 bytes): ' password
+    printf '\n'
+    IFS= read -r -s -p 'Confirm password: ' confirm
+    printf '\n'
+    [[ "$password" == "$confirm" ]] || { printf 'Passwords do not match.\n' >&2; continue; }
+    (( ${#password} >= 12 )) || { printf 'Password must be at least 12 bytes.\n' >&2; continue; }
+    break
+  done
+  printf '%s\n' "$password" | runuser -u "$service_user" -- "$binary" user create --username "$username" --admin --password-stdin --data-dir "$data_path"
+  unset password confirm
+}
+
+service_systemctl() {
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]]; then
+    systemctl "$@" "$service_name"
+  else
+    systemctl "$@" "$service_name"
+  fi
+}
+
+readiness_check() {
+  local env_file listen port url attempt
+  env_file="$(managed_path "$env_path")"
+  listen="$(sed -n 's/^BOOKMARKSYNC_LISTEN=//p' "$env_file" | head -n 1)"
+  port="${listen##*:}"
+  url="http://127.0.0.1:${port}/readyz"
+  for attempt in {1..30}; do
+    curl --fail --silent --show-error --max-time 3 "$url" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+
+prepare_verified_binary() {
+  local tag="$1" temporary="$2"
+  download_and_verify_release "$tag" "${temporary}/release"
+  chmod 0755 "${temporary}/release/bookmarksync-linux-amd64"
+}
+
+install_release() {
+  local command="$1" tag="$2" temporary binary data env_file unit updates timestamp snapshot_base snapshot old_binary env_snapshot unit_snapshot had_service=0
+  binary="$(managed_path "$binary_path")"
+  data="$(managed_path "$data_path")"
+  env_file="$(managed_path "$env_path")"
+  unit="$(managed_path "${unit_dir%/}/${service_name}")"
+  updates="$(managed_path "$updates_path")"
+  [[ "$binary_path" == /* && "$data_path" == /* && "$env_path" == /* && "$updates_path" == /* ]] || fail "managed paths must be absolute"
+  check_managed_path "$binary"
+  check_managed_path "$data"
+  check_managed_path "$env_file"
+  check_managed_path "$unit"
+  check_managed_path "$updates"
+  check_managed_path "${updates}/snapshots"
+  check_managed_path "${binary}.next"
+  check_managed_path "${binary}.rollback"
+  if [[ -e "$unit" ]] && ! grep -Fq '# Managed by BookmarksSync installer' "$unit"; then
+    fail "refusing to overwrite an unmanaged systemd unit: $unit"
+  fi
+  if [[ "$command" == install ]]; then
+    [[ ! -e "$binary" ]] || fail "BookmarksSync is already installed; use upgrade or repair"
+  else
+    [[ -x "$binary" && -d "$data" && -f "$env_file" ]] || fail "existing binary, data, or configuration is missing; use install only on a fresh host"
+    service_systemctl is-active --quiet && had_service=1 || true
+  fi
+  ensure_github_cli
+  temporary="$(mktemp -d)"
+  chmod 0700 "$temporary"
+  cleanup_directory="$temporary"
+  trap cleanup_temporary_directory EXIT
+  prepare_verified_binary "$tag" "$temporary"
+  if [[ "$command" == install ]]; then
+    initial_env_file
+    ensure_service_account
+    install -d -m 0755 -o root -g root "$(dirname -- "$binary")"
+    if [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]]; then
+      install -d -m 0700 "$data"
+    else
+      install -d -m 0700 -o "$service_user" -g "$service_group" "$data"
+    fi
+    install -d -m 0700 -o root -g root "$updates/snapshots"
+    install -m 0755 "${temporary}/release/bookmarksync-linux-amd64" "${binary}.next"
+    mv -- "${binary}.next" "$binary"
+    service_chown "$binary"
+    write_managed_unit
+    systemctl daemon-reload
+    service_systemctl enable
+    bootstrap_admin
+    if ! service_systemctl start; then fail "new service failed to start; data and configuration are preserved for repair"; fi
+    if ! readiness_check; then
+      service_systemctl stop || true
+      fail "new service did not become ready; it was stopped. Inspect journalctl -u ${service_name}"
+    fi
+    printf 'Installed BookmarksSync %s. Local readiness check passed.\n' "$tag"
+    return
+  fi
+
+  initial_env_file
+  install -d -m 0700 -o root -g root "$updates/snapshots"
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  snapshot_base="${updates}/snapshots/preupdate-${timestamp}"
+  snapshot="${snapshot_base}.zip"
+  old_binary="${snapshot_base}.previous"
+  env_snapshot="${snapshot_base}.env"
+  unit_snapshot="${snapshot_base}.service"
+  if [[ "$command" == upgrade ]]; then
+    service_systemctl stop
+    if ! "$binary" backup create --data-dir "$data" --output "$snapshot"; then
+      service_systemctl start || fail "pre-upgrade backup failed and the old service could not be restarted"
+      fail "pre-upgrade backup failed; the old binary and data were left unchanged and the service was restarted"
+    fi
+    if ! "$binary" backup verify --file "$snapshot"; then
+      service_systemctl start || fail "pre-upgrade backup verification failed and the old service could not be restarted"
+      fail "pre-upgrade backup verification failed; the old binary and data were left unchanged and the service was restarted"
+    fi
+    if ! save_managed_state "$env_file" "$unit" "$env_snapshot" "$unit_snapshot"; then
+      service_systemctl start || fail "could not save managed config and the old service could not be restarted"
+      fail "could not save managed config; the old service was restarted"
+    fi
+    if ! install -m 0755 "$binary" "$old_binary"; then
+      service_systemctl start || fail "could not save the old binary and the old service could not be restarted"
+      fail "could not save the old binary; the service was restarted"
+    fi
+    if ! install -m 0755 "${temporary}/release/bookmarksync-linux-amd64" "${binary}.next"; then
+      service_systemctl start || fail "could not stage new binary and the old service could not be restarted"
+      fail "could not stage new binary; the old service was restarted"
+    fi
+    if ! mv -f -- "${binary}.next" "$binary"; then
+      rm -f -- "${binary}.next"
+      service_systemctl start || fail "could not activate new binary and the old service could not be restarted"
+      fail "could not activate new binary; the old service was restarted"
+    fi
+    service_chown "$binary"
+    if ! write_managed_unit || ! systemctl daemon-reload; then
+      fail_upgrade_and_rollback "$binary" "$old_binary" "$snapshot" "$data" "$updates" "$tag"
+    fi
+    if ! service_systemctl start; then
+      fail_upgrade_and_rollback "$binary" "$old_binary" "$snapshot" "$data" "$updates" "$tag"
+    fi
+    if readiness_check; then
+      prune_snapshots "$updates/snapshots"
+      printf 'Upgraded BookmarksSync to %s; snapshot saved at %s.\n' "$tag" "$snapshot"
+      return
+    fi
+    fail_upgrade_and_rollback "$binary" "$old_binary" "$snapshot" "$data" "$updates" "$tag"
+  fi
+
+  # Repair uses the same snapshot and rollback protections as an upgrade.
+  command=upgrade
+  service_systemctl stop
+  if ! "$binary" backup create --data-dir "$data" --output "$snapshot"; then
+    service_systemctl start || fail "pre-repair backup failed and the old service could not be restarted"
+    fail "pre-repair backup failed; the old binary and data were left unchanged and the service was restarted"
+  fi
+  if ! "$binary" backup verify --file "$snapshot"; then
+    service_systemctl start || fail "pre-repair backup verification failed and the old service could not be restarted"
+    fail "pre-repair backup verification failed; the old binary and data were left unchanged and the service was restarted"
+  fi
+  if ! save_managed_state "$env_file" "$unit" "$env_snapshot" "$unit_snapshot"; then
+    service_systemctl start || fail "could not save managed config and the old service could not be restarted"
+    fail "could not save managed config; the old service was restarted"
+  fi
+  if ! install -m 0755 "$binary" "$old_binary" || ! install -m 0755 "${temporary}/release/bookmarksync-linux-amd64" "${binary}.next"; then
+    service_systemctl start || fail "could not stage repair binary and the old service could not be restarted"
+    fail "could not stage repair binary; the old service was restarted"
+  fi
+  mv -f -- "${binary}.next" "$binary"
+  service_chown "$binary"
+  if ! write_managed_unit || ! systemctl daemon-reload; then
+    fail_upgrade_and_rollback "$binary" "$old_binary" "$snapshot" "$data" "$updates" "$tag"
+  fi
+  if ! service_systemctl start; then
+    fail_upgrade_and_rollback "$binary" "$old_binary" "$snapshot" "$data" "$updates" "$tag"
+  fi
+  if readiness_check; then
+    prune_snapshots "$updates/snapshots"
+    printf 'Repaired BookmarksSync with %s; snapshot saved at %s.\n' "$tag" "$snapshot"
+    return
+  fi
+  fail_upgrade_and_rollback "$binary" "$old_binary" "$snapshot" "$data" "$updates" "$tag"
+}
+
+prune_snapshots() {
+  local dir="$1"; mapfile -t entries < <(find "$dir" -maxdepth 1 -type f -name 'preupdate-*.zip' -printf '%T@ %p\n' | sort -rn | cut -d' ' -f2-)
+  local index
+  for ((index=3; index<${#entries[@]}; index++)); do
+    local base="${entries[index]%.zip}"
+    rm -f -- "${base}.zip" "${base}.previous" "${base}.env" "${base}.service"
+  done
+}
+
+fail_upgrade_and_rollback() {
+  local binary="$1" old_binary="$2" snapshot="$3" data="$4" updates="$5" tag="$6" failed_dir env_snapshot unit_snapshot env_file unit_file
+  env_snapshot="${snapshot%.zip}.env"
+  unit_snapshot="${snapshot%.zip}.service"
+  env_file="$(managed_path "$env_path")"
+  unit_file="$(managed_path "${unit_dir%/}/${service_name}")"
+  failed_dir="${data}.failed-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  service_systemctl stop || true
+  mv -- "$data" "$failed_dir" || fail "upgrade to ${tag} failed; data was not moved. Old binary: ${old_binary}; backup: ${snapshot}"
+  install -m 0755 "$old_binary" "${binary}.rollback"
+  mv -f -- "${binary}.rollback" "$binary"
+  if ! "$binary" backup restore --file "$snapshot" --target-dir "$data"; then
+    fail "upgrade to ${tag} failed; rollback restore failed. Data retained at ${failed_dir}; backup: ${snapshot}; service remains stopped"
+  fi
+  install -m 0600 "$env_snapshot" "${env_file}.rollback"
+  mv -f -- "${env_file}.rollback" "$env_file"
+  install -m 0644 "$unit_snapshot" "${unit_file}.rollback"
+  mv -f -- "${unit_file}.rollback" "$unit_file"
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" != 1 ]]; then
+    chown -R "$service_user:$service_group" "$data"
+  fi
+  write_managed_unit
+  systemctl daemon-reload
+  service_systemctl start || fail "old binary and data restored, but service did not start; data retained at ${failed_dir}"
+  readiness_check || fail "old binary and data restored, but readiness still fails; data retained at ${failed_dir}"
+  fail "upgrade to ${tag} failed readiness; old binary and data were restored. Failed data retained at ${failed_dir}"
+}
+
+main() {
+  local command="${1:-help}" tag=""
+  shift || true
+  case "$command" in
+    help|-h|--help)
+      usage
+      ;;
+    install|upgrade|repair)
+      while (($# > 0)); do
+        case "$1" in
+          --tag)
+            (($# >= 2)) || fail "--tag requires a value"
+            tag="$2"
+            shift 2
+            ;;
+          *) fail "unknown option: $1" ;;
+        esac
+      done
+      if [[ "$command" != install ]]; then
+        [[ -n "$tag" ]] || fail "${command} requires --tag"
+        [[ "$tag" =~ ^build-[0-9a-f]{40}$ ]] || fail "tag must match build- followed by the full 40-character lowercase commit SHA"
+      elif [[ -n "$tag" && ! "$tag" =~ ^build-[0-9a-f]{40}$ ]]; then
+        fail "tag must match build- followed by the full 40-character lowercase commit SHA"
+      fi
+      check_platform
+      require_user_root
+      local selected_tag
+      selected_tag="$(resolve_release_tag "$tag")"
+      install_release "$command" "$selected_tag"
+      ;;
+    *)
+      usage >&2
+      fail "unknown command: ${command}"
+      ;;
+  esac
+}
+
+main "$@"

@@ -19,4 +19,18 @@ gh attestation verify bookmarksync-linux-amd64 -R atikansari-ghr/BookmarksSync
 
 For Windows, substitute `bookmarksync-windows-amd64.exe` in the attestation command. Verify the attestation before installing an update. The checksum detects file changes; the attestation establishes that GitHub Actions built the file for this repository and commit.
 
-These releases are the build source for upcoming platform installers. The admin update catalog, click-to-approve UI, pre-update snapshot, write pause, health check, and automatic rollback are separate Milestone 6 work and are not implemented by this release workflow.
+## Debian and Proxmox LXC
+
+The Debian amd64 control script supports fresh install, explicit-version upgrade, and repair. It requires root, systemd, `curl`, Python 3, and the GitHub CLI (the script installs `gh` from its official signed Debian repository if needed). It downloads only published SHA-addressed prereleases and checks the checksum and GitHub attestations before changing the installed binary.
+
+```sh
+sudo scripts/debian/bookmarksync install
+sudo scripts/debian/bookmarksync upgrade --tag build-<full-40-character-commit-sha>
+sudo scripts/debian/bookmarksync repair --tag build-<full-40-character-commit-sha>
+```
+
+First install prompts for the public HTTPS origin, management CIDRs for GeoIP outage access, and initial administrator credentials. The service listens on `0.0.0.0:8080` by default; configure the reverse proxy and firewall before exposing it publicly. Application data is in `/var/lib/bookmarksync`, the root-only environment file is `/etc/bookmarksync/bookmarksync.env`, and the service is `bookmarksync.service`. Configure GeoLite separately using [docs/network-access.md](network-access.md).
+
+Before upgrade or repair, the script stops the service, creates and verifies a compressed full-system backup, and saves the previous binary and matching service configuration. It checks local readiness after replacement and restores the previous binary and data on failure. The three newest rollback snapshots are retained under `/var/lib/bookmarksync-updates/snapshots`. Keep an independent backup destination as described in [docs/backup-restore.md](backup-restore.md); local rollback snapshots do not protect against host or disk loss. A failed rollback restore leaves the service stopped and preserves both the failed data directory and snapshot for manual recovery.
+
+Validate the script and its isolated service lifecycle with `bash scripts/debian/test-bookmarksync.sh`. The automated flow has been exercised on a Debian 13 amd64 Proxmox LXC using mock release assets. A first published `main` release and a real provenance-verified installation remain pending. Docker/Windows installers and admin-interface update approval/catalog are not included yet.
