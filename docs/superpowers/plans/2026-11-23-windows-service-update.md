@@ -36,11 +36,11 @@
 
 **Interfaces:** Add `config.ReadEnvironmentFile(path string, inherited func(string) string) (func(string) string, error)`. The file accepts unique `BOOKMARKSYNC_* = value` entries only; the process environment overrides file values. Add `serve --env-file <path>` and a Windows `service run --env-file <path>` entry that dispatches `serve` through `svc.Run`; keep ordinary console invocation unchanged.
 
-- [ ] Write tests for file precedence, valid OIDC secrets, malformed/duplicate/unknown keys, oversized input, and secret-free errors.
-- [ ] Run `go test ./internal/config -run 'Test(ReadEnvironmentFile|EnvironmentFile)' -count=1`; confirm each missing behavior fails before implementation.
-- [ ] Implement the strict environment-file loader and the Windows SCM handler with stop/shutdown context propagation.
-- [ ] Verify focused tests, full Go tests, vet, and Windows/Linux amd64 builds.
-- [ ] Commit as `Add native Windows service mode`.
+- [x] Write tests for file precedence, valid OIDC secrets, malformed/duplicate/unknown keys, oversized input, and secret-free errors; also cover env-file flag parsing and service cancellation/state transitions.
+- [x] Run focused tests first; RED confirmed missing loader/service functions, then SCM state regression failed until `StartPending` was reported before `Running`.
+- [x] Implement the strict environment-file loader and the Windows SCM handler with stop/shutdown context propagation.
+- [x] Verify focused tests, full Go tests, vet, and Windows/Linux amd64 builds.
+- [x] Commit as `Add native Windows service mode`.
 
 ### Task 2: Implement the restricted update-pipe protocol and app runner
 

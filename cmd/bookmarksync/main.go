@@ -62,11 +62,12 @@ arguments. A credential's secret is printed once on standard output and cannot b
 shown again.
 `
 
-const serveUsage = `usage: bookmarksync serve [--listen host:port] [--data-dir dir] [--public-url URL]
+const serveUsage = `usage: bookmarksync serve [--listen host:port] [--data-dir dir] [--public-url URL] [--env-file PATH]
               [--disable-public-url] [--disable-oidc-google] [--disable-oidc-authentik]
 
   --listen      address to listen on (default 127.0.0.1:8080, env BOOKMARKSYNC_LISTEN)
   --data-dir    directory for the database (default ./data, env BOOKMARKSYNC_DATA_DIR)
+  --env-file    load protected BOOKMARKSYNC_* settings from a literal KEY=value file
   --public-url  browser origin users reach the server at, e.g. https://bookmarks.example.com
                 (env BOOKMARKSYNC_PUBLIC_URL; https required except loopback). Enables
                 browser sign-in under /api/v1/auth (password, TOTP, and passkeys when
@@ -100,6 +101,9 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
+	if handled, code := runServiceCommand(ctx, args, stderr, getenv); handled {
+		return code
+	}
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
 		return 2
@@ -132,6 +136,17 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 }
 
 func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(string) string) error {
+	var envFile string
+	args, envFile, err := extractServeEnvironmentFile(args)
+	if err != nil {
+		return err
+	}
+	if envFile != "" {
+		getenv, err = config.ReadEnvironmentFile(envFile, getenv)
+		if err != nil {
+			return err
+		}
+	}
 	cfg, err := config.Parse(args, getenv)
 	if err != nil {
 		return err

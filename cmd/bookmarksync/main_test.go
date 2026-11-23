@@ -68,16 +68,15 @@ func freePort(t *testing.T) string {
 func TestServeStartsAnsweringAndStopsOnCancel(t *testing.T) {
 	addr := freePort(t)
 	dir := filepath.Join(t.TempDir(), "data")
+	envFile := filepath.Join(t.TempDir(), "bookmarksync.env")
+	if err := os.WriteFile(envFile, []byte("BOOKMARKSYNC_MANAGEMENT_CIDRS=127.0.0.0/8,::1/128\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
 	var errb bytes.Buffer
 	go func() {
-		done <- run(ctx, []string{"serve", "--listen", addr, "--data-dir", dir}, strings.NewReader(""), io.Discard, &errb, func(k string) string {
-			if k == "BOOKMARKSYNC_MANAGEMENT_CIDRS" {
-				return "127.0.0.0/8,::1/128"
-			}
-			return ""
-		})
+		done <- run(ctx, []string{"serve", "--env-file", envFile, "--listen", addr, "--data-dir", dir}, strings.NewReader(""), io.Discard, &errb, func(string) string { return "" })
 	}()
 
 	url := fmt.Sprintf("http://%s/readyz", addr)
