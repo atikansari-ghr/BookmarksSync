@@ -27,27 +27,29 @@ type Snapshot struct {
 }
 
 type ManagerOptions struct {
-	DB           *database.DB
-	DataDir      string
-	Build        version.Info
-	Drivers      map[DestinationKind]DestinationDriver
-	SnapshotLock sync.Locker
-	Context      context.Context
-	Now          func() time.Time
+	DB            *database.DB
+	DataDir       string
+	Build         version.Info
+	Drivers       map[DestinationKind]DestinationDriver
+	SnapshotLock  sync.Locker
+	Context       context.Context
+	Now           func() time.Time
+	OnRunComplete func(Trigger, error)
 }
 
 type Manager struct {
-	db       *database.DB
-	dataDir  string
-	build    version.Info
-	drivers  map[DestinationKind]DestinationDriver
-	assetsMu sync.Locker
-	ctx      context.Context
-	store    *Store
-	now      func() time.Time
-	gate     chan struct{}
-	changed  chan struct{}
-	runWG    sync.WaitGroup
+	db            *database.DB
+	dataDir       string
+	build         version.Info
+	drivers       map[DestinationKind]DestinationDriver
+	assetsMu      sync.Locker
+	ctx           context.Context
+	store         *Store
+	now           func() time.Time
+	onRunComplete func(Trigger, error)
+	gate          chan struct{}
+	changed       chan struct{}
+	runWG         sync.WaitGroup
 }
 
 func NewManager(opts ManagerOptions) (*Manager, error) {
@@ -68,7 +70,7 @@ func NewManager(opts ManagerOptions) (*Manager, error) {
 	}
 	return &Manager{db: opts.DB, dataDir: opts.DataDir, build: opts.Build, drivers: opts.Drivers,
 		assetsMu: opts.SnapshotLock, ctx: opts.Context, store: NewStore(opts.DB.SQL(), opts.Now), now: opts.Now,
-		gate: make(chan struct{}, 1), changed: make(chan struct{}, 1)}, nil
+		gate: make(chan struct{}, 1), changed: make(chan struct{}, 1), onRunComplete: opts.OnRunComplete}, nil
 }
 
 func (m *Manager) Snapshot(ctx context.Context) (Snapshot, error) {
@@ -202,7 +204,8 @@ func (m *Manager) StartManual() (string, error) {
 	go func() {
 		defer m.runWG.Done()
 		defer func() { <-m.gate }()
-		_ = m.runLocked(m.ctx, TriggerManual, batch)
+		err := m.runLocked(m.ctx, TriggerManual, batch)
+		m.reportRunComplete(TriggerManual, err)
 	}()
 	return batch, nil
 }
@@ -229,7 +232,15 @@ func (m *Manager) Run(ctx context.Context, trigger Trigger) error {
 	if err != nil {
 		return err
 	}
-	return m.runLocked(ctx, trigger, batch)
+	err = m.runLocked(ctx, trigger, batch)
+	m.reportRunComplete(trigger, err)
+	return err
+}
+
+func (m *Manager) reportRunComplete(trigger Trigger, err error) {
+	if m.onRunComplete != nil {
+		m.onRunComplete(trigger, err)
+	}
 }
 
 func (m *Manager) recordSkippedScheduledRun(ctx context.Context, trigger Trigger) error {

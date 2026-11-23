@@ -785,6 +785,73 @@ components:
         destinations: {type: array, items: {$ref: '#/components/schemas/BackupDestination'}}
         runs: {type: array, items: {$ref: '#/components/schemas/BackupRun'}}
         running: {type: boolean}
+    NotificationAdminSettings:
+      type: object
+      required: [smtp, telegram, adminAlerts, deliveryFailures, userDeliveryFailures]
+      properties:
+        smtp: {type: object, required: [host, port, tlsMode, from, recipient, configured, authenticationConfigured], properties: {host: {type: string}, port: {type: integer}, tlsMode: {type: string, enum: [tls, starttls]}, from: {type: string}, recipient: {type: string, format: email}, configured: {type: boolean}, authenticationConfigured: {type: boolean}}}
+        telegram: {type: object, required: [configured, chatConfigured], properties: {configured: {type: boolean}, chatConfigured: {type: boolean}}}
+        adminAlerts: {type: object, required: [backupSuccess, backupFailure, security], properties: {backupSuccess: {type: boolean}, backupFailure: {type: boolean}, security: {type: boolean}}}
+        deliveryFailures: {type: integer, format: int64, minimum: 0, description: Provider delivery failures since process start.}
+        userDeliveryFailures: {type: integer, format: int64, minimum: 0, description: User notification delivery failures since process start.}
+    UserNotificationChannel:
+      type: object
+      required: [kind, destination, verifiedAt]
+      properties:
+        kind: {type: string, enum: [email, telegram]}
+        destination: {type: string}
+        verifiedAt: {type: string, format: date-time}
+    UserNotificationSettings:
+      type: object
+      required: [channels, securityAlerts, sharingAlerts]
+      properties:
+        channels: {type: array, items: {$ref: '#/components/schemas/UserNotificationChannel'}}
+        securityAlerts: {type: boolean}
+        sharingAlerts: {type: boolean}
+    UserNotificationPreferences:
+      type: object
+      required: [securityAlerts, sharingAlerts]
+      additionalProperties: false
+      properties:
+        securityAlerts: {type: boolean}
+        sharingAlerts: {type: boolean}
+    NotificationBindingRequest:
+      type: object
+      required: [kind, destination]
+      additionalProperties: false
+      properties:
+        kind: {type: string, enum: [email, telegram]}
+        destination: {type: string, maxLength: 254}
+    NotificationBindingConfirm:
+      type: object
+      required: [kind, code]
+      additionalProperties: false
+      properties:
+        kind: {type: string, enum: [email, telegram]}
+        code: {type: string, pattern: '^[0-9]{8}$'}
+    NotificationBindingStarted:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, const: verification_sent}
+    NotificationAdminUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        smtp: {type: object, additionalProperties: false, properties: {host: {type: string, maxLength: 253}, port: {type: integer, minimum: 1, maximum: 65535}, tlsMode: {type: string, enum: [tls, starttls]}, username: {type: string, maxLength: 256}, password: {type: string, maxLength: 1024, writeOnly: true}, from: {type: string, maxLength: 320}, recipient: {type: string, format: email, maxLength: 320}, clearPassword: {type: boolean}, clear: {type: boolean}}}
+        telegram: {type: object, additionalProperties: false, properties: {botToken: {type: string, maxLength: 256, writeOnly: true}, chatId: {type: string, maxLength: 24}, clear: {type: boolean}}}
+        adminAlerts: {type: object, additionalProperties: false, properties: {backupSuccess: {type: boolean}, backupFailure: {type: boolean}, security: {type: boolean}}}
+    NotificationTestRequest:
+      type: object
+      required: [channel]
+      additionalProperties: false
+      properties:
+        channel: {type: string, enum: [smtp, telegram]}
+    NotificationTestResult:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, enum: [ok]}
     BackupBatchAccepted:
       type: object
       required: [batchId, status]
@@ -830,6 +897,12 @@ paths:
   /auth/oidc/identities: {get: {operationId: listOidcIdentities, security: [{sessionCookie: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/OIDCIdentityList'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: List OIDC Identities}}
   /auth/oidc/identities/{id}: {delete: {operationId: unlinkOidcIdentity, security: [{sessionCookie: []}], x-recent-auth: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/CSRFResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Unlink OIDC Identity, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}}
   /me: {get: {operationId: getMe, security: [{sessionCookie: []}, {personalToken: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/BasicUser'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Me}}
+  /me/notifications:
+    get: {operationId: getMyNotifications, security: [{sessionCookie: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/UserNotificationSettings'}}}, description: Verified channels and preferences for the signed-in account.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Notification Settings}
+    patch: {operationId: updateMyNotificationPreferences, security: [{sessionCookie: []}], requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/UserNotificationPreferences'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/UserNotificationSettings'}}}, description: Updated user notification preferences.}, default: {$ref: '#/components/responses/Error'}}, summary: Update Notification Preferences}
+  /me/notifications/bindings: {post: {operationId: beginNotificationBinding, security: [{sessionCookie: []}], requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/NotificationBindingRequest'}}}, required: true}, responses: {"202": {content: {application/json: {schema: {$ref: '#/components/schemas/NotificationBindingStarted'}}}, description: Verification message sent.}, default: {$ref: '#/components/responses/Error'}}, summary: Begin Notification Channel Verification}}
+  /me/notifications/bindings/confirm: {post: {operationId: confirmNotificationBinding, security: [{sessionCookie: []}], requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/NotificationBindingConfirm'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/UserNotificationSettings'}}}, description: Channel verified.}, default: {$ref: '#/components/responses/Error'}}, summary: Confirm Notification Channel}}
+  /me/notifications/bindings/{kind}: {delete: {operationId: removeNotificationBinding, security: [{sessionCookie: []}], parameters: [{name: kind, in: path, required: true, schema: {type: string, enum: [email, telegram]}}], responses: {"204": {description: Channel removed.}, default: {$ref: '#/components/responses/Error'}}, summary: Remove Notification Channel}}
   /me/password: {patch: {operationId: changePassword, security: [{sessionCookie: []}], x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/PasswordChangeRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/CSRFResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Change Password}}
   /me/dashboard:
     get:
@@ -1076,6 +1149,11 @@ paths:
     get: {operationId: adminExportBackupRecoveryKey, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, parameters: [{name: id, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{16,64}$'}}], responses: {"200": {content: {application/json: {schema: {type: object, required: [recoveryKey], properties: {recoveryKey: {type: string, pattern: '^[0-9a-f]{64}$'}}}}}, description: Recovery key for encrypted backups; returned only on explicit request.}, default: {$ref: '#/components/responses/Error'}}, summary: Export Backup Recovery Key}
   /admin/backups/destinations/test:
     post: {operationId: adminTestBackupDestination, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/BackupDestination'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/BackupTestResult'}}}, description: Destination test passed.}, default: {$ref: '#/components/responses/Error'}}, summary: Test Backup Destination}
+  /admin/notifications:
+    get: {operationId: adminGetNotifications, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/NotificationAdminSettings'}}}, description: Safe notification provider status; credentials are never returned.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Notification Settings}
+    put: {operationId: adminUpdateNotifications, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/NotificationAdminUpdate'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/NotificationAdminSettings'}}}, description: Provider settings saved without returning secrets.}, default: {$ref: '#/components/responses/Error'}}, summary: Update Notification Settings}
+  /admin/notifications/test:
+    post: {operationId: adminTestNotification, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTestRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTestResult'}}}, description: Test message accepted by provider.}, default: {$ref: '#/components/responses/Error'}}, summary: Test Notification Provider}
   /admin/backups/run:
     post: {operationId: adminStartBackup, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, responses: {"202": {content: {application/json: {schema: {$ref: '#/components/schemas/BackupBatchAccepted'}}}, description: Backup accepted.}, "409": {description: Another backup is running.}, default: {$ref: '#/components/responses/Error'}}, summary: Start Backup Now}
   /auth/presentation: {get: {operationId: getAuthPresentation, x-public: true, security: [], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/PublicPresentation'}}}, description: Public login appearance and safe version information.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Public Login Presentation}}

@@ -511,6 +511,7 @@ func (h *Handler) oidcLink(w http.ResponseWriter, r *http.Request, p *oidcRP, fl
 		return
 	}
 	h.setCookie(w, rot.Session, rot.Secret)
+	h.securityChanged(flow.UserID)
 	h.log.Info("auth oidc linked", "provider", p.cfg.ID, "user_id", flow.UserID, "link_id", link.ID, "session_id", rot.Session.ID)
 	h.oidcRedirect(w, r, "result", "linked", "")
 }
@@ -565,5 +566,6 @@ func (h *Handler) oidcUnlink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.log.Info("auth oidc unlinked", "user_id", st.user.ID, "link_id", id, "session_id", st.sess.ID)
+	h.securityChanged(st.user.ID)
 	server.WriteJSON(w, http.StatusOK, map[string]any{"csrfToken": tok})
 }

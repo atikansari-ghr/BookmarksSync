@@ -399,6 +399,8 @@ func (a *API) serveShares(w http.ResponseWriter, r *http.Request) bool {
 		if err != nil {
 			writeDomainError(w, err)
 		} else {
+			a.queueUserNotification(me.ID, "sharing")
+			a.queueUserNotification(recipient.ID, "sharing")
 			writeJSON(w, 201, shareJSON(s))
 		}
 		return true
@@ -429,6 +431,8 @@ func (a *API) serveShares(w http.ResponseWriter, r *http.Request) bool {
 			if err != nil {
 				writeDomainError(w, err)
 			} else {
+				a.queueUserNotification(s.OwnerID, "sharing")
+				a.queueUserNotification(s.RecipientID, "sharing")
 				writeJSON(w, 200, shareJSON(updated))
 			}
 			return true
@@ -444,6 +448,8 @@ func (a *API) serveShares(w http.ResponseWriter, r *http.Request) bool {
 			if err != nil {
 				writeDomainError(w, err)
 			} else {
+				a.queueUserNotification(s.OwnerID, "sharing")
+				a.queueUserNotification(s.RecipientID, "sharing")
 				empty(w)
 			}
 			return true

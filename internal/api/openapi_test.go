@@ -243,6 +243,9 @@ func TestOpenAPIOperationsDocumentSuccessContracts(t *testing.T) {
 		"adminUploadBrandingAsset":  true,
 		"adminUpdateBackupSchedule": true, "adminCreateBackupDestination": true,
 		"adminUpdateBackupDestination": true, "adminTestBackupDestination": true,
+		"adminUpdateNotifications": true, "adminTestNotification": true,
+		"updateMyNotificationPreferences": true, "beginNotificationBinding": true,
+		"confirmNotificationBinding": true,
 	}
 	// Literal status expectations are derived from the real handlers. Login
 	// intentionally has both outcomes because TOTP is configured per account.
@@ -283,6 +286,9 @@ func TestOpenAPIOperationsDocumentSuccessContracts(t *testing.T) {
 		"delete /trash/{type}/{id}":       {"204"}, "delete /trash": {"204"},
 		"post /import": {"201"}, "get /export": {"200"},
 		"get /shares/owned": {"200"}, "get /shares/incoming": {"200"},
+		"get /me/notifications": {"200"}, "patch /me/notifications": {"200"},
+		"post /me/notifications/bindings": {"202"}, "post /me/notifications/bindings/confirm": {"200"},
+		"delete /me/notifications/bindings/{kind}": {"204"},
 		"post /shares": {"201"}, "patch /shares/{id}": {"200"}, "delete /shares/{id}": {"204"},
 		"get /admin/users": {"200"}, "post /admin/users": {"201"},
 		"patch /admin/users/{id}": {"200"}, "post /admin/users/{id}/password-reset": {"204"},
@@ -295,7 +301,8 @@ func TestOpenAPIOperationsDocumentSuccessContracts(t *testing.T) {
 		"post /admin/backups/destinations": {"201"}, "put /admin/backups/destinations/{id}": {"200"},
 		"delete /admin/backups/destinations/{id}": {"204"}, "post /admin/backups/destinations/test": {"200"}, "post /admin/backups/run": {"202"},
 		"get /admin/backups/destinations/{id}/recovery-key": {"200"},
-		"get /auth/presentation":                            {"200"}, "get /auth/presentation/assets/{id}": {"200"},
+		"get /admin/notifications":                          {"200"}, "put /admin/notifications": {"200"}, "post /admin/notifications/test": {"200"},
+		"get /auth/presentation": {"200"}, "get /auth/presentation/assets/{id}": {"200"},
 	}
 	seenBodies := map[string]bool{}
 	for path, methods := range spec.Paths {

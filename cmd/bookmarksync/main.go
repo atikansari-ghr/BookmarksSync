@@ -27,6 +27,7 @@ import (
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
 	"github.com/atikansari-ghr/BookmarksSync/internal/linkcheck"
 	"github.com/atikansari-ghr/BookmarksSync/internal/network"
+	"github.com/atikansari-ghr/BookmarksSync/internal/notifications"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
 	"github.com/atikansari-ghr/BookmarksSync/internal/version"
 	"github.com/atikansari-ghr/BookmarksSync/internal/webui"
@@ -133,21 +134,30 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 	if err != nil {
 		return err
 	}
-	if err := config.SaveRuntime(config.RuntimePath(cfg.DataDir), config.RuntimeConfig{ListenAddr: cfg.ListenAddr, PublicOrigin: cfg.PublicOrigin, OIDCProviders: cfg.OIDCProviders}); err != nil {
+	if err := config.SaveRuntime(config.RuntimePath(cfg.DataDir), config.RuntimeConfig{ListenAddr: cfg.ListenAddr, PublicOrigin: cfg.PublicOrigin, OIDCProviders: cfg.OIDCProviders, Notifications: cfg.Notifications}); err != nil {
 		return fmt.Errorf("save runtime configuration: %w", err)
 	}
 	log := slog.New(slog.NewTextHandler(stderr, nil))
+	notificationService := notifications.NewService(config.RuntimePath(cfg.DataDir), cfg.Notifications)
 
 	db, err := database.Open(ctx, cfg.DatabasePath())
 	if err != nil {
 		return err
 	}
 	defer db.Close()
+	go func() { _ = notificationService.Run(ctx) }()
 	backupCtx, cancelBackups := context.WithCancel(ctx)
 	defer cancelBackups()
 	assetMu := &sync.Mutex{}
 	rclone := backup.RcloneDriver{BinaryPath: getenv("BOOKMARKSYNC_RCLONE_BINARY"), ConfigPath: getenv("BOOKMARKSYNC_RCLONE_CONFIG")}
 	backupManager, err := backup.NewManager(backup.ManagerOptions{DB: db, DataDir: cfg.DataDir, Build: version.Current(), SnapshotLock: assetMu,
+		OnRunComplete: func(trigger backup.Trigger, runErr error) {
+			category, title, summary := notifications.AlertBackupSuccess, "Backup completed", fmt.Sprintf("A %s backup run completed successfully.", trigger)
+			if runErr != nil {
+				category, title, summary = notifications.AlertBackupFailure, "Backup failed", fmt.Sprintf("A %s backup run failed. Review the System backups page for details.", trigger)
+			}
+			notificationService.QueueAdminAlert(category, title, summary)
+		},
 		Context: backupCtx, Drivers: map[backup.DestinationKind]backup.DestinationDriver{
 			backup.DestinationLocal: backup.FilesystemDriver{}, backup.DestinationNFS: backup.FilesystemDriver{}, backup.DestinationRclone: rclone,
 		}})
@@ -209,12 +219,14 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 	adapter := floccus.New(ids, bm, log)
 	register := []func(server.Registrar){adapter.Register}
 	if cfg.PublicOrigin != "" {
+		userNotificationService := notifications.NewUserService(db.SQL(), notificationService, nil)
+		go userNotificationService.Run(ctx)
 		var providers []auth.OIDCProvider
 		for _, p := range cfg.OIDCProviders {
 			providers = append(providers, auth.OIDCProvider{ID: p.ID, Name: p.Name, Issuer: p.Issuer, ClientID: p.ClientID, ClientSecret: p.ClientSecret})
 			log.Info("OpenID Connect provider enabled", "provider", p.ID, "callback", cfg.PublicOrigin+"/api/v1/auth/oidc/"+p.ID+"/callback")
 		}
-		authH, err := auth.New(auth.Options{Identity: ids, Factors: ids, PublicOrigin: cfg.PublicOrigin, Logger: log,
+		authH, err := auth.New(auth.Options{Identity: ids, Factors: ids, PublicOrigin: cfg.PublicOrigin, Logger: log, OnSecurityChange: func(userID int64) { userNotificationService.QueueAlert(userID, "security") },
 			OIDC: auth.OIDCOptions{Providers: providers, Store: ids}})
 		if err != nil {
 			_ = ln.Close()
@@ -228,7 +240,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 			return err
 		}
 		go lc.Run(ctx)
-		apiH, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupAPI{manager: backupManager}, AssetMu: assetMu, Logger: log, Health: health.New(cfg.DataDir), Readiness: db, SyncErrors: adapter.SyncErrors, AssetDir: filepath.Join(cfg.DataDir, "branding"),
+		apiH, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupAPI{manager: backupManager}, Notifications: notificationService, NotificationUsers: userNotificationService, AssetMu: assetMu, Logger: log, Health: health.New(cfg.DataDir), Readiness: db, SyncErrors: adapter.SyncErrors, AssetDir: filepath.Join(cfg.DataDir, "branding"),
 			System: api.SystemInfo{Version: version.Current().Version, PublicOrigin: cfg.PublicOrigin,
 				PasskeysEnabled: passkeysEnabled, OIDCProviders: configuredOIDCNames(cfg.OIDCProviders),
 				GeoIPAvailable: geoDB != nil, GeoIPBuildTime: geoBuildTime(geoDB), TrustedProxyCount: len(cfg.TrustedProxies)}})

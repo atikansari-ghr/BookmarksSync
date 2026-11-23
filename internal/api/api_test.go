@@ -25,6 +25,7 @@ import (
 	"github.com/atikansari-ghr/BookmarksSync/internal/health"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
 	"github.com/atikansari-ghr/BookmarksSync/internal/linkcheck"
+	"github.com/atikansari-ghr/BookmarksSync/internal/notifications"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
 	"github.com/atikansari-ghr/BookmarksSync/internal/version"
 )
@@ -57,6 +58,7 @@ type tenv struct {
 	bm               *bookmarks.Service
 	lc               *linkcheck.Service
 	backupManager    *backup.Manager
+	notifications    *notifications.Service
 	backupDataDir    string
 	clock            *fakeClock
 	api              *api.API
@@ -86,20 +88,21 @@ func newTEnv(t *testing.T) *tenv {
 		t.Fatal(err)
 	}
 	logs := &bytes.Buffer{}
+	notificationService := notifications.NewService(config.RuntimePath(backupDataDir), config.NotificationConfig{})
 	log := slog.New(slog.NewTextHandler(logs, nil))
 	authH, err := auth.New(auth.Options{Identity: ids, PublicOrigin: origin, Now: clock.Now, Logger: log})
 	if err != nil {
 		t.Fatal(err)
 	}
 	assetDir := filepath.Join(t.TempDir(), "branding")
-	a, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupTestAdapter{manager: backupManager}, Now: clock.Now, Logger: log, Health: health.New(t.TempDir()), Readiness: db, AssetDir: assetDir,
+	a, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupTestAdapter{manager: backupManager}, Notifications: notificationService, NotificationUsers: notifications.NewUserService(db.SQL(), notificationService, clock.Now), Now: clock.Now, Logger: log, Health: health.New(t.TempDir()), Readiness: db, AssetDir: assetDir,
 		System: api.SystemInfo{Version: "test", PublicOrigin: origin, PasskeysEnabled: false, OIDCProviders: []string{}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	h := server.NewHandler(server.Options{Version: version.Info{Version: "test"}, Ready: db, Logger: log, BodyLimit: api.BodyLimit,
 		Register: func(r server.Registrar) { authH.Register(r); a.Register(r) }})
-	e := &tenv{t: t, db: db, ids: ids, bm: bm, lc: lc, backupManager: backupManager, backupDataDir: backupDataDir, clock: clock, api: a, h: h, logs: logs, assetDir: assetDir}
+	e := &tenv{t: t, db: db, ids: ids, bm: bm, lc: lc, backupManager: backupManager, notifications: notificationService, backupDataDir: backupDataDir, clock: clock, api: a, h: h, logs: logs, assetDir: assetDir}
 	ctx := context.Background()
 	for _, u := range []struct {
 		name  string
@@ -313,6 +316,11 @@ func TestRoutePolicies(t *testing.T) {
 		byKey[r.Method+" "+r.Path] = r
 	}
 	want := map[string]api.RouteInfo{
+		"GET /api/v1/me/notifications":                             {},
+		"PATCH /api/v1/me/notifications":                           {},
+		"POST /api/v1/me/notifications/bindings":                   {},
+		"POST /api/v1/me/notifications/bindings/confirm":           {},
+		"DELETE /api/v1/me/notifications/bindings/{kind}":          {},
 		"GET /api/v1/me":                                           {AnyToken: true},
 		"PATCH /api/v1/me/password":                                {Recent: true},
 		"POST /api/v1/me/tokens":                                   {Recent: true},
@@ -335,6 +343,9 @@ func TestRoutePolicies(t *testing.T) {
 		"GET /api/v1/admin/system":                                 {Admin: true},
 		"GET /api/v1/admin/health":                                 {Admin: true},
 		"GET /api/v1/admin/activity":                               {Admin: true},
+		"GET /api/v1/admin/notifications":                          {Admin: true},
+		"PUT /api/v1/admin/notifications":                          {Admin: true, Recent: true},
+		"POST /api/v1/admin/notifications/test":                    {Admin: true, Recent: true},
 		"GET /api/v1/admin/settings":                               {Admin: true},
 		"PATCH /api/v1/admin/settings":                             {Admin: true, Recent: true},
 		"GET /api/v1/admin/network-access":                         {Admin: true},

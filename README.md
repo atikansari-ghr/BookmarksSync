@@ -23,10 +23,11 @@ Implemented:
   - server-side sessions, revocable per device (12 hours idle, 30 days absolute);
   - CSRF and exact-origin checks, and recent reauthentication for sensitive changes.
 - A country access gate applies to every HTTP route, including Floccus and health checks. Provision a MaxMind Country database or explicitly configure management CIDRs: without either, all requests (including loopback) are denied. See [docs/network-access.md](docs/network-access.md).
-- Sign-in and account-security pages under `/auth/`, built with React/TypeScript and embedded in the binary. They cover passkeys, the authenticator app, recovery codes, linked accounts, active sessions, personal API tokens, and Floccus connections.
+- Sign-in and account-security pages under `/auth/`, built with React/TypeScript and embedded in the binary. They cover passkeys, the authenticator app, recovery codes, linked accounts, active sessions, personal API tokens, Floccus connections, and optional verified email/Telegram alerts.
 - Bookmark workspace pages at `/dashboard`, `/bookmarks`, `/duplicates`, and `/admin`; these include configurable dashboard widgets and themes, folder/bookmark organization, duplicate review, and public-only link checks.
 - Admin health and account usage views, per-account theme defaults, sanitized activity, editable login appearance, and private PNG/JPEG/WebP logo/background uploads (up to 2 MiB).
-- Compressed full-system backups with admin-managed weekly/monthly schedules, local/NFS/rclone destinations, verified publishing and per-schedule retention; manual verify/restore tools remain available. See [docs/backup-restore.md](docs/backup-restore.md).
+- Compressed full-system backups with admin-managed weekly/monthly schedules, local/NFS/rclone destinations, verified publishing, per-schedule retention, optional per-destination encryption, and backup notifications; manual verify/restore tools remain available. See [docs/backup-restore.md](docs/backup-restore.md).
+- Admin-managed SMTP/Telegram provider settings and backup/security alerts; users can verify their own channels and opt into account-security and sharing alerts. See [docs/notifications.md](docs/notifications.md).
 - User instructions for the bookmark workspace and admin pages: [docs/workspace-guide.md](docs/workspace-guide.md).
 - The versioned `/api/v1` JSON API, documented in [api/openapi.yaml](api/openapi.yaml):
   - profile, password and settings;
@@ -44,7 +45,7 @@ Still planned or awaiting acceptance:
 - Login Flow v2 (the floccus "Connect" wizard; use profile import for now);
 - trusted-proxy and country rules, per-destination backup encryption, and per-user recovery;
 - production single-command installers and admin-triggered updates;
-- backup notifications and remaining browser/organizer acceptance checks.
+- automated GeoLite provisioning and final public country/proxy acceptance; remaining browser/organizer acceptance checks.
 
 See `docs/design.md` and `docs/implementation-plan.md`.
 

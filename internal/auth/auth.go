@@ -73,15 +73,18 @@ type Options struct {
 	// OIDCBeginLimits bounds OIDC flows started per direct peer; only PeerFailures,
 	// Window and MaxKeys apply. Zero fields take DefaultOIDCBeginLimits.
 	OIDCBeginLimits Limits
+	// OnSecurityChange queues a generic account security notice after a successful change.
+	OnSecurityChange func(userID int64)
 }
 
 // Handler serves the auth API and provides session middleware for other routes.
 type Handler struct {
-	ids     Identity
-	origin  string
-	now     func() time.Time
-	log     *slog.Logger
-	limiter *Limiter
+	ids              Identity
+	origin           string
+	now              func() time.Time
+	log              *slog.Logger
+	onSecurityChange func(int64)
+	limiter          *Limiter
 
 	factors Factors
 	// factorLimiter counts second-factor failures per account across peers.
@@ -122,6 +125,12 @@ func (h *Handler) CheckPassword(w http.ResponseWriter, r *http.Request, username
 	return true
 }
 
+func (h *Handler) securityChanged(userID int64) {
+	if h.onSecurityChange != nil {
+		h.onSecurityChange(userID)
+	}
+}
+
 // New validates opts and returns a Handler.
 func New(opts Options) (*Handler, error) {
 	if opts.Identity == nil {
@@ -140,7 +149,7 @@ func New(opts Options) (*Handler, error) {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	h := &Handler{ids: opts.Identity, origin: o, now: opts.Now, log: opts.Logger,
+	h := &Handler{ids: opts.Identity, origin: o, now: opts.Now, log: opts.Logger, onSecurityChange: opts.OnSecurityChange,
 		limiter: NewLimiter(opts.Limits, opts.Now), factors: opts.Factors}
 	if err := h.configureOIDC(opts); err != nil {
 		return nil, err
@@ -493,6 +502,7 @@ func (h *Handler) revokeSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.log.Info("auth session revoked", "user_id", st.user.ID, "session_id", id)
+	h.securityChanged(st.user.ID)
 	if id == st.sess.ID {
 		h.clearCookie(w)
 	}

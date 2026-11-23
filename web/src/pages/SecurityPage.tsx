@@ -9,6 +9,7 @@ import { PasskeysSection } from '../sections/Passkeys'
 import { SessionsSection } from '../sections/Sessions'
 import { TokensSection } from '../sections/Tokens'
 import { TotpSection } from '../sections/Totp'
+import { NotificationsSection } from '../sections/Notifications'
 
 export interface Notify {
   (message: string): void
@@ -102,6 +103,7 @@ export function SecurityPage({ initialNotice }: { initialNotice?: string }) {
         <SessionsSection notify={notify} />
         <TokensSection notify={notify} />
         <ConnectionsSection notify={notify} username={session.user.username} />
+        <NotificationsSection notify={notify} />
       </main>
       <Footer />
     </div>

@@ -317,6 +317,7 @@ func (h *Handler) totpConfirm(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	h.securityChanged(st.user.ID)
 	h.log.Info("auth totp enabled", "user_id", st.user.ID, "session_id", st.sess.ID)
 	server.WriteJSON(w, http.StatusOK, map[string]any{"recoveryCodes": codes, "csrfToken": tok})
 }
@@ -382,6 +383,7 @@ func (h *Handler) totpDisable(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	h.securityChanged(st.user.ID)
 	h.log.Info("auth totp disabled", "user_id", st.user.ID, "session_id", st.sess.ID)
 	server.WriteJSON(w, http.StatusOK, map[string]any{"csrfToken": tok})
 }
@@ -410,6 +412,7 @@ func (h *Handler) regenerateRecoveryCodes(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
+	h.securityChanged(st.user.ID)
 	h.log.Info("auth recovery codes regenerated", "user_id", st.user.ID, "session_id", st.sess.ID)
 	server.WriteJSON(w, http.StatusOK, map[string]any{"recoveryCodes": codes, "csrfToken": tok})
 }
@@ -549,6 +552,7 @@ func (h *Handler) passkeyRegisterFinish(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		return
 	}
+	h.securityChanged(st.user.ID)
 	h.log.Info("auth passkey added", "user_id", st.user.ID, "passkey_id", pk.ID, "session_id", st.sess.ID)
 	server.WriteJSON(w, http.StatusCreated, map[string]any{"passkey": toPasskeyJSON(pk), "csrfToken": tok})
 }
@@ -582,6 +586,7 @@ func (h *Handler) renamePasskey(w http.ResponseWriter, r *http.Request) {
 	case err != nil:
 		h.internal(w, "rename passkey", err)
 	default:
+		h.securityChanged(st.user.ID)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -609,5 +614,6 @@ func (h *Handler) deletePasskey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.log.Info("auth passkey removed", "user_id", st.user.ID, "passkey_id", id, "session_id", st.sess.ID)
+	h.securityChanged(st.user.ID)
 	server.WriteJSON(w, http.StatusOK, map[string]any{"csrfToken": tok})
 }

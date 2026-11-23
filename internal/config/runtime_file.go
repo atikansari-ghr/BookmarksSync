@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/mail"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/securefile"
 )
@@ -20,10 +23,47 @@ const (
 // RuntimeConfig stores effective non-secret options and OIDC credentials needed
 // to recover a complete server on a new host. The file is always owner-readable.
 type RuntimeConfig struct {
-	ListenAddr    string         `json:"listenAddr"`
-	PublicOrigin  string         `json:"publicOrigin,omitempty"`
-	OIDCProviders []OIDCProvider `json:"oidcProviders,omitempty"`
+	ListenAddr    string             `json:"listenAddr"`
+	PublicOrigin  string             `json:"publicOrigin,omitempty"`
+	OIDCProviders []OIDCProvider     `json:"oidcProviders,omitempty"`
+	Notifications NotificationConfig `json:"notifications,omitempty"`
 }
+
+type NotificationConfig struct {
+	SMTP        SMTPConfig       `json:"smtp,omitempty"`
+	Telegram    TelegramConfig   `json:"telegram,omitempty"`
+	AdminAlerts AdminAlertConfig `json:"adminAlerts,omitempty"`
+}
+
+type AdminAlertConfig struct {
+	BackupSuccess bool `json:"backupSuccess"`
+	BackupFailure bool `json:"backupFailure"`
+	Security      bool `json:"security"`
+}
+
+type SMTPConfig struct {
+	Host      string `json:"host,omitempty"`
+	Port      int    `json:"port,omitempty"`
+	TLSMode   string `json:"tlsMode,omitempty"`
+	Username  string `json:"username,omitempty"`
+	Password  string `json:"password,omitempty"`
+	From      string `json:"from,omitempty"`
+	Recipient string `json:"recipient,omitempty"`
+}
+
+type TelegramConfig struct {
+	BotToken string `json:"botToken,omitempty"`
+	ChatID   string `json:"chatId,omitempty"`
+}
+
+func (SMTPConfig) String() string       { return "SMTPConfig{credentials:<redacted>}" }
+func (SMTPConfig) GoString() string     { return "config.SMTPConfig{credentials:<redacted>}" }
+func (TelegramConfig) String() string   { return "TelegramConfig{credentials:<redacted>}" }
+func (TelegramConfig) GoString() string { return "config.TelegramConfig{credentials:<redacted>}" }
+
+var runtimeUpdateMu sync.Mutex
+var telegramBotToken = regexp.MustCompile(`^[0-9]{5,20}:[A-Za-z0-9_-]{20,200}$`)
+var telegramChatID = regexp.MustCompile(`^-?[0-9]{1,20}$`)
 
 func RuntimePath(dataDir string) string { return filepath.Join(dataDir, runtimeFileName) }
 
@@ -108,6 +148,26 @@ func SaveRuntime(path string, cfg RuntimeConfig) error {
 	return nil
 }
 
+// UpdateRuntime applies one serialized, validated update and atomically publishes it.
+func UpdateRuntime(path string, update func(*RuntimeConfig) error) error {
+	if update == nil {
+		return errors.New("runtime config update is required")
+	}
+	runtimeUpdateMu.Lock()
+	defer runtimeUpdateMu.Unlock()
+	cfg, err := LoadRuntime(path)
+	if err != nil {
+		return errors.New("runtime config is unavailable")
+	}
+	if err := update(&cfg); err != nil {
+		return err
+	}
+	if err := validateRuntime(cfg); err != nil {
+		return errors.New("runtime config settings are invalid")
+	}
+	return SaveRuntime(path, cfg)
+}
+
 func validateRuntime(cfg RuntimeConfig) error {
 	if err := (Config{ListenAddr: cfg.ListenAddr, DataDir: ".", PublicOrigin: cfg.PublicOrigin}).Validate(); err != nil {
 		return err
@@ -136,6 +196,35 @@ func validateRuntime(cfg RuntimeConfig) error {
 	}
 	if len(cfg.OIDCProviders) > 0 && cfg.PublicOrigin == "" {
 		return errors.New("OIDC providers require a public origin")
+	}
+	if err := validateNotifications(cfg.Notifications); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateNotifications(cfg NotificationConfig) error {
+	s := cfg.SMTP
+	smtpEmpty := s.Host == "" && s.Port == 0 && s.TLSMode == "" && s.Username == "" && s.Password == "" && s.From == "" && s.Recipient == ""
+	if !smtpEmpty {
+		from, fromErr := mail.ParseAddress(s.From)
+		recipient, recipientErr := mail.ParseAddress(s.Recipient)
+		if strings.TrimSpace(s.Host) != s.Host || s.Host == "" || strings.ContainsAny(s.Host, " \t\r\n/@") || s.Port < 1 || s.Port > 65535 || (s.TLSMode != "tls" && s.TLSMode != "starttls") || fromErr != nil || from.Address != s.From || (s.Recipient != "" && (recipientErr != nil || recipient.Address != s.Recipient)) {
+			return errors.New("SMTP settings are invalid")
+		}
+		if (s.Username == "") != (s.Password == "") {
+			return errors.New("SMTP authentication settings are incomplete")
+		}
+	}
+	if token := cfg.Telegram.BotToken; token != "" {
+		if strings.TrimSpace(token) != token || len(token) > 256 || !telegramBotToken.MatchString(token) {
+			return errors.New("Telegram settings are invalid")
+		}
+	}
+	if chatID := cfg.Telegram.ChatID; chatID != "" {
+		if strings.TrimSpace(chatID) != chatID || len(chatID) > 24 || !telegramChatID.MatchString(chatID) {
+			return errors.New("Telegram settings are invalid")
+		}
 	}
 	return nil
 }

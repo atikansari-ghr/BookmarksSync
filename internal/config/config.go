@@ -44,6 +44,7 @@ type Config struct {
 	// OIDCProviders are the operator-configured OpenID Connect providers (Google,
 	// Authentik), from environment variables only. They require PublicOrigin.
 	OIDCProviders []OIDCProvider
+	Notifications NotificationConfig
 	// TrustedProxies are the only peers allowed to supply X-Forwarded-For.
 	TrustedProxies []netip.Prefix
 	// ManagementCIDRs are explicit resolved client networks exempt from country rules.
@@ -86,6 +87,7 @@ func Parse(args []string, getenv func(string) string) (Config, error) {
 	}
 	if runtimeErr == nil {
 		cfg.ListenAddr = runtimeCfg.ListenAddr
+		cfg.Notifications = runtimeCfg.Notifications
 	}
 	if v := getenv(EnvListen); v != "" {
 		cfg.ListenAddr = v

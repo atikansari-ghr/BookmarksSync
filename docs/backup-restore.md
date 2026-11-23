@@ -1,10 +1,10 @@
 # Backup and Restore
 
-The Operations slice provides scheduled weekly and monthly full-system backups, manual runs from the admin interface, per-destination retention, archive verification, full-system restore, and user-only recovery. Backups use Deflate compression. Destination encryption is optional and off by default; backup notifications remain planned.
+The Operations slice provides scheduled weekly and monthly full-system backups, manual runs from the admin interface, per-destination retention, archive verification, full-system restore, user-only recovery, and optional email/Telegram backup notifications. Backups use Deflate compression. Destination encryption is optional and off by default.
 
 ## What the archive contains
 
-Each Deflate-compressed archive contains a format-versioned manifest, a consistent SQLite online snapshot, the private runtime configuration (`runtime.json`, including OIDC client secrets), the instance key when present, and branding images currently referenced by system settings. Manifest entries include expanded sizes and SHA-256 checksums. The manifest records application/build and schema versions, creation time, public origin, and provider IDs. Treat the archive as a credential-bearing secret; store it in an access-controlled location.
+Each Deflate-compressed archive contains a format-versioned manifest, a consistent SQLite online snapshot, the private runtime configuration (`runtime.json`, including OIDC, SMTP, and Telegram secrets), the instance key when present, and branding images currently referenced by system settings. Manifest entries include expanded sizes and SHA-256 checksums. The manifest records application/build and schema versions, creation time, public origin, and provider IDs. Treat the archive as a credential-bearing secret; store it in an access-controlled location.
 
 `runtime.json` is created on server startup and is loaded as the default configuration on the next startup. Environment variables and explicit command-line flags override saved values. OIDC environment overrides must provide a complete provider configuration; values are not mixed with saved client secrets. Use `--disable-oidc-google`, `--disable-oidc-authentik`, or `--disable-public-url` to remove saved settings on the next start. Keep the same public origin when restoring if passkeys or external identity providers are in use. The restore includes authentication records and sessions, so restrict access to the recovered host and rotate credentials if the archive was exposed.
 

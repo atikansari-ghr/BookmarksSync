@@ -20,6 +20,9 @@ function adminRoutes(): Record<string, Route> {
     'GET /api/v1/admin/network-access': { status: 200, body: { mode: 'allow', countries: ['IN', 'SA'], geoDatabaseAvailable: false, geoDatabaseBuildTime: null, trustedProxyCount: 1 } },
     'GET /api/v1/admin/activity': { status: 200, body: { items: [{ id: 1, actorId: 1, action: 'user_created', targetType: 'user', targetId: 2, createdAt: '2026-11-20T12:00:00Z' }] } },
     'GET /api/v1/admin/backups': { status: 200, body: { schedule: { weeklyEnabled: false, monthlyEnabled: false, timezone: 'Asia/Riyadh', weeklyDay: 0, weeklyHour: 3, weeklyMinute: 0, monthlyDay: 1, monthlyHour: 4, monthlyMinute: 0, weeklyRetention: 8, monthlyRetention: 12 }, destinations: [{ id: '0123456789abcdef0123456789abcdef', label: 'NAS', kind: 'rclone', reference: 'nas:bookmarks', enabled: true, encrypted: true, hasRecoveryKey: true }], runs: [], running: false } },
+    'GET /api/v1/admin/notifications': { status: 200, body: { smtp: { host: '', port: 587, tlsMode: 'starttls', from: '', recipient: '', configured: false, authenticationConfigured: false }, telegram: { configured: false, chatConfigured: false }, adminAlerts: { backupSuccess: false, backupFailure: false, security: false }, deliveryFailures: 0, userDeliveryFailures: 0 } },
+    'PUT /api/v1/admin/notifications': { status: 200, body: { smtp: { host: 'smtp.example.com', port: 465, tlsMode: 'tls', from: 'bookmarks@example.com', recipient: 'admin@example.com', configured: true, authenticationConfigured: true }, telegram: { configured: true, chatConfigured: true }, adminAlerts: { backupSuccess: false, backupFailure: false, security: false }, deliveryFailures: 0, userDeliveryFailures: 0 } },
+    'POST /api/v1/admin/notifications/test': { status: 200, body: { status: 'ok' } },
     'GET /api/v1/admin/backups/destinations/0123456789abcdef0123456789abcdef/recovery-key': { status: 200, body: { recoveryKey: 'a'.repeat(64) } },
     'PUT /api/v1/admin/backups/schedule': { status: 200, body: { schedule: { weeklyEnabled: true, monthlyEnabled: false, timezone: 'Asia/Riyadh', weeklyDay: 0, weeklyHour: 3, weeklyMinute: 0, monthlyDay: 1, monthlyHour: 4, monthlyMinute: 0, weeklyRetention: 8, monthlyRetention: 12 } } },
     'POST /api/v1/admin/backups/destinations/test': { status: 200, body: { status: 'ok' } },
@@ -117,6 +120,30 @@ describe('admin workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save destination' }))
     await waitFor(() => expect(api.find('POST', '/api/v1/admin/backups/destinations')).toHaveLength(1))
     expect(api.find('POST', '/api/v1/admin/backups/destinations')[0].body).toMatchObject({ encrypted: true, enabled: true })
+  })
+
+  it('saves provider settings without echoing secrets and sends explicit test messages', async () => {
+    const api = mockServer(adminRoutes())
+    const user = userEvent.setup()
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Notifications' })
+    await user.type(screen.getByLabelText('SMTP server'), 'smtp.example.com')
+    await user.clear(screen.getByLabelText('Sender address'))
+    await user.type(screen.getByLabelText('Sender address'), 'bookmarks@example.com')
+    await user.type(screen.getByLabelText('Administrator alert recipient'), 'admin@example.com')
+    await user.type(screen.getByLabelText('SMTP username'), 'mailer')
+    await user.type(screen.getByLabelText('SMTP password'), 'smtp-private')
+    await user.type(screen.getByLabelText('Bot token'), '123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi')
+    await user.type(screen.getByLabelText('Administrator chat ID'), '987654321')
+    await user.click(screen.getByRole('button', { name: 'Save notification settings' }))
+    await waitFor(() => expect(api.find('PUT', '/api/v1/admin/notifications')).toHaveLength(1))
+    const body = api.find('PUT', '/api/v1/admin/notifications')[0].body as { smtp: { password: string }; telegram: { botToken: string; chatId: string } }
+    expect(body.smtp.password).toBe('smtp-private')
+    expect(body.telegram.botToken).toContain('123456:')
+    expect(body.telegram.chatId).toBe('987654321')
+    await user.click(screen.getByRole('button', { name: 'Send email test' }))
+    await waitFor(() => expect(api.find('POST', '/api/v1/admin/notifications/test')).toHaveLength(1))
+    expect(api.find('POST', '/api/v1/admin/notifications/test')[0].body).toEqual({ channel: 'smtp' })
   })
 
   it('limits branding text fields to the server accepted lengths', async () => {

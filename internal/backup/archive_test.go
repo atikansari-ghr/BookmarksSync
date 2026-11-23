@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func makeTestBackup(t *testing.T) (string, string) {
 	if _, err := identity.LoadOrCreateInstanceKey(dir); err != nil {
 		t.Fatal(err)
 	}
-	if err := config.SaveRuntime(config.RuntimePath(dir), config.RuntimeConfig{ListenAddr: "127.0.0.1:8080", PublicOrigin: "https://bookmarks.example.org", OIDCProviders: []config.OIDCProvider{{ID: "google", Name: "Google", Issuer: config.GoogleIssuer, ClientID: "client-id", ClientSecret: "secret-value"}}}); err != nil {
+	if err := config.SaveRuntime(config.RuntimePath(dir), config.RuntimeConfig{ListenAddr: "127.0.0.1:8080", PublicOrigin: "https://bookmarks.example.org", OIDCProviders: []config.OIDCProvider{{ID: "google", Name: "Google", Issuer: config.GoogleIssuer, ClientID: "client-id", ClientSecret: "secret-value"}}, Notifications: config.NotificationConfig{SMTP: config.SMTPConfig{Host: "smtp.example.test", Port: 465, TLSMode: "tls", Username: "backup-mailer", Password: "backup-mail-secret", From: "bookmarks@example.test", Recipient: "admin@example.test"}, Telegram: config.TelegramConfig{BotToken: "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi", ChatID: "123456789"}}}); err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "system.zip")
@@ -63,6 +64,22 @@ func TestCreateAndInspectFullSystemArchive(t *testing.T) {
 		}
 		if f.Method != zip.Deflate {
 			t.Errorf("%s compression method = %d", f.Name, f.Method)
+		}
+		if f.Name == runtimeName {
+			rc, err := f.Open()
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := io.ReadAll(rc)
+			_ = rc.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, secret := range []string{"backup-mail-secret", "123456:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi"} {
+				if !strings.Contains(string(raw), secret) {
+					t.Errorf("full archive runtime entry omitted configured notification secret %q", secret)
+				}
+			}
 		}
 	}
 }

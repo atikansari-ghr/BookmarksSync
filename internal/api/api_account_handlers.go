@@ -15,6 +15,7 @@ import (
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
 	"github.com/atikansari-ghr/BookmarksSync/internal/interchange"
 	"github.com/atikansari-ghr/BookmarksSync/internal/network"
+	"github.com/atikansari-ghr/BookmarksSync/internal/notifications"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
 )
 
@@ -52,6 +53,19 @@ func (a *API) servePresentation(w http.ResponseWriter, r *http.Request) bool {
 func (a *API) recordAdminActivity(r *http.Request, action, targetType string, targetID int64) {
 	if err := a.ids.RecordAdminActivity(r.Context(), principalFrom(r).user.ID, action, targetType, targetID); err != nil {
 		a.log.Warn("admin activity record failed", "action", action, "error", err)
+		return
+	}
+	switch action {
+	case "user_created", "user_updated", "password_reset", "factor_reset", "connection_revoked":
+		if a.notifications != nil {
+			a.notifications.QueueAdminAlert(notifications.AlertSecurity, "Account security settings changed", "An administrator changed an account or sign-in setting. Review the admin activity page for details.")
+		}
+	}
+}
+
+func (a *API) queueUserNotification(userID int64, category string) {
+	if a.notificationUsers != nil {
+		a.notificationUsers.QueueAlert(userID, category)
 	}
 }
 
@@ -177,6 +191,7 @@ func (a *API) serveMe(w http.ResponseWriter, r *http.Request) bool {
 			writeDomainError(w, err)
 			return true
 		}
+		a.queueUserNotification(userID, "security")
 		csrf := a.auth.ApplyRotation(w, rot)
 		writeJSON(w, 200, map[string]any{"csrfToken": csrf})
 		return true
@@ -239,6 +254,7 @@ func (a *API) serveTokens(w http.ResponseWriter, r *http.Request) bool {
 			if err != nil {
 				writeDomainError(w, err)
 			} else {
+				a.queueUserNotification(uid, "security")
 				writeJSON(w, 201, map[string]any{"token": tokenJSON(tok), "secret": secret})
 			}
 			return true
@@ -254,6 +270,7 @@ func (a *API) serveTokens(w http.ResponseWriter, r *http.Request) bool {
 		if err != nil {
 			writeDomainError(w, err)
 		} else {
+			a.queueUserNotification(uid, "security")
 			empty(w)
 		}
 		return true
@@ -309,6 +326,7 @@ func (a *API) serveConnections(w http.ResponseWriter, r *http.Request) bool {
 				writeDomainError(w, err)
 				return true
 			}
+			a.queueUserNotification(uid, "security")
 			writeJSON(w, 201, map[string]any{"connection": map[string]any{"id": c.ID, "label": c.Label, "kind": c.Kind, "shareId": c.ShareID, "mode": c.Mode}, "secret": secret})
 			return true
 		}
@@ -323,6 +341,7 @@ func (a *API) serveConnections(w http.ResponseWriter, r *http.Request) bool {
 		if err != nil {
 			writeDomainError(w, err)
 		} else {
+			a.queueUserNotification(uid, "security")
 			empty(w)
 		}
 		return true
@@ -677,6 +696,7 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 				writeDomainError(w, err)
 			} else {
 				a.recordAdminActivity(r, "password_reset", "user", id)
+				a.queueUserNotification(id, "security")
 				empty(w)
 			}
 			return true
@@ -694,6 +714,7 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 				writeDomainError(w, err)
 			} else {
 				a.recordAdminActivity(r, "factor_reset", "user", id)
+				a.queueUserNotification(id, "security")
 				empty(w)
 			}
 			return true

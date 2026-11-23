@@ -107,6 +107,28 @@ func TestManagerCreatesOneVerifiedArchiveForEachEnabledDestination(t *testing.T)
 	}
 }
 
+func TestManagerReportsGenericRunCompletionForSuccessAndFailure(t *testing.T) {
+	_, dir, m := managerFixture(t)
+	var calls int
+	var gotTrigger Trigger
+	var gotErr error
+	m.onRunComplete = func(trigger Trigger, err error) { calls++; gotTrigger = trigger; gotErr = err }
+	addDestination(t, m, "success", filepath.Join(dir, "success"))
+	if err := m.Run(context.Background(), TriggerWeekly); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || gotTrigger != TriggerWeekly || gotErr != nil {
+		t.Fatalf("success callback calls=%d trigger=%s err=%v", calls, gotTrigger, gotErr)
+	}
+	m.drivers[DestinationLocal] = &failPublishDriver{}
+	if err := m.Run(context.Background(), TriggerManual); err == nil {
+		t.Fatal("failed publish unexpectedly succeeded")
+	}
+	if calls != 2 || gotTrigger != TriggerManual || gotErr == nil {
+		t.Fatalf("failure callback calls=%d trigger=%s err=%v", calls, gotTrigger, gotErr)
+	}
+}
+
 func TestManagerEncryptsOnlyConfiguredDestinationAndKeepsRecoveryKeyOutsideArchive(t *testing.T) {
 	_, dir, m := managerFixture(t)
 	plain := addDestination(t, m, "plain", filepath.Join(dir, "plain"))

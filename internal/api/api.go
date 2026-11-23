@@ -21,6 +21,7 @@ import (
 	"github.com/atikansari-ghr/BookmarksSync/internal/health"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
 	"github.com/atikansari-ghr/BookmarksSync/internal/linkcheck"
+	"github.com/atikansari-ghr/BookmarksSync/internal/notifications"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
 )
 
@@ -128,6 +129,23 @@ type HealthCollector interface {
 }
 type Readiness interface{ Ping(context.Context) error }
 
+type NotificationAdmin interface {
+	AdminSettings() notifications.AdminSettings
+	UpdateAdminSettings(context.Context, notifications.AdminUpdate) (notifications.AdminSettings, error)
+	Test(context.Context, string) error
+	QueueAdminAlert(string, string, string) bool
+}
+
+type NotificationUsers interface {
+	Settings(context.Context, int64) (notifications.UserSettings, error)
+	SetPreferences(context.Context, int64, bool, bool) error
+	Begin(context.Context, int64, string, string) error
+	Confirm(context.Context, int64, string, string) error
+	Remove(context.Context, int64, string) error
+	QueueAlert(int64, string) bool
+	DeliveryFailures() uint64
+}
+
 type BackupSchedule struct {
 	WeeklyEnabled    bool   `json:"weeklyEnabled"`
 	MonthlyEnabled   bool   `json:"monthlyEnabled"`
@@ -197,16 +215,18 @@ type Options struct {
 	Identity  Identity
 	Bookmarks Bookmarks
 	// LinkChecks is optional; without it the link-check routes answer 503.
-	LinkChecks LinkChecks
-	Now        func() time.Time
-	Logger     *slog.Logger
-	System     SystemInfo
-	Health     HealthCollector
-	Readiness  Readiness
-	SyncErrors func() uint64
-	AssetDir   string
-	AssetMu    *sync.Mutex
-	Backups    BackupOperations
+	LinkChecks        LinkChecks
+	Now               func() time.Time
+	Logger            *slog.Logger
+	System            SystemInfo
+	Health            HealthCollector
+	Readiness         Readiness
+	SyncErrors        func() uint64
+	AssetDir          string
+	AssetMu           *sync.Mutex
+	Backups           BackupOperations
+	Notifications     NotificationAdmin
+	NotificationUsers NotificationUsers
 }
 
 type RouteInfo struct {
@@ -220,23 +240,30 @@ type RouteInfo struct {
 }
 
 type API struct {
-	auth       *auth.Handler
-	ids        Identity
-	bm         Bookmarks
-	lc         LinkChecks
-	now        func() time.Time
-	log        *slog.Logger
-	system     SystemInfo
-	health     HealthCollector
-	readiness  Readiness
-	syncErrors func() uint64
-	assetDir   string
-	backups    BackupOperations
-	routes     []RouteInfo
-	assetMu    *sync.Mutex
+	auth              *auth.Handler
+	ids               Identity
+	bm                Bookmarks
+	lc                LinkChecks
+	now               func() time.Time
+	log               *slog.Logger
+	system            SystemInfo
+	health            HealthCollector
+	readiness         Readiness
+	syncErrors        func() uint64
+	assetDir          string
+	backups           BackupOperations
+	notifications     NotificationAdmin
+	notificationUsers NotificationUsers
+	routes            []RouteInfo
+	assetMu           *sync.Mutex
 }
 
 var routePolicies = []RouteInfo{
+	{Method: "GET", Path: "/api/v1/me/notifications"},
+	{Method: "PATCH", Path: "/api/v1/me/notifications"},
+	{Method: "POST", Path: "/api/v1/me/notifications/bindings"},
+	{Method: "POST", Path: "/api/v1/me/notifications/bindings/confirm"},
+	{Method: "DELETE", Path: "/api/v1/me/notifications/bindings/{kind}"},
 	{Method: "GET", Path: "/api/v1/me", AnyToken: true},
 	{Method: "PATCH", Path: "/api/v1/me/password", Recent: true},
 	{Method: "GET", Path: "/api/v1/me/dashboard", TokenScope: identity.ScopeBookmarksRead},
@@ -289,6 +316,9 @@ var routePolicies = []RouteInfo{
 	{Method: "GET", Path: "/api/v1/admin/health", Admin: true},
 	{Method: "GET", Path: "/api/v1/admin/activity", Admin: true},
 	{Method: "GET", Path: "/api/v1/admin/backups", Admin: true},
+	{Method: "GET", Path: "/api/v1/admin/notifications", Admin: true},
+	{Method: "PUT", Path: "/api/v1/admin/notifications", Admin: true, Recent: true},
+	{Method: "POST", Path: "/api/v1/admin/notifications/test", Admin: true, Recent: true},
 	{Method: "PUT", Path: "/api/v1/admin/backups/schedule", Admin: true, Recent: true},
 	{Method: "POST", Path: "/api/v1/admin/backups/destinations", Admin: true, Recent: true},
 	{Method: "PUT", Path: "/api/v1/admin/backups/destinations/{id}", Admin: true, Recent: true},
@@ -323,7 +353,7 @@ func New(opts Options) (*API, error) {
 	if opts.AssetMu == nil {
 		opts.AssetMu = &sync.Mutex{}
 	}
-	return &API{auth: opts.Auth, ids: opts.Identity, bm: opts.Bookmarks, lc: opts.LinkChecks, now: opts.Now, log: opts.Logger, system: opts.System, health: opts.Health, readiness: opts.Readiness, syncErrors: opts.SyncErrors, assetDir: opts.AssetDir, backups: opts.Backups, assetMu: opts.AssetMu, routes: append([]RouteInfo(nil), routePolicies...)}, nil
+	return &API{auth: opts.Auth, ids: opts.Identity, bm: opts.Bookmarks, lc: opts.LinkChecks, now: opts.Now, log: opts.Logger, system: opts.System, health: opts.Health, readiness: opts.Readiness, syncErrors: opts.SyncErrors, assetDir: opts.AssetDir, backups: opts.Backups, notifications: opts.Notifications, notificationUsers: opts.NotificationUsers, assetMu: opts.AssetMu, routes: append([]RouteInfo(nil), routePolicies...)}, nil
 }
 
 func (a *API) Routes() []RouteInfo { return append([]RouteInfo(nil), a.routes...) }
@@ -418,7 +448,7 @@ func (a *API) authorize(rt RouteInfo, next http.Handler) http.Handler {
 }
 
 func (a *API) serve(w http.ResponseWriter, r *http.Request, rt RouteInfo) {
-	if a.serveBrandingAsset(w, r) || a.servePresentation(w, r) || a.serveBookmarks(w, r) || a.serveFolders(w, r) || a.serveTags(w, r) || a.serveDuplicates(w, r) || a.serveLinkChecks(w, r) || a.serveTrash(w, r) || a.serveShares(w, r) || a.serveMe(w, r) || a.serveTokens(w, r) || a.serveConnections(w, r) || a.serveBackups(w, r) || a.serveAdmin(w, r) || a.serveTransfer(w, r) {
+	if a.serveBrandingAsset(w, r) || a.servePresentation(w, r) || a.serveBookmarks(w, r) || a.serveFolders(w, r) || a.serveTags(w, r) || a.serveDuplicates(w, r) || a.serveLinkChecks(w, r) || a.serveTrash(w, r) || a.serveShares(w, r) || a.serveMe(w, r) || a.serveTokens(w, r) || a.serveConnections(w, r) || a.serveBackups(w, r) || a.serveUserNotifications(w, r) || a.serveNotifications(w, r) || a.serveAdmin(w, r) || a.serveTransfer(w, r) {
 		return
 	}
 	server.WriteError(w, http.StatusNotFound, "not_found", "route not found")
