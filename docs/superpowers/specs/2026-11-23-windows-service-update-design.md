@@ -22,7 +22,7 @@ Provide a supported native Windows install for BookmarksSync and let an administ
 ## Approaches
 
 1. **PowerShell-only maintenance:** install, upgrade, and repair run locally as an elevated administrator. This is smaller but leaves the existing Admin-page update control unavailable on Windows.
-2. **Selected: native services plus a restricted updater service:** run the app as Network Service and a separate updater as LocalSystem. A DACL-protected named pipe carries one validated release tag. This matches the Debian approval workflow while keeping system privileges out of the web process.
+2. **Selected: native services plus a restricted updater service:** run the app as its dedicated virtual account (`NT SERVICE\BookmarksSync`) and a separate updater as LocalSystem. A DACL-protected named pipe carries one validated release tag. This matches the Debian approval workflow while keeping system privileges out of the web process.
 3. **Third-party service wrapper:** simpler service setup, but adds another executable and update chain and does not provide the restricted Admin-page updater boundary by itself.
 
 ## Design calls
