@@ -45,7 +45,7 @@ Still planned or awaiting acceptance:
 - Login Flow v2 (the floccus "Connect" wizard; use profile import for now);
 - Debian amd64 single-command install, tagged upgrade, and repair script is available at [docs/distribution.md](docs/distribution.md); first published-build validation and Docker/Windows installers remain;
 - automated GeoLite provisioning on Debian/LXC is implemented; final public country/proxy acceptance and Docker/Windows GeoLite scheduling remain;
-- main-branch CI release assets and attestations are implemented; live release validation and admin update/approval workflows remain. See [docs/distribution.md](docs/distribution.md).
+- main-branch CI release assets and attestations are implemented; live release validation and Docker/Windows installers remain. Debian admins can review and explicitly queue eligible updates in Settings. See [docs/distribution.md](docs/distribution.md).
 
 See `docs/design.md` and `docs/implementation-plan.md`.
 

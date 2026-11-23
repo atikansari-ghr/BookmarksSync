@@ -58,6 +58,7 @@ EOF
 cat >"${test_root}/bin/systemctl" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >> "$BOOKMARKSYNC_TEST_SYSTEMCTL_LOG"
+if [ "$1" = is-active ] && [ "$3" = bookmarksync-update-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.service ]; then exit 1; fi
 exit 0
 EOF
 cat >"${test_root}/bin/sleep" <<'EOF'
@@ -69,7 +70,19 @@ cat >"${test_root}/bin/gh" <<'EOF'
 printf '%s\n' "$*" >> "$BOOKMARKSYNC_TEST_GH_LOG"
 [[ "${BOOKMARKSYNC_TEST_ATTEST_FAIL:-0}" != 1 ]]
 EOF
-chmod +x "${test_root}/bin/curl" "${test_root}/bin/systemctl" "${test_root}/bin/sleep" "${test_root}/bin/gh"
+cat >"${test_root}/bin/sudo" <<'EOF'
+#!/bin/sh
+exit 0
+EOF
+cat >"${test_root}/bin/visudo" <<'EOF'
+#!/bin/sh
+grep -Fq '# Managed by BookmarksSync installer' "$2"
+EOF
+cat >"${test_root}/bin/systemd-run" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$BOOKMARKSYNC_TEST_SYSTEMD_RUN_LOG"
+EOF
+chmod +x "${test_root}/bin/curl" "${test_root}/bin/systemctl" "${test_root}/bin/sleep" "${test_root}/bin/gh" "${test_root}/bin/sudo" "${test_root}/bin/visudo" "${test_root}/bin/systemd-run"
 cat >"${test_root}/release.json" <<'EOF'
 [{"tag_name":"build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","draft":false,"prerelease":true,"published_at":"2026-11-23T00:00:00Z","assets":[]}]
 EOF
@@ -142,6 +155,17 @@ grep -Fq -- '--signer-workflow atikansari-ghr/BookmarksSync/.github/workflows/ci
 grep -Fq -- '--source-ref refs/heads/main' "${test_root}/gh.log"
 [[ "$(stat -c '%a' "${test_root}/install-root/etc/bookmarksync/bookmarksync.env")" == 600 ]]
 [[ "$(stat -c '%a' "${test_root}/install-root/etc/systemd/system/bookmarksync.service")" == 644 ]]
+[[ -x "${test_root}/install-root/usr/local/sbin/bookmarksync-update" ]]
+[[ -x "${test_root}/install-root/usr/local/libexec/bookmarksync-update-worker" ]]
+[[ -x "${test_root}/install-root/usr/local/sbin/bookmarksync-installer" ]]
+[[ "$(stat -c '%a' "${test_root}/install-root/etc/sudoers.d/bookmarksync-update")" == 440 ]]
+grep -Fq 'bookmarksync ALL=(root) NOPASSWD:' "${test_root}/install-root/etc/sudoers.d/bookmarksync-update"
+BOOKMARKSYNC_TESTING=1 SUDO_USER=bookmarksync BOOKMARKSYNC_TEST_SYSTEMCTL_LOG="${test_root}/systemctl.log" BOOKMARKSYNC_TEST_SYSTEMD_RUN_LOG="${test_root}/systemd-run.log" PATH="${test_root}/bin:${PATH}" bash "${test_root}/install-root/usr/local/sbin/bookmarksync-update" schedule --tag "$tag"
+grep -Fq -- '--unit=bookmarksync-update-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' "${test_root}/systemd-run.log"
+if BOOKMARKSYNC_TESTING=1 SUDO_USER=bookmarksync BOOKMARKSYNC_TEST_SYSTEMCTL_LOG="${test_root}/systemctl.log" BOOKMARKSYNC_TEST_SYSTEMD_RUN_LOG="${test_root}/systemd-run.log" PATH="${test_root}/bin:${PATH}" bash "${test_root}/install-root/usr/local/sbin/bookmarksync-update" schedule --tag latest >/dev/null 2>&1; then
+  printf 'updater accepted an invalid tag\n' >&2
+  exit 1
+fi
 
 chmod 0644 "${test_root}/install-root/etc/bookmarksync/bookmarksync.env"
 BOOKMARKSYNC_TESTING=1 BOOKMARKSYNC_TEST_OS=debian BOOKMARKSYNC_INSTALL_ROOT="${test_root}/install-root" BOOKMARKSYNC_TEST_RELEASE_JSON="${test_root}/release-valid.json" BOOKMARKSYNC_TEST_FIXTURES="$fixtures" BOOKMARKSYNC_TEST_GH_LOG="${test_root}/gh.log" BOOKMARKSYNC_TEST_SYSTEMCTL_LOG="${test_root}/systemctl.log" PATH="${test_root}/bin:${PATH}" bash "${installer}" upgrade --tag "$tag" >/dev/null
@@ -211,3 +235,4 @@ printf 'PASS: failed readiness restores old binary and pre-upgrade data\n'
 printf 'PASS: failed rollback restore retains failed data and leaves service stopped\n'
 printf 'PASS: existing environment file permissions are repaired\n'
 printf 'PASS: unmanaged systemd units are preserved\n'
+printf 'PASS: browser updater schedules only a full SHA build through the restricted root helper\n'

@@ -29,6 +29,7 @@ import (
 	"github.com/atikansari-ghr/BookmarksSync/internal/network"
 	"github.com/atikansari-ghr/BookmarksSync/internal/notifications"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
+	"github.com/atikansari-ghr/BookmarksSync/internal/updates"
 	"github.com/atikansari-ghr/BookmarksSync/internal/version"
 	"github.com/atikansari-ghr/BookmarksSync/internal/webui"
 )
@@ -241,8 +242,13 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 			return err
 		}
 		go lc.Run(ctx)
-		apiH, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupAPI{manager: backupManager}, Notifications: notificationService, NotificationUsers: userNotificationService, AssetMu: assetMu, Logger: log, Health: health.New(cfg.DataDir), Readiness: db, SyncErrors: adapter.SyncErrors, AssetDir: filepath.Join(cfg.DataDir, "branding"),
-			System: api.SystemInfo{Version: version.Current().Version, PublicOrigin: cfg.PublicOrigin,
+		updateCatalog := updates.NewCatalogService(updates.CatalogClient{})
+		var updateApply func(context.Context, string) (string, error)
+		if hostUpdater := updates.InstalledHostRunner(os.Getenv("BOOKMARKSYNC_UPDATE_SERVICE_USER")); hostUpdater != nil {
+			updateApply = hostUpdater.Start
+		}
+		apiH, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupAPI{manager: backupManager}, Notifications: notificationService, NotificationUsers: userNotificationService, UpdateCatalog: updateCatalog.List, UpdateApply: updateApply, AssetMu: assetMu, Logger: log, Health: health.New(cfg.DataDir), Readiness: db, SyncErrors: adapter.SyncErrors, AssetDir: filepath.Join(cfg.DataDir, "branding"),
+			System: api.SystemInfo{Version: version.Current().Version, Commit: version.Current().Commit, PublicOrigin: cfg.PublicOrigin,
 				PasskeysEnabled: passkeysEnabled, OIDCProviders: configuredOIDCNames(cfg.OIDCProviders),
 				GeoIPAvailable: geoDB != nil, GeoIPBuildTime: geoBuildTime(geoDB), TrustedProxyCount: len(cfg.TrustedProxies)}})
 		if err != nil {

@@ -293,6 +293,7 @@ a { color: var(--accent-text); }
 .admin-section { gap: 16px; }
 .admin-section > h2, .admin-section form h2 { font-size: 1.25rem; }
 .admin-section-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.admin-update-release { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-md); background: color-mix(in srgb, var(--surface) 74%, transparent); }
 .health-pill { display: inline-flex; padding: 5px 10px; border-radius: 999px; font-size: .82rem; font-weight: 700; white-space: nowrap; }
 .health-pill.ok { background: var(--ok-bg); color: var(--teal-strong); }
 .health-pill.bad { background: var(--danger-bg); color: var(--danger); }

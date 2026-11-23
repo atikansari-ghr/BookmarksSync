@@ -27,6 +27,7 @@ import (
 	"github.com/atikansari-ghr/BookmarksSync/internal/linkcheck"
 	"github.com/atikansari-ghr/BookmarksSync/internal/notifications"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
+	"github.com/atikansari-ghr/BookmarksSync/internal/updates"
 	"github.com/atikansari-ghr/BookmarksSync/internal/version"
 )
 
@@ -69,6 +70,10 @@ type tenv struct {
 }
 
 func newTEnv(t *testing.T) *tenv {
+	return newTEnvWithCatalog(t, nil, nil)
+}
+
+func newTEnvWithCatalog(t *testing.T, updateCatalog func(context.Context, string) (updates.Catalog, error), updateApply func(context.Context, string) (string, error)) *tenv {
 	t.Helper()
 	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "api.db"))
 	if err != nil {
@@ -95,8 +100,8 @@ func newTEnv(t *testing.T) *tenv {
 		t.Fatal(err)
 	}
 	assetDir := filepath.Join(t.TempDir(), "branding")
-	a, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupTestAdapter{manager: backupManager}, Notifications: notificationService, NotificationUsers: notifications.NewUserService(db.SQL(), notificationService, clock.Now), Now: clock.Now, Logger: log, Health: health.New(t.TempDir()), Readiness: db, AssetDir: assetDir,
-		System: api.SystemInfo{Version: "test", PublicOrigin: origin, PasskeysEnabled: false, OIDCProviders: []string{}}})
+	a, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupTestAdapter{manager: backupManager}, Notifications: notificationService, NotificationUsers: notifications.NewUserService(db.SQL(), notificationService, clock.Now), UpdateCatalog: updateCatalog, UpdateApply: updateApply, Now: clock.Now, Logger: log, Health: health.New(t.TempDir()), Readiness: db, AssetDir: assetDir,
+		System: api.SystemInfo{Version: "test", Commit: "dddddddddddddddddddddddddddddddddddddddd", PublicOrigin: origin, PasskeysEnabled: false, OIDCProviders: []string{}}})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -495,6 +495,36 @@ components:
         unavailable: {type: array, items: {type: string, enum: [cpu, memory, disk, uptime]}}
         dbReady: {type: boolean}
         syncErrors: {type: integer, format: uint64, minimum: 0, description: Process-lifetime failed Floccus requests returning a server error.}
+    UpdateRelease:
+      required: [tag, commit, publishedAt, url]
+      properties:
+        tag: {type: string, pattern: '^build-[0-9a-f]{40}$'}
+        commit: {type: string, pattern: '^[0-9a-f]{40}$'}
+        publishedAt: {type: string, format: date-time}
+        url: {type: string, format: uri}
+      type: object
+    UpdateCatalog:
+      required: [releases, updateAvailable, applyAvailable]
+      properties:
+        installedCommit: {type: string, pattern: '^[0-9a-f]{40}$'}
+        releases: {type: array, items: {$ref: '#/components/schemas/UpdateRelease'}}
+        latest: {$ref: '#/components/schemas/UpdateRelease'}
+        updateAvailable: {type: boolean}
+        applyAvailable: {type: boolean}
+      type: object
+    UpdateApproval:
+      required: [status, tag, job]
+      properties:
+        status: {type: string, enum: [accepted]}
+        tag: {type: string, pattern: '^build-[0-9a-f]{40}$'}
+        job: {type: string, pattern: '^bookmarksync-update-[0-9a-f]{40}$'}
+      type: object
+    UpdateApprovalRequest:
+      additionalProperties: false
+      required: [tag]
+      properties:
+        tag: {type: string, pattern: '^build-[0-9a-f]{40}$'}
+      type: object
     SystemSettingsResponse:
       type: object
       required: [settings]
@@ -544,7 +574,7 @@ components:
       properties:
         id: {type: integer, format: int64}
         actorId: {type: integer, format: int64, minimum: 0}
-        action: {type: string, enum: [user_created, user_updated, user_settings_updated, system_settings_updated, branding_asset_uploaded, connection_revoked, password_reset, factor_reset, backup_schedule_updated, backup_run_started, backup_destination_created, backup_destination_updated, backup_destination_deleted]}
+        action: {type: string, enum: [user_created, user_updated, user_settings_updated, system_settings_updated, branding_asset_uploaded, connection_revoked, password_reset, factor_reset, backup_schedule_updated, backup_run_started, backup_destination_created, backup_destination_updated, backup_destination_deleted, software_update_approved]}
         targetType: {type: string, enum: [user, system, asset, backup, backup_destination]}
         targetId: {type: [integer, 'null'], format: int64, minimum: 1}
         createdAt: {type: string, format: date-time}
@@ -1123,6 +1153,8 @@ paths:
   /admin/users/{id}/connections: {get: {operationId: adminListConnections, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/ConnectionList'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Admin List Connections, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}}
   /admin/users/{id}/connections/{cid}: {delete: {operationId: adminRevokeConnection, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Admin Revoke Connection, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}, {name: cid, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}}
   /admin/system: {get: {operationId: adminSystemInfo, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/AdminSystem'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Admin System Info}}
+  /admin/updates: {get: {operationId: adminUpdateCatalog, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/UpdateCatalog'}}}, description: Published SHA-addressed Linux builds from the configured repository.}, default: {$ref: '#/components/responses/Error'}}, summary: List Available Updates}}
+  /admin/updates/approve: {post: {operationId: adminApproveUpdate, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/UpdateApprovalRequest'}}}, required: true}, responses: {"202": {content: {application/json: {schema: {$ref: '#/components/schemas/UpdateApproval'}}}, description: Selected release was queued by the restricted host updater.}, default: {$ref: '#/components/responses/Error'}}, summary: Approve and Queue Software Update}}
   /admin/settings:
     get: {operationId: adminGetSettings, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/SystemSettingsResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Get System Settings}
     patch: {operationId: adminPatchSettings, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/SettingsPatchRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/SystemSettingsResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Update System Settings}

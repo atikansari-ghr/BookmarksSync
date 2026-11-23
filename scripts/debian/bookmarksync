@@ -12,6 +12,10 @@ readonly data_path="${BOOKMARKSYNC_DATA_PATH:-/var/lib/bookmarksync}"
 readonly env_path="${BOOKMARKSYNC_ENV_PATH:-/etc/bookmarksync/bookmarksync.env}"
 readonly unit_dir="${BOOKMARKSYNC_SYSTEMD_DIR:-/etc/systemd/system}"
 readonly updates_path="${BOOKMARKSYNC_UPDATES_PATH:-/var/lib/bookmarksync-updates}"
+readonly installer_copy_path="/usr/local/sbin/bookmarksync-installer"
+readonly update_helper_path="/usr/local/sbin/bookmarksync-update"
+readonly update_worker_path="/usr/local/libexec/bookmarksync-update-worker"
+readonly sudoers_update_path="/etc/sudoers.d/bookmarksync-update"
 cleanup_directory=""
 
 cleanup_temporary_directory() {
@@ -173,6 +177,15 @@ ensure_github_cli() {
   command -v gh >/dev/null 2>&1 || fail "GitHub CLI installation did not provide gh"
 }
 
+ensure_sudo() {
+  command -v sudo >/dev/null 2>&1 && return
+  [[ "${BOOKMARKSYNC_TESTING:-0}" != 1 ]] || fail "test harness must provide a fake sudo command"
+  command -v apt-get >/dev/null 2>&1 || fail "install sudo from the Debian repository before enabling browser updates"
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install --yes sudo
+  command -v sudo >/dev/null 2>&1 || fail "sudo installation did not provide sudo"
+}
+
 validate_initial_settings() {
   local public_url="$1" listen="$2" cidrs="$3"
   python3 - "$public_url" "$listen" "$cidrs" <<'PY' || fail "public URL, listen address, or management CIDRs are invalid"
@@ -264,6 +277,7 @@ Type=simple
 User=${service_user}
 Group=${service_group}
 EnvironmentFile=${env_path}
+Environment=BOOKMARKSYNC_UPDATE_SERVICE_USER=${service_user}
 ExecStart=${binary_path} serve
 Restart=on-failure
 RestartSec=3
@@ -296,6 +310,58 @@ ensure_service_account() {
     useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin --user-group "$service_user"
   fi
   getent group "$service_group" >/dev/null || fail "service group $service_group does not exist"
+}
+
+write_update_helpers() {
+  local installer_copy helper worker sudoers path
+  installer_copy="$(managed_path "$installer_copy_path")"
+  helper="$(managed_path "$update_helper_path")"
+  worker="$(managed_path "$update_worker_path")"
+  sudoers="$(managed_path "$sudoers_update_path")"
+  ensure_sudo
+  for path in "$installer_copy" "$helper" "$worker" "$sudoers" "${installer_copy}.next" "${helper}.next" "${worker}.next" "${sudoers}.next"; do check_managed_path "$path"; done
+  if [[ -e "$helper" ]] && ! grep -Fq '# Managed by BookmarksSync installer' "$helper"; then fail "refusing to overwrite unmanaged update helper: $helper"; fi
+  if [[ -e "$worker" ]] && ! grep -Fq '# Managed by BookmarksSync installer' "$worker"; then fail "refusing to overwrite unmanaged update worker: $worker"; fi
+  if [[ -e "$sudoers" ]] && ! grep -Fq '# Managed by BookmarksSync installer' "$sudoers"; then fail "refusing to overwrite unmanaged sudoers rule: $sudoers"; fi
+  install -d -m 0755 -o root -g root "$(dirname -- "$installer_copy")" "$(dirname -- "$helper")" "$(dirname -- "$worker")" "$(dirname -- "$sudoers")"
+  install -m 0755 -o root -g root "${BASH_SOURCE[0]}" "${installer_copy}.next"
+  mv -f -- "${installer_copy}.next" "$installer_copy"
+  cat > "${helper}.next" <<EOF
+#!/usr/bin/env bash
+# Managed by BookmarksSync installer
+set -Eeuo pipefail
+if [[ \${BOOKMARKSYNC_TESTING:-0} != 1 ]]; then [[ \$(id -u) -eq 0 ]] || { printf 'must run as root\\n' >&2; exit 1; }; fi
+[[ \$# -eq 3 && \$1 == schedule && \$2 == --tag ]] || { printf 'invalid updater request\\n' >&2; exit 2; }
+[[ \${SUDO_USER:-} == '${service_user}' ]] || { printf 'caller is not the BookmarksSync service account\\n' >&2; exit 1; }
+tag=\$3
+[[ \$tag =~ ^build-[0-9a-f]{40}\$ ]] || { printf 'invalid release tag\\n' >&2; exit 2; }
+commit=\${tag#build-}
+unit=bookmarksync-update-\${commit}
+if systemctl is-active --quiet "\${unit}.service"; then printf 'an update job is already running\\n' >&2; exit 1; fi
+systemd-run --quiet --no-block --collect --unit=\$unit --property=UMask=0077 '${worker}' \$tag
+EOF
+  chmod 0755 "${helper}.next"
+  chown root:root "${helper}.next"
+  mv -f -- "${helper}.next" "$helper"
+  cat > "${worker}.next" <<EOF
+#!/usr/bin/env bash
+# Managed by BookmarksSync installer
+set -Eeuo pipefail
+if [[ \${BOOKMARKSYNC_TESTING:-0} != 1 ]]; then [[ \$(id -u) -eq 0 ]] || { printf 'must run as root\\n' >&2; exit 1; }; fi
+[[ \$# -eq 1 && \$1 =~ ^build-[0-9a-f]{40}\$ ]] || { printf 'invalid release tag\\n' >&2; exit 2; }
+exec '${installer_copy}' upgrade --tag \$1
+EOF
+  chmod 0755 "${worker}.next"
+  chown root:root "${worker}.next"
+  mv -f -- "${worker}.next" "$worker"
+  cat > "${sudoers}.next" <<EOF
+# Managed by BookmarksSync installer
+${service_user} ALL=(root) NOPASSWD: ${helper} schedule --tag *
+EOF
+  chmod 0440 "${sudoers}.next"
+  chown root:root "${sudoers}.next"
+  visudo -cf "${sudoers}.next" >/dev/null || fail "generated update sudoers rule did not validate"
+  mv -f -- "${sudoers}.next" "$sudoers"
 }
 
 service_chown() {
@@ -358,6 +424,7 @@ install_release() {
   unit="$(managed_path "${unit_dir%/}/${service_name}")"
   updates="$(managed_path "$updates_path")"
   [[ "$binary_path" == /* && "$data_path" == /* && "$env_path" == /* && "$updates_path" == /* ]] || fail "managed paths must be absolute"
+  [[ "$service_user" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$service_group" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || fail "service user and group names are invalid"
   check_managed_path "$binary"
   check_managed_path "$data"
   check_managed_path "$env_file"
@@ -384,6 +451,7 @@ install_release() {
   if [[ "$command" == install ]]; then
     initial_env_file
     ensure_service_account
+    write_update_helpers
     install -d -m 0755 -o root -g root "$(dirname -- "$binary")"
     if [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]]; then
       install -d -m 0700 "$data"
@@ -408,6 +476,7 @@ install_release() {
   fi
 
   initial_env_file
+  write_update_helpers
   install -d -m 0700 -o root -g root "$updates/snapshots"
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
   snapshot_base="${updates}/snapshots/preupdate-${timestamp}"

@@ -28,7 +28,8 @@
   - **Delivered (release pipeline slice):** successful `main` CI builds assemble full-SHA prereleases with Linux/Windows binaries, checksums, build metadata, and GitHub artifact attestations. See `docs/distribution.md` and `docs/superpowers/plans/2026-11-23-main-build-releases.md`.
   - **Verified:** GitHub immutable releases are enabled for the repository; released assets and SHA tags will be locked after draft publication.
   - **Delivered:** Debian amd64 install, explicit-tag upgrade, and repair script with checksum/attestation verification, protected systemd configuration, pre-change full backup, readiness checks, and rollback snapshots. Mocked lifecycle tests passed on the prepared Debian 13 amd64 Proxmox LXC; see `docs/distribution.md`.
-  - **Pending:** run the publishing workflow after an authorized merge/push and validate a real release installation; admin update catalog/approval UI, Docker/Windows installers, and maintenance write pause remain.
+  - **Delivered:** Admin Settings lists eligible published Linux builds and allows a recently reauthenticated administrator to explicitly queue an update through the Debian restricted host helper. The installer verifies artifact provenance and preserves rollback snapshots.
+  - **Pending:** run the publishing workflow after an authorized merge/push and validate a real release installation; Docker/Windows installers and maintenance write pause remain.
 
 ## Review focus
 1. Offline browser cache following restore: test normal automatic continuation; document accepted risk.

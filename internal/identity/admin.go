@@ -584,6 +584,7 @@ var adminActivityTargets = map[string]map[string]bool{
 	"backup_schedule_updated": {"backup": true}, "backup_run_started": {"backup": true},
 	"backup_destination_created": {"backup_destination": true}, "backup_destination_updated": {"backup_destination": true},
 	"backup_destination_deleted": {"backup_destination": true},
+	"software_update_approved":   {"system": true},
 }
 
 // RecordAdminActivity stores only a fixed action code and numeric target identifiers.

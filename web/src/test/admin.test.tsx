@@ -16,6 +16,8 @@ function adminRoutes(): Record<string, Route> {
     'GET /api/v1/me/settings': { status: 200, body: { settings: {} } },
     'GET /api/v1/admin/users': { status: 200, body: { users: [{ id: 2, username: 'sam', active: true, isAdmin: false, bookmarkCount: 12, folderCount: 4, storageBytes: 2048, connectionCount: 1 }], page: 0, limit: 50, hasMore: false } },
     'GET /api/v1/admin/health': { status: 200, body: { cpuPercent: 12, memory: { totalBytes: 1000, usedBytes: 400, percent: 40 }, disk: null, uptimeSeconds: 1000, unavailable: ['disk'], dbReady: true, syncErrors: 2 } },
+    'GET /api/v1/admin/updates': { status: 200, body: { installedCommit: 'dddddddddddddddddddddddddddddddddddddddd', updateAvailable: true, releases: [{ tag: 'build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', publishedAt: '2026-11-23T12:00:00Z', url: 'https://github.com/atikansari-ghr/BookmarksSync/releases/tag/build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }], latest: { tag: 'build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', publishedAt: '2026-11-23T12:00:00Z', url: 'https://github.com/atikansari-ghr/BookmarksSync/releases/tag/build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } } },
+    'POST /api/v1/admin/updates/approve': { status: 202, body: { status: 'accepted', tag: 'build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', job: 'bookmarksync-update-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } },
     'GET /api/v1/admin/settings': { status: 200, body: { settings: { 'branding.app-title': 'BookmarksSync' } } },
     'GET /api/v1/admin/network-access': { status: 200, body: { mode: 'allow', countries: ['IN', 'SA'], geoDatabaseAvailable: false, geoDatabaseBuildTime: null, trustedProxyCount: 1 } },
     'GET /api/v1/admin/activity': { status: 200, body: { items: [{ id: 1, actorId: 1, action: 'user_created', targetType: 'user', targetId: 2, createdAt: '2026-11-20T12:00:00Z' }] } },
@@ -51,6 +53,34 @@ describe('admin workspace', () => {
     expect(screen.getByText('User created')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'System backups' })).toBeInTheDocument()
     expect(screen.getAllByText(/nas:bookmarks/)).toHaveLength(2)
+  })
+
+  it('shows the installed build and available release without auto-installing', async () => {
+    mockServer(adminRoutes())
+    render(<App />)
+    await screen.findByRole('heading', { name: 'Software updates' })
+    expect(await screen.findByText('Update available')).toBeInTheDocument()
+    expect(screen.getByText(/build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/)).toBeInTheDocument()
+    expect(screen.getByText(/does not have the restricted browser updater/)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'View release' })).toHaveAttribute('href', 'https://github.com/atikansari-ghr/BookmarksSync/releases/tag/build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
+  })
+
+  it('requires explicit confirmation before queueing an update', async () => {
+    const routes = adminRoutes()
+    routes['GET /api/v1/admin/updates'] = { status: 200, body: { installedCommit: 'dddddddddddddddddddddddddddddddddddddddd', updateAvailable: true, applyAvailable: true, releases: [{ tag: 'build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', publishedAt: '2026-11-23T12:00:00Z', url: 'https://github.com/atikansari-ghr/BookmarksSync/releases/tag/build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }], latest: { tag: 'build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', publishedAt: '2026-11-23T12:00:00Z', url: 'https://github.com/atikansari-ghr/BookmarksSync/releases/tag/build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } } }
+    const api = mockServer(routes)
+    render(<App />)
+    const user = userEvent.setup()
+    await screen.findByRole('heading', { name: 'Software updates' })
+    const confirm = await screen.findByRole('checkbox', { name: /I approve installing this release/ })
+    const apply = screen.getByRole('button', { name: 'Install selected update' })
+    expect(apply).toBeDisabled()
+    await user.click(confirm)
+    expect(apply).toBeEnabled()
+    await user.click(apply)
+    await waitFor(() => expect(api.find('POST', '/api/v1/admin/updates/approve')).toHaveLength(1))
+    expect(api.find('POST', '/api/v1/admin/updates/approve')[0].body).toEqual({ tag: 'build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' })
+    expect(await screen.findByText(/was queued as/)).toBeInTheDocument()
   })
 
   it('saves country access rules and shows sanitized GeoIP status', async () => {
