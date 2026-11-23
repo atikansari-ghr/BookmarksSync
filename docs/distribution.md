@@ -2,7 +2,7 @@
 
 Each successful push to `main` publishes a prerelease named `build-<full commit SHA>`. Pull-request builds never publish. Releases contain:
 
-- `bookmarksync-linux-amd64` and `bookmarksync-windows-amd64.exe`;
+- `bookmarksync-linux-amd64`, `bookmarksync-windows-amd64.exe`, and `bookmarksync-updater-windows-amd64.exe`;
 - `BUILD_INFO.txt` with the source commit, commit timestamp, and embedded version;
 - `SHA256SUMS` covering both binaries and the build information file.
 
@@ -17,7 +17,7 @@ sha256sum --check SHA256SUMS
 gh attestation verify bookmarksync-linux-amd64 -R atikansari-ghr/BookmarksSync
 ```
 
-For Windows, substitute `bookmarksync-windows-amd64.exe` in the attestation command. Verify the attestation before installing an update. The checksum detects file changes; the attestation establishes that GitHub Actions built the file for this repository and commit.
+For Windows, verify both `bookmarksync-windows-amd64.exe` and `bookmarksync-updater-windows-amd64.exe`. Verify the attestations before installing an update. The checksum detects file changes; the attestation establishes that GitHub Actions built the files for this repository and commit.
 
 ## Debian and Proxmox LXC
 
@@ -36,6 +36,25 @@ Before upgrade or repair, the script stops the service, creates and verifies a c
 Browser approvals use `sudo` only for the root-owned `/usr/local/sbin/bookmarksync-update` helper, which accepts one full SHA tag and schedules a dedicated systemd unit. Its sudoers rule does not allow a general shell or arbitrary command. The helper calls the root-owned installer copy, which repeats the release check and verifies GitHub provenance before any binary replacement. Review update job output with `journalctl -u bookmarksync-update-<full-sha>`.
 
 Validate the script and its isolated service lifecycle with `bash scripts/debian/test-bookmarksync.sh`. The automated flow has been exercised on a Debian 13 amd64 Proxmox LXC using mock release assets, including the restricted updater helper. A first published `main` release and a real provenance-verified installation remain pending.
+
+## Windows amd64
+
+Run an elevated PowerShell on 64-bit Windows. Install GitHub CLI from its official installer in the standard `Program Files\GitHub CLI` directory before running setup; the installer uses it to select published releases and independently verify GitHub build attestations. The install command chooses the newest complete Windows prerelease and downloads the pinned official rclone v1.76.0 archive, checking its SHA-256 before extraction:
+
+```powershell
+Set-ExecutionPolicy -Scope Process Bypass
+.\scripts\windows\bookmarksync.ps1 install -PublicUrl https://bookmarks.example.com -ManagementCidrs 192.168.1.0/24
+.\scripts\windows\bookmarksync.ps1 upgrade -Tag build-<full-40-character-commit-sha>
+.\scripts\windows\bookmarksync.ps1 repair -Tag build-<full-40-character-commit-sha>
+```
+
+Install creates `BookmarksSync` under `NT SERVICE\BookmarksSync` and the restricted `BookmarksSyncUpdater` under LocalSystem. The app accepts HTTP on port `18080`; no Windows Firewall rules are opened. Put it behind an HTTPS reverse proxy and add only the required inbound firewall rule yourself. The first setup allows loopback plus the explicit `-ManagementCidrs` ranges; add your controlled proxy/client networks because Windows GeoLite scheduling is not included. Do not expose the port directly to the Internet.
+
+Program files live in `%ProgramFiles%\BookmarksSync`; SQLite and the protected environment file are in `%ProgramData%\BookmarksSync\data` and `%ProgramData%\BookmarksSync\bookmarksync.env`; rclone credentials are in `%ProgramData%\BookmarksSync\rclone\rclone.conf`. Store external backup copies separately. Upgrade and repair stop the services, make a compressed snapshot of data, settings, rclone config and installed binaries, verify its manifest and SHA-256, then replace files and check local `/readyz`. Failed activation restores the snapshot; keep the host and snapshot storage healthy for recovery. Repair only accepts services already pointing at the managed installation.
+
+The Admin Settings update control is enabled only when the release contains both Windows executables, metadata and checksums. The LocalSystem service rechecks release checksums and both workflow attestations before stopping the app, then reports update/rollback status in the Windows Application event log. Windows country database scheduling is not included; configure management CIDRs or add `BOOKMARKSYNC_GEOIP_DB=<path>` to the protected environment file with a validated country database, then restart the app service. The first-admin password is entered via a masked prompt and passed to the CLI over standard input.
+
+Installer tests run with temporary paths and fake host operations: `powershell -NoProfile -File scripts/windows/tests/run.ps1`. They do not install Windows services. An elevated disposable Windows service lifecycle and real published-release validation are separate acceptance gates.
 
 ## Docker Compose
 

@@ -1,9 +1,9 @@
 # Third-Party Notices
 
-## rclone v1.76.0 (Docker image)
+## rclone v1.76.0 (Docker image and Windows installer)
 
 Source: https://github.com/rclone/rclone/tree/v1.76.0
-Copyright (C) 2012 by Nick Craig-Wood. Licensed under the MIT License; the full notice is preserved in the Docker image at `/usr/share/doc/rclone/COPYING` and in `third_party/rclone-COPYING` in this repository. The image downloads only the official amd64/arm64 release archives after SHA-256 verification.
+Copyright (C) 2012 by Nick Craig-Wood. Licensed under the MIT License; the full notice is preserved in the Docker image at `/usr/share/doc/rclone/COPYING`, installed beside the Windows binary as `rclone-COPYING`, and in `third_party/rclone-COPYING` in this repository. The image downloads only the official amd64/arm64 release archives after SHA-256 verification. The Windows installer downloads the pinned official v1.76.0 amd64 archive and verifies SHA-256 `8b4fd2737ade4e70c057ef4a49deb7cffe94b0fb9d7587c189d149823f21a1dc` before extraction.
 
 ## MaxMind GeoIP Update v8.0.0 (optional Debian setup download)
 

@@ -228,12 +228,12 @@ func parseChecksums(path string) (map[string]string, error) {
 		if _, err := hex.DecodeString(digest); err != nil || values[name] != "" {
 			return nil, ErrReleaseInvalid
 		}
-		if name != WindowsServerAsset && name != WindowsUpdaterAsset && name != BuildInfoAsset {
+		if name != WindowsServerAsset && name != WindowsUpdaterAsset && name != BuildInfoAsset && name != "bookmarksync-linux-amd64" {
 			return nil, ErrReleaseInvalid
 		}
 		values[name] = strings.ToLower(digest)
 	}
-	if err := scanner.Err(); err != nil || len(values) != 3 {
+	if err := scanner.Err(); err != nil || len(values) != 4 || values["bookmarksync-linux-amd64"] == "" {
 		return nil, ErrReleaseInvalid
 	}
 	return values, nil

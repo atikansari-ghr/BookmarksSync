@@ -185,9 +185,10 @@ func writeVerifiedReleaseFixture(t *testing.T, dir string) {
 	t.Helper()
 	commit := strings.TrimPrefix(validTag, "build-")
 	bodies := map[string][]byte{
-		WindowsServerAsset:  []byte("server executable fixture"),
-		WindowsUpdaterAsset: []byte("updater executable fixture"),
-		BuildInfoAsset:      []byte("commit=" + commit + "\nbuild_date=2026-11-23T00:00:00Z\nversion=0.0.0-" + commit[:12] + "\n"),
+		WindowsServerAsset:         []byte("server executable fixture"),
+		WindowsUpdaterAsset:        []byte("updater executable fixture"),
+		BuildInfoAsset:             []byte("commit=" + commit + "\nbuild_date=2026-11-23T00:00:00Z\nversion=0.0.0-" + commit[:12] + "\n"),
+		"bookmarksync-linux-amd64": []byte("linux binary fixture"),
 	}
 	for name, body := range bodies {
 		if err := os.WriteFile(filepath.Join(dir, name), body, 0600); err != nil {
@@ -195,7 +196,7 @@ func writeVerifiedReleaseFixture(t *testing.T, dir string) {
 		}
 	}
 	var sums strings.Builder
-	for _, name := range []string{WindowsServerAsset, WindowsUpdaterAsset, BuildInfoAsset} {
+	for _, name := range []string{WindowsServerAsset, WindowsUpdaterAsset, BuildInfoAsset, "bookmarksync-linux-amd64"} {
 		digest := sha256.Sum256(bodies[name])
 		sums.WriteString(hex.EncodeToString(digest[:]) + "  " + name + "\n")
 	}

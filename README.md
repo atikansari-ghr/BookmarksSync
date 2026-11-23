@@ -43,9 +43,9 @@ Implemented:
 
 Still planned or awaiting acceptance:
 - Login Flow v2 (the floccus "Connect" wizard; use profile import for now);
-- Debian amd64 install/upgrade/repair and local Docker Compose deployment files are available at [docs/distribution.md](docs/distribution.md); Docker runtime acceptance, first published-build validation, and Windows installers remain;
+- Debian amd64 and Windows amd64 install/upgrade/repair scripts and local Docker Compose deployment files are available at [docs/distribution.md](docs/distribution.md); Docker runtime acceptance and first published-build validation remain;
 - automated GeoLite provisioning on Debian/LXC is implemented; final public country/proxy acceptance and Docker/Windows GeoLite scheduling remain;
-- main-branch CI release assets and attestations are implemented; live release validation and Windows installers remain. Debian admins can review and explicitly queue eligible updates in Settings. Docker Compose files support local builds and operator-run upgrades; runtime acceptance is pending. See [docs/distribution.md](docs/distribution.md).
+- main-branch CI release assets and attestations are implemented; live release validation and elevated Windows service lifecycle acceptance remain. Debian and Windows admins can review and explicitly queue eligible updates in Settings. Docker Compose files support local builds and operator-run upgrades; runtime acceptance is pending. See [docs/distribution.md](docs/distribution.md).
 
 See `docs/design.md` and `docs/implementation-plan.md`.
 
