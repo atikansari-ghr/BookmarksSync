@@ -29,7 +29,8 @@
   - **Verified:** GitHub immutable releases are enabled for the repository; released assets and SHA tags will be locked after draft publication.
   - **Delivered:** Debian amd64 install, explicit-tag upgrade, and repair script with checksum/attestation verification, protected systemd configuration, pre-change full backup, readiness checks, and rollback snapshots. Mocked lifecycle tests passed on the prepared Debian 13 amd64 Proxmox LXC; see `docs/distribution.md`.
   - **Delivered:** Admin Settings lists eligible published Linux builds and allows a recently reauthenticated administrator to explicitly queue an update through the Debian restricted host helper. The installer verifies artifact provenance and preserves rollback snapshots.
-  - **Pending:** run the publishing workflow after an authorized merge/push and validate a real release installation; Docker/Windows installers and maintenance write pause remain.
+  - **Delivered:** local Docker Compose image runs as non-root with a read-only root filesystem, persistent named SQLite volume, explicit country-gate configuration, and checksum-pinned rclone. Host-controlled Compose upgrades are documented; Docker image publishing, browser-triggered Docker updates, and automatic GeoLite scheduling remain pending.
+  - **Pending:** run the publishing workflow after an authorized merge/push and validate a real release installation; Windows installers and maintenance write pause remain.
 
 ## Review focus
 1. Offline browser cache following restore: test normal automatic continuation; document accepted risk.

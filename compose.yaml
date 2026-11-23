@@ -1,0 +1,32 @@
+services:
+  bookmarksync:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: bookmarksync:local
+    restart: unless-stopped
+    ports:
+      - "${BOOKMARKSYNC_HTTP_BIND:-127.0.0.1}:${BOOKMARKSYNC_HTTP_PORT:-8080}:8080"
+    environment:
+      BOOKMARKSYNC_LISTEN: 0.0.0.0:8080
+      BOOKMARKSYNC_DATA_DIR: /var/lib/bookmarksync
+      BOOKMARKSYNC_PUBLIC_URL: ${BOOKMARKSYNC_PUBLIC_URL:-}
+      BOOKMARKSYNC_MANAGEMENT_CIDRS: ${BOOKMARKSYNC_MANAGEMENT_CIDRS:-}
+      BOOKMARKSYNC_GEOIP_DB: /geo/GeoLite2-Country.mmdb
+      BOOKMARKSYNC_TRUSTED_PROXIES: ${BOOKMARKSYNC_TRUSTED_PROXIES:-}
+      BOOKMARKSYNC_RCLONE_BINARY: /usr/local/bin/rclone
+      BOOKMARKSYNC_RCLONE_CONFIG: /run/bookmarksync/rclone/rclone.conf
+    volumes:
+      - bookmarksync-data:/var/lib/bookmarksync
+      - ${BOOKMARKSYNC_GEOIP_DIR:-./geoip}:/geo:ro
+      - ${BOOKMARKSYNC_RCLONE_CONFIG_DIR:-./rclone-config}:/run/bookmarksync/rclone:ro
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  bookmarksync-data:

@@ -35,4 +35,27 @@ Before upgrade or repair, the script stops the service, creates and verifies a c
 
 Browser approvals use `sudo` only for the root-owned `/usr/local/sbin/bookmarksync-update` helper, which accepts one full SHA tag and schedules a dedicated systemd unit. Its sudoers rule does not allow a general shell or arbitrary command. The helper calls the root-owned installer copy, which repeats the release check and verifies GitHub provenance before any binary replacement. Review update job output with `journalctl -u bookmarksync-update-<full-sha>`.
 
-Validate the script and its isolated service lifecycle with `bash scripts/debian/test-bookmarksync.sh`. The automated flow has been exercised on a Debian 13 amd64 Proxmox LXC using mock release assets, including the restricted updater helper. A first published `main` release and a real provenance-verified installation remain pending. Docker/Windows installers remain separate work.
+Validate the script and its isolated service lifecycle with `bash scripts/debian/test-bookmarksync.sh`. The automated flow has been exercised on a Debian 13 amd64 Proxmox LXC using mock release assets, including the restricted updater helper. A first published `main` release and a real provenance-verified installation remain pending.
+
+## Docker Compose
+
+Build and start the local image from the repository root:
+
+```sh
+docker compose build
+docker compose up -d
+```
+
+The image builds the Go service and includes checksum-pinned rclone v1.76.0 for the application's remote backup destinations. It runs as UID/GID 65532, drops Linux capabilities, uses a read-only root filesystem, and stores the SQLite database in the named `bookmarksync-data` volume. The country gate remains active: a valid `GeoLite2-Country.mmdb` under `./geoip` or an exact `BOOKMARKSYNC_MANAGEMENT_CIDRS` setting must allow your management client. If neither is configured and available, requests are denied. Do not use a broad management range as a shortcut around country policy.
+
+Set `BOOKMARKSYNC_PUBLIC_URL` to the external HTTPS origin when using browser sign-in or OIDC. Set `BOOKMARKSYNC_TRUSTED_PROXIES` only to the actual reverse-proxy address ranges. The port binds to `127.0.0.1:8080` by default; set `BOOKMARKSYNC_HTTP_BIND` to a specific host interface reachable by a containerized reverse proxy. Restrict any non-loopback binding with the host firewall. The first deployment should be reached only from the configured management range until GeoIP and the admin account are ready.
+
+Create the first administrator without putting the password in an argument or environment variable:
+
+```sh
+docker compose exec -T bookmarksync user create --username admin --password-stdin --admin --data-dir /var/lib/bookmarksync
+```
+
+The command reads the password from standard input. To keep rclone credentials out of the image and database volume, place a protected `rclone.conf` in `./rclone-config/`; that directory is mounted read-only. The service user (UID 65532) must be able to read it. For local/NFS backup destinations, mount the host's already-mounted backup directory into the container through a Compose override and use that container path in Admin. Never place the live database on a network share.
+
+Upgrade by rebuilding and recreating the container after reviewing a new repository revision: `docker compose build --pull && docker compose up -d`. Compose updates are operator-run; the admin-approved host updater currently supports the Debian installer only. Docker images are built locally from source; GHCR publishing, automatic GeoIP scheduling, and browser-triggered Docker updates are not included yet. Before replacing an image, use the application's verified backup workflow and retain an independent copy of the named volume data.
