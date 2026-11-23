@@ -3,6 +3,10 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        BOOKMARKSYNC_VERSION: ${BOOKMARKSYNC_VERSION:-dev}
+        BOOKMARKSYNC_COMMIT: ${BOOKMARKSYNC_COMMIT:-unknown}
+        BOOKMARKSYNC_DATE: ${BOOKMARKSYNC_DATE:-unknown}
     image: bookmarksync:local
     restart: unless-stopped
     ports:
@@ -14,15 +18,20 @@ services:
       BOOKMARKSYNC_MANAGEMENT_CIDRS: ${BOOKMARKSYNC_MANAGEMENT_CIDRS:-}
       BOOKMARKSYNC_GEOIP_DB: /geo/GeoLite2-Country.mmdb
       BOOKMARKSYNC_TRUSTED_PROXIES: ${BOOKMARKSYNC_TRUSTED_PROXIES:-}
+      BOOKMARKSYNC_OIDC_GOOGLE_CLIENT_ID: ${BOOKMARKSYNC_OIDC_GOOGLE_CLIENT_ID:-}
+      BOOKMARKSYNC_OIDC_GOOGLE_CLIENT_SECRET: ${BOOKMARKSYNC_OIDC_GOOGLE_CLIENT_SECRET:-}
+      BOOKMARKSYNC_OIDC_AUTHENTIK_ISSUER: ${BOOKMARKSYNC_OIDC_AUTHENTIK_ISSUER:-}
+      BOOKMARKSYNC_OIDC_AUTHENTIK_CLIENT_ID: ${BOOKMARKSYNC_OIDC_AUTHENTIK_CLIENT_ID:-}
+      BOOKMARKSYNC_OIDC_AUTHENTIK_CLIENT_SECRET: ${BOOKMARKSYNC_OIDC_AUTHENTIK_CLIENT_SECRET:-}
       BOOKMARKSYNC_RCLONE_BINARY: /usr/local/bin/rclone
       BOOKMARKSYNC_RCLONE_CONFIG: /run/bookmarksync/rclone/rclone.conf
     volumes:
       - bookmarksync-data:/var/lib/bookmarksync
       - ${BOOKMARKSYNC_GEOIP_DIR:-./geoip}:/geo:ro
-      - ${BOOKMARKSYNC_RCLONE_CONFIG_DIR:-./rclone-config}:/run/bookmarksync/rclone:ro
+      - bookmarksync-rclone-config:/run/bookmarksync/rclone
     read_only: true
     tmpfs:
-      - /tmp:rw,noexec,nosuid,size=16m
+      - /tmp:rw,noexec,nosuid,size=${BOOKMARKSYNC_TMPFS_SIZE:-1g}
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -30,3 +39,4 @@ services:
 
 volumes:
   bookmarksync-data:
+  bookmarksync-rclone-config:

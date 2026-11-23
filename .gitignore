@@ -4,6 +4,10 @@ node_modules/
 web/dist/
 dist/
 data/
+geoip/
+backups/
+secrets/
+rclone-config/
 coverage/
 *.log
 .env

@@ -39,23 +39,43 @@ Validate the script and its isolated service lifecycle with `bash scripts/debian
 
 ## Docker Compose
 
-Build and start the local image from the repository root:
+Before starting, create a private `.env` file beside `compose.yaml`. Compose loads it automatically, and the repository ignores it. Configure either an exact management client CIDR or provide a valid GeoLite database; without one, every HTTP route stays blocked. For example, replace the documentation-only addresses below with your actual client and proxy addresses:
+
+```dotenv
+BOOKMARKSYNC_MANAGEMENT_CIDRS=192.0.2.25/32
+BOOKMARKSYNC_GEOIP_DIR=./geoip
+BOOKMARKSYNC_PUBLIC_URL=https://bookmarks.example.com
+BOOKMARKSYNC_TRUSTED_PROXIES=192.0.2.10/32
+```
+
+Put `GeoLite2-Country.mmdb` in `./geoip/` if using GeoIP. Build and start the local image from the repository root. Set build identity from the checked-out commit so the UI, CLI and backup manifest can identify the source:
 
 ```sh
-docker compose build
+commit="$(git rev-parse HEAD)"
+export BOOKMARKSYNC_COMMIT="$commit"
+export BOOKMARKSYNC_VERSION="0.0.0-${commit:0:12}"
+export BOOKMARKSYNC_DATE="$(git show -s --format=%cI "$commit")"
+docker compose build --pull
 docker compose up -d
 ```
 
-The image builds the Go service and includes checksum-pinned rclone v1.76.0 for the application's remote backup destinations. It runs as UID/GID 65532, drops Linux capabilities, uses a read-only root filesystem, and stores the SQLite database in the named `bookmarksync-data` volume. The country gate remains active: a valid `GeoLite2-Country.mmdb` under `./geoip` or an exact `BOOKMARKSYNC_MANAGEMENT_CIDRS` setting must allow your management client. If neither is configured and available, requests are denied. Do not use a broad management range as a shortcut around country policy.
+The image builds the Go service and includes checksum-pinned rclone v1.76.0 for the application's remote backup destinations. It runs as UID/GID 65532, drops Linux capabilities, uses a read-only root filesystem, and stores SQLite data and rclone's OAuth configuration in separate named volumes. The country gate remains active: a valid `GeoLite2-Country.mmdb` under `./geoip` or an exact `BOOKMARKSYNC_MANAGEMENT_CIDRS` setting must allow your management client. If neither is configured and available, requests are denied. Do not use a broad management range as a shortcut around country policy.
 
-Set `BOOKMARKSYNC_PUBLIC_URL` to the external HTTPS origin when using browser sign-in or OIDC. Set `BOOKMARKSYNC_TRUSTED_PROXIES` only to the actual reverse-proxy address ranges. The port binds to `127.0.0.1:8080` by default; set `BOOKMARKSYNC_HTTP_BIND` to a specific host interface reachable by a containerized reverse proxy. Restrict any non-loopback binding with the host firewall. The first deployment should be reached only from the configured management range until GeoIP and the admin account are ready.
+Set `BOOKMARKSYNC_PUBLIC_URL` to the external HTTPS origin when using browser sign-in or OIDC. Set `BOOKMARKSYNC_TRUSTED_PROXIES` only to the actual reverse-proxy address ranges. The port binds to `127.0.0.1:8080` by default; set `BOOKMARKSYNC_HTTP_BIND` to a specific host interface reachable by a containerized reverse proxy. On Linux, Docker-published ports can bypass UFW input rules; use a private proxy network or Docker-aware forwarding firewall rules such as the `DOCKER-USER` chain. See [Docker's published-port firewall guidance](https://docs.docker.com/engine/network/packet-filtering-firewalls/#docker-and-ufw). The first deployment should be reached only from the configured management range until GeoIP and the admin account are ready.
 
-Create the first administrator without putting the password in an argument or environment variable:
+Google and Authentik client settings can be provided through the matching `BOOKMARKSYNC_OIDC_*` variables in the host environment or a private Compose `.env` file. OIDC callback URLs must match the configured public URL. Full-system backup and verification use `/tmp` for private staging; the Compose tmpfs defaults to 1 GiB. Increase `BOOKMARKSYNC_TMPFS_SIZE` above the uncompressed database plus archive working space when the data volume is larger.
+
+Google and Authentik client settings can be provided through the matching `BOOKMARKSYNC_OIDC_*` variables in the host environment or a private Compose `.env` file. OIDC callback URLs must match the configured public URL. Full-system backup and verification use `/tmp` for private staging; the Compose tmpfs defaults to 1 GiB. Increase `BOOKMARKSYNC_TMPFS_SIZE` above the uncompressed database plus archive working space when the data volume is larger.
+
+Create the first administrator using a masked prompt; the password is piped to the CLI and is not placed in an argument or environment variable:
 
 ```sh
-docker compose exec -T bookmarksync user create --username admin --password-stdin --admin --data-dir /var/lib/bookmarksync
+read -r -s -p "Admin password: " ADMIN_PASSWORD
+printf '\n'
+printf '%s\n' "$ADMIN_PASSWORD" | docker compose exec -T bookmarksync /usr/local/bin/bookmarksync user create --username admin --password-stdin --admin --data-dir /var/lib/bookmarksync
+unset ADMIN_PASSWORD
 ```
 
-The command reads the password from standard input. To keep rclone credentials out of the image and database volume, place a protected `rclone.conf` in `./rclone-config/`; that directory is mounted read-only. The service user (UID 65532) must be able to read it. For local/NFS backup destinations, mount the host's already-mounted backup directory into the container through a Compose override and use that container path in Admin. Never place the live database on a network share.
+Configure remote backup providers in the persistent rclone volume with `docker compose exec -it bookmarksync /usr/local/bin/rclone --config /run/bookmarksync/rclone/rclone.conf config`. The mounted volume is writable so rclone can persist OAuth token refreshes. Back up this credential volume separately and protect it as a secret; it is not part of the application backup archive. For local/NFS backup destinations, mount the host's already-mounted backup directory into the container through a Compose override and use that container path in Admin. Never place the live database on a network share.
 
-Upgrade by rebuilding and recreating the container after reviewing a new repository revision: `docker compose build --pull && docker compose up -d`. Compose updates are operator-run; the admin-approved host updater currently supports the Debian installer only. Docker images are built locally from source; GHCR publishing, automatic GeoIP scheduling, and browser-triggered Docker updates are not included yet. Before replacing an image, use the application's verified backup workflow and retain an independent copy of the named volume data.
+Upgrade by rebuilding with the new source commit's identity args and recreating the container after reviewing a new repository revision. `docker compose down` preserves both named volumes; do not add `-v`. Compose updates are operator-run; the admin-approved host updater currently supports the Debian installer only. Docker images are built locally from source; GHCR publishing, automatic GeoIP scheduling, and browser-triggered Docker updates are not included yet. Before replacing an image, use the application's verified backup workflow and retain an independent copy of both named volumes.

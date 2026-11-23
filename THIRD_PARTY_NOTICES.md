@@ -1,5 +1,10 @@
 # Third-Party Notices
 
+## rclone v1.76.0 (Docker image)
+
+Source: https://github.com/rclone/rclone/tree/v1.76.0
+Copyright (C) 2012 by Nick Craig-Wood. Licensed under the MIT License; the full notice is preserved in the Docker image at `/usr/share/doc/rclone/COPYING` and in `third_party/rclone-COPYING` in this repository. The image downloads only the official amd64/arm64 release archives after SHA-256 verification.
+
 ## MaxMind GeoIP Update v8.0.0 (optional Debian setup download)
 
 Source: https://github.com/maxmind/geoipupdate

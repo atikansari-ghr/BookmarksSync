@@ -5,7 +5,13 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/bookmarksync ./cmd/bookmarksync
+ARG BOOKMARKSYNC_VERSION=dev
+ARG BOOKMARKSYNC_COMMIT=unknown
+ARG BOOKMARKSYNC_DATE=unknown
+RUN mkdir -p /out \
+    && CGO_ENABLED=0 go build -trimpath \
+       -ldflags="-s -w -X github.com/atikansari-ghr/BookmarksSync/internal/version.Version=${BOOKMARKSYNC_VERSION} -X github.com/atikansari-ghr/BookmarksSync/internal/version.Commit=${BOOKMARKSYNC_COMMIT} -X github.com/atikansari-ghr/BookmarksSync/internal/version.Date=${BOOKMARKSYNC_DATE}" \
+       -o /out/bookmarksync ./cmd/bookmarksync
 
 FROM debian:bookworm-slim AS rclone
 
@@ -32,10 +38,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 65532 bookmarksync \
     && useradd --uid 65532 --gid 65532 --no-create-home --home-dir /var/lib/bookmarksync --shell /usr/sbin/nologin bookmarksync \
-    && install -d --owner=65532 --group=65532 --mode=0700 /var/lib/bookmarksync
+    && install -d --owner=65532 --group=65532 --mode=0700 /var/lib/bookmarksync /run/bookmarksync/rclone
 
 COPY --from=build --chown=65532:65532 /out/bookmarksync /usr/local/bin/bookmarksync
 COPY --from=rclone --chown=65532:65532 /out/rclone /usr/local/bin/rclone
+COPY LICENSE THIRD_PARTY_NOTICES.md /usr/share/doc/bookmarksync/
 COPY third_party/rclone-COPYING /usr/share/doc/rclone/COPYING
 
 USER 65532:65532
