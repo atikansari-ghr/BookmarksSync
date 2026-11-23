@@ -66,7 +66,7 @@
 
 **Files:** Update `README.md`, `docs/authentication.md`, `docs/implementation-plan.md`, and add a focused network-access guide.
 
-- [x] Document separate GeoLite2 provisioning (never bundled), environment variables, exact XFF requirements and ignored headers for NPM/Pangolin/Cloudflare Tunnel, management CIDRs, restart requirements, and CLI recovery. Automated provisioning remains an installer milestone.
+- [x] Document separate GeoLite2 provisioning (never bundled), environment variables, exact XFF requirements and ignored headers for NPM/Pangolin/Cloudflare Tunnel, management CIDRs, restart requirements, and CLI recovery. Debian/LXC scheduled provisioning is now delivered in `docs/superpowers/plans/2026-11-23-geolite-provisioning.md`; Docker/Windows remain pending.
 - [x] Run `go test -count=1 ./...`, `go vet ./...`, `npm test`, `npm run typecheck`, `npm run build`, and CGO-free Linux/Windows builds.
 - [x] Validate the built server in the isolated LXC. Preserved its data snapshot and previous binary; the existing public-network path remains operator-dependent because this workstation has no HTTP route to the LXC.
 - [x] Record tested and operator-dependent cases; update the Operations milestone only for the delivered slice.

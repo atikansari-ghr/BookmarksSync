@@ -1,0 +1,185 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+readonly version=8.0.0
+readonly install_root="${BOOKMARKSYNC_GEOIP_INSTALL_ROOT:-/}"
+readonly service_name="${BOOKMARKSYNC_SERVICE:-bookmarksync.service}"
+readonly app_binary="${BOOKMARKSYNC_BINARY:-/usr/local/bin/bookmarksync}"
+readonly service_user="${BOOKMARKSYNC_SERVICE_USER:-bookmarksync}"
+readonly service_group="${BOOKMARKSYNC_SERVICE_GROUP:-bookmarksync}"
+readonly db_file="${BOOKMARKSYNC_GEOIP_FILE:-/var/lib/bookmarksync-geoip/GeoLite2-Country.mmdb}"
+readonly config_path="${BOOKMARKSYNC_GEOIP_CONFIG:-/etc/bookmarksync/GeoIP.conf}"
+readonly updater_path="${BOOKMARKSYNC_GEOIP_UPDATER:-/usr/local/bin/geoipupdate}"
+readonly libexec_dir=/usr/local/libexec
+readonly unit_dir="${BOOKMARKSYNC_SYSTEMD_DIR:-/etc/systemd/system}"
+readonly db_dir="$(dirname -- "$db_file")"
+
+fail() {
+  printf 'bookmarksync GeoIP setup: %s\n' "$1" >&2
+  exit 1
+}
+
+assert_managed_or_absent() {
+  local path="$1" marker="$2"
+  [[ ! -L "$path" ]] || fail "refusing to replace a symlink: $path"
+  if [[ -e "$path" ]] && ! grep -Fq -- "$marker" "$path"; then
+    fail "refusing to overwrite an unmanaged file: $path"
+  fi
+}
+
+[[ "$(id -u)" -eq 0 ]] || fail "run this setup as root"
+[[ -x "$app_binary" ]] || fail "BookmarksSync executable not found at $app_binary"
+[[ "$service_name" =~ ^[A-Za-z0-9_.@-]+\.service$ ]] || fail "BOOKMARKSYNC_SERVICE must name a systemd service"
+[[ "$service_user" =~ ^[A-Za-z_][A-Za-z0-9_.-]*\$?$ && "$service_group" =~ ^[A-Za-z_][A-Za-z0-9_.-]*\$?$ ]] || fail "service user and group must be simple Unix account names"
+for path in "$db_file" "$config_path" "$updater_path" "$app_binary" "$unit_dir"; do
+  [[ "$path" =~ ^/[A-Za-z0-9_./@+-]+$ ]] || fail "configured paths must be absolute and use only letters, digits, /, _, ., @, +, or -"
+done
+command -v systemctl >/dev/null 2>&1 || fail "systemd is required"
+command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1 || fail "curl or wget is required"
+command -v tar >/dev/null 2>&1 || fail "tar is required"
+command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
+[[ -d "$install_root" ]] || fail "test install root must already exist"
+if [[ "$install_root" == "/" ]]; then
+  id "$service_user" >/dev/null 2>&1 || fail "configured BookmarksSync service user does not exist"
+  getent group "$service_group" >/dev/null 2>&1 || fail "configured BookmarksSync service group does not exist"
+  systemctl cat "$service_name" >/dev/null 2>&1 || fail "configured BookmarksSync systemd service does not exist"
+fi
+
+case "$(dpkg --print-architecture 2>/dev/null || uname -m)" in
+  amd64|x86_64)
+    arch=amd64
+    checksum=941eb4dd8c1eafb6ee1d56ccd5f4c62ffbdaca5f65a9f9cadc4008c8d805f2a2
+    ;;
+  arm64|aarch64)
+    arch=arm64
+    checksum=76cedc3bad8b5f02a3ea42ac84c57d318a758377a07806f7a13189a382f16308
+    ;;
+  *) fail "supported Debian architectures are amd64 and arm64" ;;
+esac
+
+tmp="$(mktemp -d)"
+cleanup() { rm -rf -- "$tmp"; }
+trap cleanup EXIT
+archive="${tmp}/geoipupdate_${version}_linux_${arch}.tar.gz"
+url="https://github.com/maxmind/geoipupdate/releases/download/v${version}/geoipupdate_${version}_linux_${arch}.tar.gz"
+if command -v curl >/dev/null 2>&1; then
+  curl --fail --location --silent --show-error "$url" --output "$archive"
+else
+  wget --https-only --quiet --output-document="$archive" "$url"
+fi
+printf '%s  %s\n' "$checksum" "$archive" | sha256sum --check --status || fail "geoipupdate release checksum did not match"
+tar -xzf "$archive" -C "$tmp"
+install -D -m 0755 "${tmp}/geoipupdate_${version}_linux_${arch}/geoipupdate" "${install_root%/}${updater_path}"
+
+if [[ -L "${install_root%/}${config_path}" ]]; then
+  fail "MaxMind config cannot be a symlink"
+elif [[ ! -e "${install_root%/}${config_path}" ]]; then
+  [[ -t 0 ]] || fail "run interactively to enter MaxMind credentials; no credential is stored"
+  account_id=""
+  while [[ ! "$account_id" =~ ^[0-9]+$ ]]; do
+    read -r -p 'MaxMind Account ID: ' account_id
+  done
+  license_key=""
+  while [[ ! "$license_key" =~ ^[^[:space:]]+$ ]]; do
+    read -r -s -p 'MaxMind license key: ' license_key
+    printf '\n'
+  done
+  config_parent="$(dirname -- "${install_root%/}${config_path}")"
+  install -d -m 0700 "$config_parent"
+  [[ "$(stat -c '%u' "$config_parent")" == 0 ]] || fail "MaxMind config directory must be owned by root"
+  config_parent_mode="$(stat -c '%a' "$config_parent")"
+  (( (8#$config_parent_mode & 0022) == 0 )) || fail "MaxMind config directory cannot be group- or world-writable"
+  umask 0077
+  {
+    printf 'AccountID %s\n' "$account_id"
+    printf 'LicenseKey %s\n' "$license_key"
+    printf 'EditionIDs GeoLite2-Country\n'
+    printf 'DatabaseDirectory %s/.staging\n' "$db_dir"
+  } > "${install_root%/}${config_path}.next"
+  chmod 0600 "${install_root%/}${config_path}.next"
+  mv -f -- "${install_root%/}${config_path}.next" "${install_root%/}${config_path}"
+  unset account_id license_key
+else
+  config_parent="$(dirname -- "${install_root%/}${config_path}")"
+  [[ -d "$config_parent" && ! -L "$config_parent" ]] || fail "existing MaxMind config directory is missing or unsafe"
+  [[ "$(stat -c '%u' "$config_parent")" == 0 ]] || fail "existing MaxMind config directory must be owned by root"
+  config_parent_mode="$(stat -c '%a' "$config_parent")"
+  (( (8#$config_parent_mode & 0022) == 0 )) || fail "existing MaxMind config directory cannot be group- or world-writable"
+  [[ "$(stat -c '%a' "${install_root%/}${config_path}")" == 600 ]] || fail "existing MaxMind config must have mode 0600"
+  [[ "$(stat -c '%u' "${install_root%/}${config_path}")" == 0 ]] || fail "existing MaxMind config must be owned by root"
+  [[ "$(grep -Ec '^AccountID [0-9]+$' "${install_root%/}${config_path}")" == 1 ]] || fail "existing MaxMind config must contain one numeric AccountID"
+  [[ "$(grep -Ec '^LicenseKey [^[:space:]]+$' "${install_root%/}${config_path}")" == 1 ]] || fail "existing MaxMind config must contain one LicenseKey"
+  account_id="$(awk '$1 == "AccountID" { print $2 }' "${install_root%/}${config_path}")"
+  license_key="$(awk '$1 == "LicenseKey" { print $2 }' "${install_root%/}${config_path}")"
+  umask 0077
+  {
+    printf 'AccountID %s\n' "$account_id"
+    printf 'LicenseKey %s\n' "$license_key"
+    printf 'EditionIDs GeoLite2-Country\n'
+    printf 'DatabaseDirectory %s/.staging\n' "$db_dir"
+  } > "${install_root%/}${config_path}.next"
+  chmod 0600 "${install_root%/}${config_path}.next"
+  mv -f -- "${install_root%/}${config_path}.next" "${install_root%/}${config_path}"
+  unset account_id license_key
+fi
+
+install -d -m 0755 "${install_root%/}${db_dir}"
+install -d -m 0755 "${install_root%/}${libexec_dir}" "${install_root%/}${unit_dir}"
+helper_path="${install_root%/}${libexec_dir}/bookmarksync-update-geoip"
+unit_service="${install_root%/}${unit_dir}/bookmarksync-geoip-update.service"
+unit_timer="${install_root%/}${unit_dir}/bookmarksync-geoip-update.timer"
+assert_managed_or_absent "$helper_path" "BookmarksSync-managed GeoLite updater helper"
+assert_managed_or_absent "$unit_service" "Managed by BookmarksSync GeoLite setup."
+assert_managed_or_absent "$unit_timer" "Managed by BookmarksSync GeoLite setup."
+install -m 0755 "$(dirname -- "$0")/bookmarksync-update-geoip" "$helper_path"
+install -m 0644 "$(dirname -- "$0")/bookmarksync-geoip-update.service" "$unit_service"
+install -m 0644 "$(dirname -- "$0")/bookmarksync-geoip-update.timer" "$unit_timer"
+
+dropin="${install_root%/}${unit_dir}/${service_name}.d/90-bookmarksync-geoip.conf"
+assert_managed_or_absent "$dropin" "Managed by BookmarksSync GeoLite setup."
+install -d -m 0755 "$(dirname -- "$dropin")"
+printf '# Managed by BookmarksSync GeoLite setup.\n[Service]\nEnvironment=BOOKMARKSYNC_GEOIP_DB=%s\n' "$db_file" > "${dropin}.next"
+chmod 0644 "${dropin}.next"
+mv -f -- "${dropin}.next" "$dropin"
+
+geoip_dropin="${install_root%/}${unit_dir}/bookmarksync-geoip-update.service.d/90-bookmarksync-geoip-paths.conf"
+assert_managed_or_absent "$geoip_dropin" "Managed by BookmarksSync GeoLite setup."
+install -d -m 0755 "$(dirname -- "$geoip_dropin")"
+cat > "${geoip_dropin}.next" <<EOF
+# Managed by BookmarksSync GeoLite setup.
+[Service]
+Environment=BOOKMARKSYNC_GEOIP_CONFIG=$config_path
+Environment=BOOKMARKSYNC_GEOIP_DIR=$db_dir
+Environment=BOOKMARKSYNC_GEOIP_FILE=$db_file
+Environment=BOOKMARKSYNC_GEOIP_UPDATER=$updater_path
+Environment=BOOKMARKSYNC_BINARY=$app_binary
+Environment=BOOKMARKSYNC_SERVICE=$service_name
+Environment=BOOKMARKSYNC_SERVICE_USER=$service_user
+Environment=BOOKMARKSYNC_SERVICE_GROUP=$service_group
+ReadWritePaths=$db_dir
+EOF
+chmod 0644 "${geoip_dropin}.next"
+mv -f -- "${geoip_dropin}.next" "$geoip_dropin"
+
+if [[ "$install_root" == "/" ]]; then
+  systemctl daemon-reload
+  BOOKMARKSYNC_GEOIP_SKIP_RESTART=1 \
+    BOOKMARKSYNC_GEOIP_CONFIG="$config_path" \
+    BOOKMARKSYNC_GEOIP_DIR="$(dirname -- "$db_file")" \
+    BOOKMARKSYNC_GEOIP_FILE="$db_file" \
+    BOOKMARKSYNC_GEOIP_UPDATER="$updater_path" \
+    BOOKMARKSYNC_BINARY="$app_binary" \
+    BOOKMARKSYNC_SERVICE="$service_name" \
+    BOOKMARKSYNC_SERVICE_USER="$service_user" \
+    BOOKMARKSYNC_SERVICE_GROUP="$service_group" \
+    "${install_root%/}${libexec_dir}/bookmarksync-update-geoip"
+  systemctl restart "$service_name"
+  marker="${db_dir}/.loaded-sha256"
+  printf '%s\n' "$(sha256sum -- "$db_file" | cut -d ' ' -f 1)" > "${marker}.next"
+  chmod 0600 "${marker}.next"
+  mv -f -- "${marker}.next" "$marker"
+  systemctl enable --now bookmarksync-geoip-update.timer
+  printf 'GeoLite2 Country updates configured; credentials remain in %s\n' "$config_path"
+else
+  printf 'GeoLite2 host files staged below %s; no host services were changed\n' "$install_root"
+fi

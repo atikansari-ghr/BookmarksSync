@@ -9,6 +9,7 @@ import (
 	"io"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/bookmarks"
 	"github.com/atikansari-ghr/BookmarksSync/internal/config"
@@ -36,6 +37,7 @@ type adminCmd struct {
 type cmdOpts struct {
 	dataDir                            string
 	username, label, mode, owner, user string
+	geoFile                            string
 	shareOwner                         string
 	folderID, shareFolder, id          int64
 	admin, passwordStdin, active       bool
@@ -106,6 +108,9 @@ var adminGroups = map[string][]adminCmd{
 	},
 	"network": {
 		{name: "reset-geo", summary: "restore the default country access policy (allow Saudi Arabia and India)", setup: func(fs *flag.FlagSet, o *cmdOpts) {}, run: networkResetGeo},
+		{name: "validate-geo", summary: "validate a GeoIP Country database and print its build time",
+			flags: "  --file PATH   path to an MMDB Country database\n",
+			setup: func(fs *flag.FlagSet, o *cmdOpts) { fs.StringVar(&o.geoFile, "file", "", "") }, run: networkValidateGeo},
 	},
 }
 
@@ -173,6 +178,19 @@ func admin(ctx context.Context, args []string, stdin io.Reader, stdout, stderr i
 	if fs.NArg() > 0 {
 		fmt.Fprintf(stderr, "bookmarksync: unexpected argument (passwords and secrets are never accepted as arguments)\n\n%s", cmdUsage(group, *cmd))
 		return 2
+	}
+	if group == "network" && cmd.name == "validate-geo" {
+		e := &adminEnv{ctx: ctx, stdout: stdout, stderr: stderr, o: o}
+		if err := cmd.run(e, fs); err != nil {
+			var usage errUsage
+			if errors.As(err, &usage) {
+				fmt.Fprintf(stderr, "bookmarksync: %v\n\n%s", err, cmdUsage(group, *cmd))
+				return 2
+			}
+			fmt.Fprintf(stderr, "bookmarksync: %v\n", err)
+			return 1
+		}
+		return 0
 	}
 	db, err := database.Open(ctx, config.Config{DataDir: o.dataDir}.DatabasePath())
 	if err != nil {
@@ -249,6 +267,19 @@ func networkResetGeo(e *adminEnv, _ *flag.FlagSet) error {
 		return err
 	}
 	fmt.Fprintln(e.stdout, "country access policy reset to allow IN,SA")
+	return nil
+}
+
+func networkValidateGeo(e *adminEnv, _ *flag.FlagSet) error {
+	if e.o.geoFile == "" {
+		return usageErr("--file is required")
+	}
+	db, err := network.OpenCountryDatabase(e.o.geoFile)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	fmt.Fprintf(e.stdout, "GeoIP country database valid; build time %s\n", db.BuildTime().UTC().Format(time.RFC3339))
 	return nil
 }
 

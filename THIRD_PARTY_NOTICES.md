@@ -1,5 +1,10 @@
 # Third-Party Notices
 
+## MaxMind GeoIP Update v8.0.0 (optional Debian setup download)
+
+Source: https://github.com/maxmind/geoipupdate
+Copyright (c) 2018-2026 MaxMind, Inc. Licensed under Apache-2.0 or MIT. The optional setup script downloads the official release and verifies its pinned SHA-256; the binary is not bundled in BookmarksSync distributions.
+
 ## geoip2-golang/v2 v2.5.0
 
 Source: https://github.com/oschwald/geoip2-golang

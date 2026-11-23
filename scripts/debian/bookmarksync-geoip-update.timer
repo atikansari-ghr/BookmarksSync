@@ -1,0 +1,12 @@
+# Managed by BookmarksSync GeoLite setup.
+[Unit]
+Description=Schedule twice-weekly BookmarksSync GeoLite2 database updates
+
+[Timer]
+OnCalendar=Mon,Thu *-*-* 04:00:00
+RandomizedDelaySec=30m
+Persistent=true
+Unit=bookmarksync-geoip-update.service
+
+[Install]
+WantedBy=timers.target

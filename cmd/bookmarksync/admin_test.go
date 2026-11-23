@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -55,7 +57,7 @@ func TestHelpIsClearForEveryCommand(t *testing.T) {
 		{"serve", "--help"}, {"user", "--help"}, {"user", "create", "--help"}, {"user", "list", "--help"}, {"user", "set-active", "--help"},
 		{"credential", "--help"}, {"credential", "create", "--help"}, {"credential", "revoke", "--help"}, {"credential", "list", "--help"},
 		{"share", "--help"}, {"share", "grant", "--help"}, {"share", "revoke", "--help"}, {"share", "list", "--help"},
-		{"network", "--help"}, {"network", "reset-geo", "--help"},
+		{"network", "--help"}, {"network", "reset-geo", "--help"}, {"network", "validate-geo", "--help"},
 	} {
 		var out, errb bytes.Buffer
 		code := run(context.Background(), args, strings.NewReader(""), &out, &errb, func(string) string { return "" })
@@ -69,7 +71,7 @@ func TestHelpIsClearForEveryCommand(t *testing.T) {
 	}
 	var out bytes.Buffer
 	run(context.Background(), []string{"--help"}, strings.NewReader(""), &out, &bytes.Buffer{}, func(string) string { return "" })
-	for _, want := range []string{"serve", "user create", "credential create", "credential revoke", "share grant", "network reset-geo", "--password-stdin"} {
+	for _, want := range []string{"serve", "user create", "credential create", "credential revoke", "share grant", "network reset-geo", "network validate-geo", "--password-stdin"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("top-level help does not mention %q:\n%s", want, out.String())
 		}
@@ -108,6 +110,61 @@ func TestNetworkResetGeoRestoresDefaultsAndAuditsRecovery(t *testing.T) {
 	}
 	if mode != "allow" || countries != "IN,SA" || actor != nil || action != "system_settings_updated" {
 		t.Fatalf("reset state = mode %q countries %q audit (%v,%q)", mode, countries, actor, action)
+	}
+}
+
+func TestNetworkValidateGeoUsesReadOnlyDatabaseIndependentPath(t *testing.T) {
+	fixtures := filepath.Join("..", "..", "internal", "network", "testdata")
+	corrupt := filepath.Join(t.TempDir(), "corrupt.mmdb")
+	if err := os.WriteFile(corrupt, []byte("not an MMDB"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		name     string
+		file     string
+		wantCode int
+		wantOut  string
+		wantErr  string
+	}{
+		{name: "valid GeoLite country database", file: filepath.Join(fixtures, "GeoLite2-Country-Test.mmdb"), wantOut: "GeoIP country database valid; build time "},
+		{name: "valid GeoIP country database", file: filepath.Join(fixtures, "GeoIP2-Country-Test.mmdb"), wantOut: "GeoIP country database valid; build time "},
+		{name: "missing file", file: filepath.Join(t.TempDir(), "missing.mmdb"), wantCode: 1, wantErr: "open country database"},
+		{name: "corrupt file", file: corrupt, wantCode: 1, wantErr: "open country database"},
+		{name: "wrong edition", file: filepath.Join(fixtures, "GeoIP2-City-Test.mmdb"), wantCode: 1, wantErr: "unsupported GeoIP database type"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dataDir := filepath.Join(t.TempDir(), "must-not-be-created")
+			var out, errb bytes.Buffer
+			code := run(context.Background(), []string{"network", "validate-geo", "--file", tc.file}, strings.NewReader(""), &out, &errb, func(key string) string {
+				if key == "BOOKMARKSYNC_DATA_DIR" {
+					return dataDir
+				}
+				return ""
+			})
+			if code != tc.wantCode {
+				t.Fatalf("exit = %d, want %d; stdout=%q stderr=%q", code, tc.wantCode, out.String(), errb.String())
+			}
+			if tc.wantOut != "" && !strings.Contains(out.String(), tc.wantOut) {
+				t.Errorf("stdout %q does not contain %q", out.String(), tc.wantOut)
+			}
+			if tc.wantErr != "" && !strings.Contains(errb.String(), tc.wantErr) {
+				t.Errorf("stderr %q does not contain %q", errb.String(), tc.wantErr)
+			}
+			if _, err := os.Stat(dataDir); !errors.Is(err, os.ErrNotExist) {
+				t.Errorf("validation created data dir: stat error = %v", err)
+			}
+		})
+	}
+}
+
+func TestNetworkValidateGeoRequiresFileAndRejectsExtraArguments(t *testing.T) {
+	for _, args := range [][]string{{"network", "validate-geo"}, {"network", "validate-geo", "--file", "unused.mmdb", "extra"}} {
+		var out, errb bytes.Buffer
+		code := run(context.Background(), args, strings.NewReader(""), &out, &errb, func(string) string { return "" })
+		if code != 2 {
+			t.Errorf("%v exit = %d, want usage error 2; stdout=%q stderr=%q", args, code, out.String(), errb.String())
+		}
 	}
 }
 

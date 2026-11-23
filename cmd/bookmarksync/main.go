@@ -54,6 +54,7 @@ administration (all take --data-dir dir; run "<command> --help" for details):
   bookmarksync share revoke --owner NAME --folder-id ID --user NAME
   bookmarksync share list --owner NAME
   bookmarksync network reset-geo
+  bookmarksync network validate-geo --file PATH
 
 Passwords are only ever read from standard input (--password-stdin), never from
 arguments. A credential's secret is printed once on standard output and cannot be

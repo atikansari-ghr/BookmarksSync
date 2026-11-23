@@ -1,0 +1,84 @@
+#!/usr/bin/env bash
+# BookmarksSync-managed GeoLite updater helper.
+set -Eeuo pipefail
+
+readonly config_file="${BOOKMARKSYNC_GEOIP_CONFIG:-/etc/bookmarksync/GeoIP.conf}"
+readonly database_dir="${BOOKMARKSYNC_GEOIP_DIR:-/var/lib/bookmarksync-geoip}"
+readonly database_file="${BOOKMARKSYNC_GEOIP_FILE:-${database_dir}/GeoLite2-Country.mmdb}"
+readonly updater="${BOOKMARKSYNC_GEOIP_UPDATER:-/usr/local/bin/geoipupdate}"
+readonly app_binary="${BOOKMARKSYNC_BINARY:-/usr/local/bin/bookmarksync}"
+readonly service_name="${BOOKMARKSYNC_SERVICE:-bookmarksync.service}"
+readonly service_user="${BOOKMARKSYNC_SERVICE_USER:-bookmarksync}"
+readonly service_group="${BOOKMARKSYNC_SERVICE_GROUP:-bookmarksync}"
+readonly stage_dir="${BOOKMARKSYNC_GEOIP_STAGE:-${database_dir}/.staging}"
+readonly loaded_hash_file="${BOOKMARKSYNC_GEOIP_LOADED_HASH:-${database_dir}/.loaded-sha256}"
+
+fail() {
+  printf 'bookmarksync GeoIP update: %s\n' "$1" >&2
+  exit 1
+}
+
+config_parent="$(dirname -- "$config_file")"
+[[ -d "$config_parent" && ! -L "$config_parent" ]] || fail "MaxMind config directory is missing or unsafe"
+[[ "$(stat -c '%u' "$config_parent")" == 0 ]] || fail "MaxMind config directory must be owned by root"
+config_parent_mode="$(stat -c '%a' "$config_parent")"
+(( (8#$config_parent_mode & 0022) == 0 )) || fail "MaxMind config directory cannot be group- or world-writable"
+
+[[ -r "$config_file" ]] || fail "protected MaxMind config is missing or unreadable"
+[[ ! -L "$config_file" ]] || fail "MaxMind config cannot be a symlink"
+[[ -x "$updater" ]] || fail "geoipupdate is not installed"
+[[ -x "$app_binary" ]] || fail "BookmarksSync executable is not installed"
+id "$service_user" >/dev/null 2>&1 || fail "configured service user does not exist"
+getent group "$service_group" >/dev/null 2>&1 || fail "configured service group does not exist"
+[[ "$(stat -c '%a' "$config_file")" == 600 ]] || fail "MaxMind config must have mode 0600"
+[[ "$(stat -c '%u' "$config_file")" == 0 ]] || fail "MaxMind config must be owned by root"
+
+mkdir -p -- "$database_dir" "$stage_dir"
+[[ ! -L "$database_dir" && ! -L "$stage_dir" ]] || fail "GeoIP database directories cannot be symlinks"
+chown root:root "$database_dir" "$stage_dir"
+chmod 0755 "$database_dir"
+chmod 0755 "$stage_dir"
+[[ ! -L "$database_file" && ( ! -e "$database_file" || -f "$database_file" ) ]] || fail "live country database path is not a regular file"
+[[ ! -L "${database_file}.next" && ! -L "$loaded_hash_file" && ! -L "${loaded_hash_file}.next" ]] || fail "GeoIP state files cannot be symlinks"
+find "$stage_dir" -mindepth 1 -maxdepth 1 -type f -delete
+
+"$updater" -f "$config_file" -d "$stage_dir"
+candidate="${stage_dir}/GeoLite2-Country.mmdb"
+[[ -s "$candidate" && ! -L "$candidate" ]] || fail "updater did not produce a regular GeoLite2 Country database"
+"$app_binary" network validate-geo --file "$candidate" >/dev/null || fail "downloaded country database did not validate"
+
+after="$(sha256sum -- "$candidate" | cut -d ' ' -f 1)"
+current=""
+if [[ -f "$database_file" ]]; then
+  current="$(sha256sum -- "$database_file" | cut -d ' ' -f 1)"
+fi
+loaded=""
+if [[ -r "$loaded_hash_file" ]]; then
+  read -r loaded < "$loaded_hash_file" || true
+fi
+
+if [[ -n "$current" && "$current" != "$after" ]]; then
+  install -o "$service_user" -g "$service_group" -m 0644 -- "$candidate" "${database_file}.next"
+  mv -f -- "${database_file}.next" "$database_file"
+fi
+
+if [[ "$current" == "$after" && "$loaded" == "$after" ]]; then
+  printf 'bookmarksync GeoIP update: database is current\n'
+  exit 0
+fi
+
+if [[ -z "$current" ]]; then
+  install -o "$service_user" -g "$service_group" -m 0644 -- "$candidate" "${database_file}.next"
+  mv -f -- "${database_file}.next" "$database_file"
+fi
+if [[ "${BOOKMARKSYNC_GEOIP_SKIP_RESTART:-0}" == 1 ]]; then
+  printf 'bookmarksync GeoIP update: installed verified database; service restart deferred to setup\n'
+  exit 0
+fi
+if ! systemctl try-restart "$service_name"; then
+  fail "database installed, but the BookmarksSync service did not restart; check service status"
+fi
+printf '%s\n' "$after" > "${loaded_hash_file}.next"
+chmod 0600 "${loaded_hash_file}.next"
+mv -f -- "${loaded_hash_file}.next" "$loaded_hash_file"
+printf 'bookmarksync GeoIP update: installed verified database sha256 %s\n' "$after"

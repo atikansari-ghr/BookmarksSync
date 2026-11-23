@@ -4,7 +4,27 @@ Every HTTP route passes through the network gate, including Floccus synchronizat
 
 ## Provision the country database
 
-Download a MaxMind GeoLite2 Country MMDB through your MaxMind account and place it in a protected local file. The database is not bundled with BookmarksSync and the server makes no network lookups. Set `BOOKMARKSYNC_GEOIP_DB=/path/to/GeoLite2-Country.mmdb` for the service. The server validates the database type at startup and logs its build date. Replace the file and restart to load updates.
+The database is not bundled with BookmarksSync and the server makes no network lookups. Obtain your own MaxMind GeoLite account and accept its [GeoLite EULA](https://www.maxmind.com/en/geolite/eula). On Debian and Proxmox LXC, the repository includes a setup command that installs a checksum-pinned [MaxMind GeoIP Update](https://github.com/maxmind/geoipupdate/releases) binary and schedules verified Country database updates twice weekly:
+
+```sh
+sudo scripts/debian/bookmarksync-geoip-setup
+```
+
+Setup prompts for the MaxMind Account ID and license key without echoing the key. It stores them in `/etc/bookmarksync/GeoIP.conf`, owned by root with mode `0600`; credentials stay outside BookmarksSync runtime settings and backups. The updater first writes to a staging directory. BookmarksSync validates the MMDB edition and build time, then the helper atomically replaces the live file and restarts the configured service only when the database changed. Failed downloads and invalid files leave the current database in place.
+
+MaxMind requires DNS and HTTPS access to its update service and the redirected database host; see [MaxMind's updater requirements](https://dev.maxmind.com/geoip/updating-databases/). Twice-weekly updates help keep the local copy current. After setup, inspect the schedule and run an update manually with:
+
+```sh
+systemctl list-timers bookmarksync-geoip-update.timer
+sudo systemctl start bookmarksync-geoip-update.service
+journalctl -u bookmarksync-geoip-update.service --since today
+```
+
+Validate a local database explicitly with `bookmarksync network validate-geo --file /path/to/GeoLite2-Country.mmdb`. The setup script supports Debian amd64 and arm64. Docker and Windows operators must currently use their host/container scheduler and provide the validated MMDB path through `BOOKMARKSYNC_GEOIP_DB`.
+
+This product includes GeoLite Data created by MaxMind, available from https://www.maxmind.com. The Country code is used only to apply the configured access policy; BookmarksSync does not expose visitor locations in its UI or API.
+
+The server validates the database type at startup and logs its build date. The Debian updater restarts the service after installing a valid replacement. If managing a database manually, set `BOOKMARKSYNC_GEOIP_DB=/path/to/GeoLite2-Country.mmdb` and restart the service after replacing the file.
 
 If the database is missing or invalid, health checks and all other traffic are denied outside configured management CIDRs. Keep a local management path or configured management network available.
 
@@ -31,9 +51,9 @@ The reset restores `allow` with `IN,SA` and records a local system settings acti
 Example service environment:
 
 ```ini
-BOOKMARKSYNC_GEOIP_DB=/var/lib/bookmarksync/GeoLite2-Country.mmdb
+BOOKMARKSYNC_GEOIP_DB=/var/lib/bookmarksync-geoip/GeoLite2-Country.mmdb
 BOOKMARKSYNC_TRUSTED_PROXIES=127.0.0.1/32,192.168.10.20/32
 BOOKMARKSYNC_MANAGEMENT_CIDRS=192.168.10.0/24
 ```
 
-Automated database provisioning and scheduled database downloads belong to the installer/operations milestone; operators currently update the MMDB separately.
+Debian/LXC provisioning and scheduled updates are automated by the setup script. Docker and Windows scheduling and the final public proxy/country acceptance remain pending.

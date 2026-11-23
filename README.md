@@ -45,7 +45,7 @@ Still planned or awaiting acceptance:
 - Login Flow v2 (the floccus "Connect" wizard; use profile import for now);
 - trusted-proxy and country rules, per-destination backup encryption, and per-user recovery;
 - production single-command installers and admin-triggered updates;
-- automated GeoLite provisioning and final public country/proxy acceptance; remaining browser/organizer acceptance checks.
+- automated GeoLite provisioning on Debian/LXC; final public country/proxy acceptance and Docker/Windows GeoLite scheduling remain.
 
 See `docs/design.md` and `docs/implementation-plan.md`.
 
