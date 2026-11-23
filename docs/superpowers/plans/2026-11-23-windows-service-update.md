@@ -60,11 +60,11 @@
 
 **Interfaces:** The updater service accepts one `Request{Tag string}`, serializes jobs, validates the catalog and release before launching the downloaded updater executable as a temporary worker. `HostOperations` exposes `StopService(ctx, name) error`, `StartService(ctx, name) error`, `CreateVerifiedSnapshot(ctx, tag) (Snapshot, error)`, `ReplaceInstalledFiles(ctx, release VerifiedRelease) error`, `WaitReady(ctx, url) error`, and `RestoreSnapshot(ctx, Snapshot) error`; `ApplyUpdate(ctx, tag, ops HostOperations) error` owns ordering and rollback.
 
-- [ ] Write state-machine tests proving invalid/unavailable releases do not stop services, a verified snapshot exists before replacement, readiness failure restores prior files/data/config, and rollback failure retains the failed tree and snapshot.
-- [ ] Run focused tests to capture RED for each transition and error path.
-- [ ] Implement service stop/start handling, checksum/build metadata/attestation verification, compressed snapshot manifest, atomic executable replacement, local `/readyz` check, retention of three snapshots, and restart/rollback reporting.
-- [ ] Test serialization, duplicate requests, service stop during job, network/verification failures, low disk space, failed restore, and absence of secrets in logs.
-- [ ] Commit as `Add verified Windows update worker`.
+- [x] Write state-machine tests proving invalid/unavailable releases do not stop services, a verified snapshot exists before replacement, readiness failure restores prior files/data/config, and rollback failure retains the failed tree and snapshot.
+- [x] Run focused tests to capture RED for each transition and error path.
+- [x] Implement service stop/start handling, checksum/build metadata/attestation verification, compressed snapshot manifest, atomic executable replacement, local `/readyz` check, retention of three snapshots, and restart/rollback reporting.
+- [x] Test serialization, duplicate requests, service stop during job, network/verification failures, low disk space, failed restore, and absence of secrets in logs.
+- [x] Commit as `Add verified Windows update worker`.
 
 ### Task 4: Extend release assets and platform catalog
 
@@ -101,3 +101,4 @@
 ## Completion Gate
 
 Do not mark Windows distribution complete until the release contains both Windows executables with checksums and attestations, the platform catalog enables updates only when those assets exist, failure-path tests pass, and an elevated Windows SCM lifecycle passes. If the current non-admin workstation cannot run the final smoke, report that gate as pending and request an elevated Windows test session.
+
