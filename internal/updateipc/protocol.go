@@ -8,9 +8,12 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"regexp"
+
+	"github.com/atikansari-ghr/BookmarksSync/internal/geolite"
 )
 
-const maxFrameBytes = 256
+const maxFrameBytes = 1024
 
 var errProtocol = errors.New("invalid updater pipe message")
 
@@ -21,6 +24,34 @@ type Request struct {
 type Response struct {
 	Accepted bool   `json:"accepted"`
 	Job      string `json:"job,omitempty"`
+}
+
+const (
+	GeoLiteOperationStatus    = "status"
+	GeoLiteOperationConfigure = "configure"
+	GeoLiteOperationClear     = "clear"
+	GeoLiteOperationRun       = "run"
+)
+
+type GeoLiteRequest struct {
+	Operation string          `json:"operation"`
+	Config    *geolite.Config `json:"config,omitempty"`
+}
+
+type GeoLiteResponse struct {
+	OK        bool            `json:"ok"`
+	Job       string          `json:"job,omitempty"`
+	ErrorCode string          `json:"errorCode,omitempty"`
+	Status    *geolite.Status `json:"status,omitempty"`
+}
+
+var geoLiteJobPattern = regexp.MustCompile(`^bookmarksync-geolite-[a-z0-9-]{1,80}$`)
+
+var geoLiteErrorCodes = map[string]bool{
+	"invalid_request": true,
+	"busy":            true,
+	"unavailable":     true,
+	"update_failed":   true,
 }
 
 func EncodeRequest(w io.Writer, tag string) error {
@@ -51,6 +82,73 @@ func DecodeResponse(r io.Reader) (Response, error) {
 		return Response{}, errProtocol
 	}
 	return response, nil
+}
+
+func EncodeGeoLiteRequest(w io.Writer, request GeoLiteRequest) error {
+	if err := validateGeoLiteRequest(request); err != nil {
+		return err
+	}
+	return writeFrame(w, request)
+}
+
+func DecodeGeoLiteRequest(r io.Reader) (GeoLiteRequest, error) {
+	var request GeoLiteRequest
+	keys := objectKeyRules{
+		"$":        keySet("operation", "config"),
+		"$.config": keySet("accountId", "licenseKey", "enabled", "days", "startTime"),
+	}
+	if err := readFrameWithKeys(r, &request, keys); err != nil || validateGeoLiteRequest(request) != nil {
+		return GeoLiteRequest{}, errProtocol
+	}
+	return request, nil
+}
+
+func validateGeoLiteRequest(request GeoLiteRequest) error {
+	switch request.Operation {
+	case GeoLiteOperationStatus, GeoLiteOperationClear, GeoLiteOperationRun:
+		if request.Config != nil {
+			return errProtocol
+		}
+	case GeoLiteOperationConfigure:
+		if request.Config == nil || geolite.ValidateConfig(*request.Config) != nil {
+			return errProtocol
+		}
+	default:
+		return errProtocol
+	}
+	return nil
+}
+
+func EncodeGeoLiteResponse(w io.Writer, response GeoLiteResponse) error {
+	if err := validateGeoLiteResponse(response); err != nil {
+		return err
+	}
+	return writeFrame(w, response)
+}
+
+func DecodeGeoLiteResponse(r io.Reader) (GeoLiteResponse, error) {
+	var response GeoLiteResponse
+	keys := objectKeyRules{
+		"$":        keySet("ok", "job", "errorCode", "status"),
+		"$.status": keySet("configured", "enabled", "days", "startTime", "databaseAvailable", "databaseBuildTime", "lastAttempt", "lastResult", "lastErrorCode", "running"),
+	}
+	if err := readFrameWithKeys(r, &response, keys); err != nil || validateGeoLiteResponse(response) != nil {
+		return GeoLiteResponse{}, errProtocol
+	}
+	return response, nil
+}
+
+func validateGeoLiteResponse(response GeoLiteResponse) error {
+	if response.OK {
+		if response.ErrorCode != "" || (response.Job != "" && !geoLiteJobPattern.MatchString(response.Job)) {
+			return errProtocol
+		}
+		return nil
+	}
+	if response.Job != "" || !geoLiteErrorCodes[response.ErrorCode] {
+		return errProtocol
+	}
+	return nil
 }
 
 func writeFrame(w io.Writer, value any) error {
@@ -86,6 +184,20 @@ func writeAll(w io.Writer, b []byte) error {
 }
 
 func readFrame(r io.Reader, out any, allowed ...string) error {
+	return readFrameWithKeys(r, out, objectKeyRules{"$": keySet(allowed...)})
+}
+
+type objectKeyRules map[string]map[string]bool
+
+func keySet(keys ...string) map[string]bool {
+	set := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		set[key] = true
+	}
+	return set
+}
+
+func readFrameWithKeys(r io.Reader, out any, rules objectKeyRules) error {
 	var header [2]byte
 	if _, err := io.ReadFull(r, header[:]); err != nil {
 		return errProtocol
@@ -100,7 +212,7 @@ func readFrame(r io.Reader, out any, allowed ...string) error {
 	}
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	decoder.DisallowUnknownFields()
-	if err := rejectDuplicateKeys(body, allowed); err != nil {
+	if err := rejectJSONKeys(body, rules); err != nil {
 		return errProtocol
 	}
 	if err := decoder.Decode(out); err != nil {
@@ -113,35 +225,59 @@ func readFrame(r io.Reader, out any, allowed ...string) error {
 	return nil
 }
 
-// rejectDuplicateKeys prevents JSON's last-value-wins behavior from giving
-// the sender and receiver different interpretations of a security field.
-func rejectDuplicateKeys(body []byte, allowed []string) error {
+// rejectJSONKeys requires exact, unique keys for each security-sensitive JSON
+// object. This avoids case-insensitive field matching and last-value-wins
+// behavior during strict pipe decoding.
+func rejectJSONKeys(body []byte, rules objectKeyRules) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
+	if err := scanJSONValue(decoder, "$", rules); err != nil {
+		return errProtocol
+	}
+	if _, err := decoder.Token(); err != io.EOF {
+		return errProtocol
+	}
+	return nil
+}
+
+func scanJSONValue(decoder *json.Decoder, path string, rules objectKeyRules) error {
 	token, err := decoder.Token()
-	if err != nil || token != json.Delim('{') {
+	if err != nil {
 		return errProtocol
 	}
-	seen := make(map[string]bool)
-	allow := make(map[string]bool, len(allowed))
-	for _, key := range allowed {
-		allow[key] = true
+	delim, isDelim := token.(json.Delim)
+	if !isDelim {
+		return nil
 	}
-	for decoder.More() {
-		token, err = decoder.Token()
-		key, ok := token.(string)
-		if err != nil || !ok || !allow[key] || seen[key] {
+	switch delim {
+	case '{':
+		seen := make(map[string]bool)
+		allowed := rules[path]
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			key, ok := keyToken.(string)
+			if err != nil || !ok || seen[key] || (allowed != nil && !allowed[key]) {
+				return errProtocol
+			}
+			seen[key] = true
+			if err := scanJSONValue(decoder, path+"."+key, rules); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil || end != json.Delim('}') {
 			return errProtocol
 		}
-		seen[key] = true
-		var value json.RawMessage
-		if err := decoder.Decode(&value); err != nil {
+	case '[':
+		for decoder.More() {
+			if err := scanJSONValue(decoder, path+"[]", rules); err != nil {
+				return err
+			}
+		}
+		end, err := decoder.Token()
+		if err != nil || end != json.Delim(']') {
 			return errProtocol
 		}
-	}
-	if _, err := decoder.Token(); err != nil {
-		return errProtocol
-	}
-	if decoder.More() {
+	default:
 		return errProtocol
 	}
 	return nil

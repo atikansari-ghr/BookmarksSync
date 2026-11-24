@@ -7,6 +7,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/atikansari-ghr/BookmarksSync/internal/geolite"
 )
 
 const protocolTestTag = "build-0123456789abcdef0123456789abcdef01234567"
@@ -55,7 +57,7 @@ func TestDecodeRequestRejectsMalformedFrames(t *testing.T) {
 		"trailing JSON":          frameForTest(`{"tag":"` + protocolTestTag + `"}{}`),
 		"invalid JSON":           frameForTest(`{"tag":`),
 		"zero length":            {0, 0},
-		"too large":              append([]byte{1, 1}, bytes.Repeat([]byte{'x'}, 257)...),
+		"too large":              append([]byte{4, 1}, bytes.Repeat([]byte{'x'}, 1025)...),
 		"short header":           {0},
 		"short body":             {0, 4, '{', '}'},
 		"bad tag type":           frameForTest(`{"tag":false}`),
@@ -66,6 +68,89 @@ func TestDecodeRequestRejectsMalformedFrames(t *testing.T) {
 				t.Fatal("DecodeRequest() succeeded; want protocol error")
 			}
 		})
+	}
+}
+
+func TestGeoLiteRequestRoundTripsClosedOperations(t *testing.T) {
+	config := &geolite.Config{AccountID: "12345", LicenseKey: "secret-key", Enabled: true, Days: []string{"MON", "THU"}, StartTime: "04:00"}
+	for _, request := range []GeoLiteRequest{
+		{Operation: GeoLiteOperationStatus},
+		{Operation: GeoLiteOperationConfigure, Config: config},
+		{Operation: GeoLiteOperationClear},
+		{Operation: GeoLiteOperationRun},
+	} {
+		t.Run(request.Operation, func(t *testing.T) {
+			var frame bytes.Buffer
+			if err := EncodeGeoLiteRequest(&frame, request); err != nil {
+				t.Fatal(err)
+			}
+			got, err := DecodeGeoLiteRequest(bytes.NewReader(frame.Bytes()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.Operation != request.Operation || (got.Config == nil) != (request.Config == nil) {
+				t.Fatalf("decoded request = %#v; want %#v", got, request)
+			}
+			if got.Config != nil {
+				if got.Config.AccountID != request.Config.AccountID || got.Config.LicenseKey != request.Config.LicenseKey || got.Config.Enabled != request.Config.Enabled || got.Config.StartTime != request.Config.StartTime || strings.Join(got.Config.Days, ",") != strings.Join(request.Config.Days, ",") {
+					t.Fatalf("decoded config = %#v; want %#v", *got.Config, *request.Config)
+				}
+			}
+		})
+	}
+}
+
+func TestDecodeGeoLiteRequestRejectsUnknownMalformedAndAmbiguousMessages(t *testing.T) {
+	for _, body := range []string{
+		`{"operation":"exec"}`,
+		`{"operation":"configure"}`,
+		`{"operation":"configure","config":{"accountId":"123","licenseKey":"key","enabled":true,"days":["MON"],"startTime":"04:00"}}`,
+		`{"operation":"configure","config":{"accountId":"123","licenseKey":"key","enabled":true,"days":["MON","MON"],"startTime":"04:00"}}`,
+		`{"operation":"status","config":{"enabled":false,"days":["MON","THU"],"startTime":"04:00"}}`,
+		`{"operation":"status","path":"C:\\secrets"}`,
+		`{"operation":"status","operation":"clear"}`,
+		`{"operation":"configure","config":{"accountId":"123","accountId":"456","licenseKey":"key","enabled":true,"days":["MON","THU"],"startTime":"04:00"}}`,
+		`{"operation":"configure","config":{"accountId":"123","AccountID":"456","licenseKey":"key","enabled":true,"days":["MON","THU"],"startTime":"04:00"}}`,
+		`{"operation":"configure","config":{"accountId":"123","licenseKey":"key\nEditionIDs GeoIP2-City","enabled":true,"days":["MON","THU"],"startTime":"04:00"}}`,
+	} {
+		if _, err := DecodeGeoLiteRequest(bytes.NewReader(frameForTest(body))); err == nil {
+			t.Errorf("DecodeGeoLiteRequest(%s) succeeded; want protocol error", body)
+		}
+	}
+}
+
+func TestGeoLiteResponseRoundTripsAndRejectsUnapprovedErrorCodes(t *testing.T) {
+	response := GeoLiteResponse{
+		OK:     true,
+		Status: &geolite.Status{Configured: true, Enabled: true, Days: []string{"MON", "THU"}, StartTime: "04:00", DatabaseAvailable: true},
+	}
+	var frame bytes.Buffer
+	if err := EncodeGeoLiteResponse(&frame, response); err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeGeoLiteResponse(bytes.NewReader(frame.Bytes()))
+	if err != nil || !got.OK || got.Status == nil || !got.Status.DatabaseAvailable {
+		t.Fatalf("decoded response = %#v, error %v", got, err)
+	}
+	for _, invalid := range []GeoLiteResponse{
+		{OK: true, ErrorCode: "failed"},
+		{ErrorCode: "C:\\private\\GeoIP.conf"},
+		{ErrorCode: "busy", Job: "untrusted-job"},
+	} {
+		if err := EncodeGeoLiteResponse(io.Discard, invalid); err == nil {
+			t.Errorf("EncodeGeoLiteResponse(%#v) succeeded; want error", invalid)
+		}
+	}
+	for _, body := range []string{
+		`{"ok":true,"errorCode":"unavailable"}`,
+		`{"ok":false,"errorCode":"C:\\private\\GeoIP.conf"}`,
+		`{"ok":false,"errorCode":"busy","job":"unexpected"}`,
+		`{"ok":true,"status":{"configured":false,"enabled":false,"days":["MON","THU"],"startTime":"04:00","databaseAvailable":false,"lastResult":"none","running":false,"unknown":"value"}}`,
+		`{"ok":true,"status":{"configured":false,"Configured":true}}`,
+	} {
+		if _, err := DecodeGeoLiteResponse(bytes.NewReader(frameForTest(body))); err == nil {
+			t.Errorf("DecodeGeoLiteResponse(%s) succeeded; want protocol error", body)
+		}
 	}
 }
 
