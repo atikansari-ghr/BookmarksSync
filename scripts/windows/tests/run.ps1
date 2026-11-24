@@ -47,11 +47,13 @@ TestCase 'GeoLite updater credentials are excluded from the app service ACL' {
     $databasePolicy=$policy | Where-Object { $_.Path -eq (Join-Path $paths.geoLite 'database') } | Select-Object -First 1
     $databaseFilePolicy=$policy | Where-Object { $_.Path -eq (Join-Path $paths.geoLite 'database\GeoLite2-Country.mmdb') } | Select-Object -First 1
     Assert ($rootPolicy.ServiceRights -eq 'X' -and -not $rootPolicy.Recursive) 'app service must only traverse the ProgramData root'
+    Assert ($rootPolicy.Owner -eq 'SYSTEM') 'the app service must not own the ProgramData root'
     Assert ($dataPolicy.ServiceRights -eq 'F' -and $dataPolicy.ServiceInheritance -and $dataPolicy.Recursive) 'app service must retain inheritable full access to its data directory'
     Assert ($envPolicy.ServiceRights -eq 'R' -and -not $envPolicy.Recursive) 'app service must only read its environment file'
     Assert ($rclonePolicy.ServiceRights -eq 'F' -and $rclonePolicy.ServiceInheritance -and $rclonePolicy.Recursive) 'app service must retain inheritable full access to rclone configuration'
     Assert (-not $snapshotsPolicy.ServiceRights -and -not $stagingPolicy.ServiceRights) 'snapshots and staging must remain updater-only'
     Assert ($geoPolicy.ServiceRights -eq 'X' -and -not $geoPolicy.Recursive) 'app service must only traverse the GeoLite root'
+    Assert ($geoPolicy.Owner -eq 'SYSTEM') 'the app service must not own the GeoLite root'
     Assert ($databasePolicy.ServiceRights -eq 'X' -and -not $databasePolicy.Recursive) 'app service must only traverse the database directory'
     Assert ($databaseFilePolicy.ServiceRights -eq 'R' -and -not $databaseFilePolicy.Recursive) 'app service must only read the active database'
     foreach($privateName in @('config','stage','backup')) { $private=$policy | Where-Object { $_.Path -eq (Join-Path $paths.geoLite $privateName) } | Select-Object -First 1; Assert (-not $private.ServiceRights -and $private.Recursive) "app service must not access GeoLite $privateName" }

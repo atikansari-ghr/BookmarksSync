@@ -98,7 +98,7 @@ function Get-VerifiedRelease([string]$Tag, [string]$Stage, [string]$GhPath) {
 }
 
 function Get-AppPathAccessPolicies([System.Collections.IDictionary]$Paths) {
-    return @(
+    $policies = @(
         [pscustomobject]@{Path=$Paths.root;ServiceRights='X';ServiceInheritance=$false;Recursive=$false}
         [pscustomobject]@{Path=$Paths.data;ServiceRights='F';ServiceInheritance=$true;Recursive=$true}
         [pscustomobject]@{Path=$Paths.env;ServiceRights='R';ServiceInheritance=$false;Recursive=$false}
@@ -112,10 +112,14 @@ function Get-AppPathAccessPolicies([System.Collections.IDictionary]$Paths) {
         [pscustomobject]@{Path=(Join-Path $Paths.geoLite 'database');ServiceRights='X';ServiceInheritance=$false;Recursive=$false}
         [pscustomobject]@{Path=(Join-Path $Paths.geoLite 'database\GeoLite2-Country.mmdb');ServiceRights='R';ServiceInheritance=$false;Recursive=$false}
     )
+    foreach ($policy in $policies) { $policy | Add-Member -NotePropertyName Owner -NotePropertyValue 'SYSTEM' }
+    return $policies
 }
 
-function Set-PrivateAcl([string]$Path, [string[]]$Principals, [bool]$Recursive = $true) {
+function Set-PrivateAcl([string]$Path, [string[]]$Principals, [bool]$Recursive = $true, [string]$Owner = 'SYSTEM') {
     $walk = @(); if ($Recursive) { $walk = @('/T','/C') }
+    & icacls.exe $Path /setowner $Owner @walk | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not set SYSTEM ownership on a managed path.' }
     & icacls.exe $Path /remove 'NT SERVICE\BookmarksSync' @walk | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not remove inherited application access from a protected path.' }
     $grant = @('SYSTEM:(OI)(CI)F','BUILTIN\Administrators:(OI)(CI)F') + $Principals
@@ -138,7 +142,7 @@ function Set-BookmarksSyncPathAcls([System.Collections.IDictionary]$Paths) {
             $inheritance = if ($policy.ServiceInheritance) { '(OI)(CI)' } else { '' }
             $principals = @('NT SERVICE\BookmarksSync:' + $inheritance + '(' + $policy.ServiceRights + ')')
         }
-        Set-PrivateAcl $policy.Path $principals $policy.Recursive
+        Set-PrivateAcl $policy.Path $principals $policy.Recursive $policy.Owner
     }
 }
 
