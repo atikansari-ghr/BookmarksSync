@@ -34,6 +34,31 @@ function New-FakeOperations([string]$Root,[hashtable]$State) {
 function global:Read-Host { param([string]$Prompt,[switch]$AsSecureString) if ($AsSecureString) { return ConvertTo-SecureString 'TestOnlyPassword123' -AsPlainText -Force }; return 'admin' }
 
 $tag='build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+TestCase 'installer emits narrow ACL commands for managed paths' {
+    $root=Join-Path ([IO.Path]::GetTempPath()) ('bms-acl-run-'+[guid]::NewGuid().ToString('N'))
+    $paths=[ordered]@{root=$root;data=(Join-Path $root 'data');env=(Join-Path $root 'bookmarksync.env');rclone=(Join-Path $root 'rclone');snapshots=(Join-Path $root 'snapshots');staging=(Join-Path $root 'staging');geoLite=(Join-Path $root 'geolite')}
+    $global:BookmarksSyncAclCalls=[Collections.Generic.List[string]]::new()
+    function global:icacls.exe { $global:BookmarksSyncAclCalls.Add([string]::Join(' ',[string[]]$args)); $global:LASTEXITCODE=0 }
+    try {
+        New-Item -ItemType Directory -Force -Path $paths.root,$paths.data,$paths.rclone,$paths.snapshots,$paths.staging,(Join-Path $paths.geoLite 'config'),(Join-Path $paths.geoLite 'stage'),(Join-Path $paths.geoLite 'backup'),(Join-Path $paths.geoLite 'database') | Out-Null
+        Set-Content -NoNewline -LiteralPath $paths.env -Value 'fixture'
+        Set-Content -NoNewline -LiteralPath (Join-Path $paths.geoLite 'database\GeoLite2-Country.mmdb') -Value 'fixture'
+        $operations=New-DefaultOperations
+        & $operations.ProtectPaths $paths
+        $commands=$global:BookmarksSyncAclCalls -join "`n"
+        $rootGrant=$global:BookmarksSyncAclCalls | Where-Object { $_.StartsWith("$($paths.root) /inheritance:r /grant:r",[StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
+        $databaseGrant=$global:BookmarksSyncAclCalls | Where-Object { $_ -like "*GeoLite2-Country.mmdb /inheritance:r /grant:r *" } | Select-Object -First 1
+        $privateGrant=$global:BookmarksSyncAclCalls | Where-Object { $_ -like "*geolite\config /inheritance:r /grant:r *" } | Select-Object -First 1
+        Assert ($rootGrant -match 'NT SERVICE\\BookmarksSync:\(X\)' -and $rootGrant -notmatch 'NT SERVICE\\BookmarksSync:\(OI\)\(CI\)F') 'root ACL command grants more than traverse access'
+        Assert ($databaseGrant -match 'NT SERVICE\\BookmarksSync:\(R\)') 'active database ACL command does not grant read access'
+        Assert ($privateGrant -and $privateGrant -notmatch 'NT SERVICE\\BookmarksSync:') 'GeoLite credential directory ACL command grants the app service access'
+        Assert ($commands -match '/setowner SYSTEM') 'managed paths are not assigned to SYSTEM before ACL replacement'
+    } finally {
+        Remove-Item Function:\global:icacls.exe -ErrorAction SilentlyContinue
+        Remove-Variable BookmarksSyncAclCalls -Scope Global -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
 TestCase 'GeoLite updater credentials are excluded from the app service ACL' {
     $root=Join-Path ([IO.Path]::GetTempPath()) ('bms-acl-'+[guid]::NewGuid().ToString('N')); $paths=[ordered]@{root=$root;data=(Join-Path $root 'data');env=(Join-Path $root 'bookmarksync.env');rclone=(Join-Path $root 'rclone');snapshots=(Join-Path $root 'snapshots');staging=(Join-Path $root 'staging');geoLite=(Join-Path $root 'geolite')}
     $policy=@(Get-AppPathAccessPolicies $paths)
