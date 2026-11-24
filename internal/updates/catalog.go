@@ -71,7 +71,7 @@ func RequiredReleaseAssets(goos, goarch string) []string {
 	case "linux":
 		return []string{"bookmarksync-linux-amd64", "BUILD_INFO.txt", "SHA256SUMS"}
 	case "windows":
-		return []string{"bookmarksync-windows-amd64.exe", "bookmarksync-updater-windows-amd64.exe", "BUILD_INFO.txt", "SHA256SUMS"}
+		return []string{"bookmarksync-windows-amd64.exe", "bookmarksync-updater-windows-amd64.exe", "geoipupdate-windows-amd64.exe", "GEOIPUPDATE-LICENSES.txt", "BUILD_INFO.txt", "SHA256SUMS"}
 	default:
 		return nil
 	}
