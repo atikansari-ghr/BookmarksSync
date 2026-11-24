@@ -26,7 +26,7 @@ function New-FakeOperations([string]$Root,[hashtable]$State) {
         PruneSnapshots = { param($paths) $State.Events.Add('prune') }
         StartServices = { $State.Events.Add('start') }
         WaitReady = { param($url) $State.Events.Add('ready'); if ($State.ReadyFails) { throw 'not ready' } }
-        RestoreSnapshot = { param($archive,$paths) $State.Events.Add('restore'); Set-Content (Join-Path $paths.install 'bookmarksync.exe') 'old-server' }
+        RestoreSnapshot = { param($archive,$paths) $State.Events.Add('restore'); Set-Content (Join-Path $paths.install 'bookmarksync.exe') 'old-server'; if ($State.PreviousEnv) { [IO.File]::WriteAllText($paths.env,$State.PreviousEnv) } }
         CreateAdmin = { param($paths,$user,$password) $State.AdminUser=$user; $State.PasswordSeen=$password }
         CleanupStage = { param($path) if ($path -and (Test-Path $path)) { Remove-Item -LiteralPath $path -Recurse -Force } }
     }
@@ -34,6 +34,28 @@ function New-FakeOperations([string]$Root,[hashtable]$State) {
 function global:Read-Host { param([string]$Prompt,[switch]$AsSecureString) if ($AsSecureString) { return ConvertTo-SecureString 'TestOnlyPassword123' -AsPlainText -Force }; return 'admin' }
 
 $tag='build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+TestCase 'GeoLite updater credentials are excluded from the app service ACL' {
+    $root=Join-Path ([IO.Path]::GetTempPath()) ('bms-acl-'+[guid]::NewGuid().ToString('N')); $paths=[ordered]@{root=$root;data=(Join-Path $root 'data');env=(Join-Path $root 'bookmarksync.env');rclone=(Join-Path $root 'rclone');snapshots=(Join-Path $root 'snapshots');staging=(Join-Path $root 'staging');geoLite=(Join-Path $root 'geolite')}
+    $policy=@(Get-AppPathAccessPolicies $paths)
+    $rootPolicy=$policy | Where-Object { $_.Path -eq $paths.root } | Select-Object -First 1
+    $dataPolicy=$policy | Where-Object { $_.Path -eq $paths.data } | Select-Object -First 1
+    $envPolicy=$policy | Where-Object { $_.Path -eq $paths.env } | Select-Object -First 1
+    $rclonePolicy=$policy | Where-Object { $_.Path -eq $paths.rclone } | Select-Object -First 1
+    $snapshotsPolicy=$policy | Where-Object { $_.Path -eq $paths.snapshots } | Select-Object -First 1
+    $stagingPolicy=$policy | Where-Object { $_.Path -eq $paths.staging } | Select-Object -First 1
+    $geoPolicy=$policy | Where-Object { $_.Path -eq $paths.geoLite } | Select-Object -First 1
+    $databasePolicy=$policy | Where-Object { $_.Path -eq (Join-Path $paths.geoLite 'database') } | Select-Object -First 1
+    $databaseFilePolicy=$policy | Where-Object { $_.Path -eq (Join-Path $paths.geoLite 'database\GeoLite2-Country.mmdb') } | Select-Object -First 1
+    Assert ($rootPolicy.ServiceRights -eq 'X' -and -not $rootPolicy.Recursive) 'app service must only traverse the ProgramData root'
+    Assert ($dataPolicy.ServiceRights -eq 'F' -and $dataPolicy.ServiceInheritance -and $dataPolicy.Recursive) 'app service must retain inheritable full access to its data directory'
+    Assert ($envPolicy.ServiceRights -eq 'R' -and -not $envPolicy.Recursive) 'app service must only read its environment file'
+    Assert ($rclonePolicy.ServiceRights -eq 'F' -and $rclonePolicy.ServiceInheritance -and $rclonePolicy.Recursive) 'app service must retain inheritable full access to rclone configuration'
+    Assert (-not $snapshotsPolicy.ServiceRights -and -not $stagingPolicy.ServiceRights) 'snapshots and staging must remain updater-only'
+    Assert ($geoPolicy.ServiceRights -eq 'X' -and -not $geoPolicy.Recursive) 'app service must only traverse the GeoLite root'
+    Assert ($databasePolicy.ServiceRights -eq 'X' -and -not $databasePolicy.Recursive) 'app service must only traverse the database directory'
+    Assert ($databaseFilePolicy.ServiceRights -eq 'R' -and -not $databaseFilePolicy.Recursive) 'app service must only read the active database'
+    foreach($privateName in @('config','stage','backup')) { $private=$policy | Where-Object { $_.Path -eq (Join-Path $paths.geoLite $privateName) } | Select-Object -First 1; Assert (-not $private.ServiceRights -and $private.Recursive) "app service must not access GeoLite $privateName" }
+}
 TestCase 'invalid tag rejected before any operation' {
     $state=@{Events=[Collections.Generic.List[string]]::new()}; $ops=New-FakeOperations $TestDrive $state
     try { Invoke-BookmarksSyncInstall -Action upgrade -Tag latest -Root (Join-Path $TestDrive 'root') -InstallDir (Join-Path $TestDrive 'install') -Operations $ops; throw 'invalid tag accepted' } catch { Assert ($state.Events.Count -eq 0) 'operations ran before invalid tag rejection' }
@@ -48,7 +70,7 @@ TestCase 'unmanaged service fails before download and mutation' {
 }
 TestCase 'upgrade snapshots before stopping and restores after readiness failure' {
     $root=Join-Path ([IO.Path]::GetTempPath()) ('bms-test-'+[guid]::NewGuid().ToString('N')); $install=$root+'-install'; New-Item -ItemType Directory -Force $root,$install | Out-Null; Set-Content (Join-Path $install 'bookmarksync.exe') 'old-server'; Set-Content (Join-Path $root 'bookmarksync.env') 'private config'; New-Item -ItemType Directory -Force (Join-Path $root 'data') | Out-Null; Set-Content (Join-Path $root 'data\bookmarksync.db') 'old data'
-    $state=@{Events=[Collections.Generic.List[string]]::new();ReadyFails=$true}; $ops=New-FakeOperations $root $state
+    $state=@{Events=[Collections.Generic.List[string]]::new();ReadyFails=$true;PreviousEnv="private config`r`n"}; $ops=New-FakeOperations $root $state
     try { Invoke-BookmarksSyncInstall -Action upgrade -Tag $tag -Root $root -InstallDir $install -Operations $ops; throw 'readiness failure ignored' } catch { Assert ($state.Events.IndexOf('stop') -lt $state.Events.IndexOf('snapshot')) 'snapshot created before service stopped'; Assert ($state.Events -contains 'restore') 'snapshot was not restored'; Assert ((Get-Content -Raw (Join-Path $root 'bookmarksync.env')) -eq "private config`r`n") 'configuration changed on rollback'; Assert ((Get-Content -Raw (Join-Path $root 'data\bookmarksync.db')) -eq "old data`r`n") 'data changed on rollback'; Assert ((Get-Content -Raw (Join-Path $install 'bookmarksync.exe')) -eq "old-server`r`n") 'server binary was not restored' }
     Remove-Item $root,$install -Recurse -Force
 }
@@ -58,6 +80,7 @@ TestCase 'fresh install protects configuration and passes first-admin password t
     $envText=Get-Content -Raw (Join-Path $root 'bookmarksync.env')
     Assert ($envText.Contains('BOOKMARKSYNC_MANAGEMENT_CIDRS=127.0.0.1/32,::1/128,192.168.1.0/24')) 'loopback or requested management CIDRs absent'
     Assert ($envText.Contains('BOOKMARKSYNC_RCLONE_CONFIG=')) 'rclone config path missing'
+    Assert ($envText.Contains("BOOKMARKSYNC_GEOIP_DB=$root\geolite\database\GeoLite2-Country.mmdb")) 'fixed GeoLite database path missing from service environment'
     Assert (Test-Path (Join-Path $root 'rclone\rclone.conf')) 'fresh install must create an empty rclone config so the updater can snapshot it'
     Assert ($state.Events.IndexOf('verify') -lt $state.Events.IndexOf('acl') -and $state.Events.IndexOf('rclone') -lt $state.Events.IndexOf('acl')) 'host mutation occurred before release and rclone verification'
     Assert ($state.AdminUser -eq 'admin' -and $state.PasswordSeen -eq 'TestOnlyPassword123') 'initial admin input was not delivered'
@@ -70,12 +93,12 @@ TestCase 'management CIDR and public URL are rejected before external operations
 }
 TestCase 'release verifier rejects changed checksum and failed attestation' {
     $base=Join-Path ([IO.Path]::GetTempPath()) ('bms-verify-'+[guid]::NewGuid().ToString('N')); $fixture=Join-Path $base 'fixture'; $stage=Join-Path $base 'stage'; New-Item -ItemType Directory -Force $fixture | Out-Null
-    $commit=$tag.Substring(6); $bodies=@{ 'bookmarksync-windows-amd64.exe'='server fixture'; 'bookmarksync-updater-windows-amd64.exe'='updater fixture'; 'bookmarksync-linux-amd64'='linux fixture'; 'BUILD_INFO.txt'="commit=$commit`nbuild_date=2026-11-23T00:00:00Z`nversion=0.0.0-$($commit.Substring(0,12))`n" }
+    $commit=$tag.Substring(6); $bodies=@{ 'bookmarksync-windows-amd64.exe'='server fixture'; 'bookmarksync-updater-windows-amd64.exe'='updater fixture'; 'geoipupdate-windows-amd64.exe'='geoipupdate fixture'; 'GEOIPUPDATE-LICENSES.txt'='license notice fixture'; 'bookmarksync-linux-amd64'='linux fixture'; 'BUILD_INFO.txt'="commit=$commit`nbuild_date=2026-11-23T00:00:00Z`nversion=0.0.0-$($commit.Substring(0,12))`n" }
     $sums=@(); foreach($name in $bodies.Keys) { Set-Content -NoNewline -Encoding ascii (Join-Path $fixture $name) $bodies[$name]; $hash=(Get-FileHash (Join-Path $fixture $name) -Algorithm SHA256).Hash.ToLowerInvariant(); $sums += "$hash  $name" }; Set-Content -Encoding ascii (Join-Path $fixture 'SHA256SUMS') $sums
     $fake=Join-Path $base 'gh.ps1'; @'
 param([string]$Command,[string]$Subcommand,[Parameter(ValueFromRemainingArguments=$true)][string[]]$Rest)
 if ($Command -eq 'release' -and $Subcommand -eq 'view') {
-  $assets=@('bookmarksync-windows-amd64.exe','bookmarksync-updater-windows-amd64.exe','bookmarksync-linux-amd64','BUILD_INFO.txt','SHA256SUMS') | ForEach-Object { [ordered]@{name=$_;size=10} }
+  $assets=@('bookmarksync-windows-amd64.exe','bookmarksync-updater-windows-amd64.exe','geoipupdate-windows-amd64.exe','GEOIPUPDATE-LICENSES.txt','bookmarksync-linux-amd64','BUILD_INFO.txt','SHA256SUMS') | ForEach-Object { [ordered]@{name=$_;size=10} }
   [ordered]@{tagName=$env:FAKE_RELEASE_TAG;isDraft=$false;isPrerelease=$true;assets=$assets} | ConvertTo-Json -Compress -Depth 4; $global:LASTEXITCODE=0; return
 }
 if ($Command -eq 'release' -and $Subcommand -eq 'download') {
@@ -104,13 +127,16 @@ TestCase 'snapshot archive includes data, protected settings, rclone config and 
     Assert ((Get-Content -Raw (Join-Path $data 'bookmarksync.db')) -eq $before) 'rejected snapshot changed data'
     Remove-Item $root -Recurse -Force
 }
-TestCase 'asset install includes the pinned rclone executable and its license' {
+TestCase 'asset install includes verified geoipupdate, license notice, manifest, and pinned rclone' {
     $root=Join-Path ([IO.Path]::GetTempPath()) ('bms-assets-'+[guid]::NewGuid().ToString('N')); $stage=Join-Path $root 'release'; $rclone=Join-Path $root 'rclone'; $install=Join-Path $root 'install'; New-Item -ItemType Directory -Force $stage,$rclone,$install | Out-Null
-    foreach($asset in @('bookmarksync-windows-amd64.exe','bookmarksync-updater-windows-amd64.exe')) { Set-Content (Join-Path $stage $asset) $asset }
+    foreach($asset in @('bookmarksync-windows-amd64.exe','bookmarksync-updater-windows-amd64.exe','geoipupdate-windows-amd64.exe','GEOIPUPDATE-LICENSES.txt','SHA256SUMS')) { Set-Content (Join-Path $stage $asset) $asset }
     Set-Content (Join-Path $rclone 'rclone.exe') 'pinned-rclone-fixture'
     $paths=[ordered]@{install=$install}; $ops=New-DefaultOperations; & $ops.InstallAssets $stage $rclone $paths
     Assert (Test-Path (Join-Path $install 'bookmarksync.exe')) 'server binary not installed'
     Assert (Test-Path (Join-Path $install 'bookmarksync-updater.exe')) 'updater binary not installed'
+    Assert (Test-Path (Join-Path $install 'geoipupdate.exe')) 'geoipupdate helper not installed'
+    Assert (Test-Path (Join-Path $install 'GEOIPUPDATE-LICENSES.txt')) 'upstream license notice not installed'
+    Assert (Test-Path (Join-Path $install 'SHA256SUMS')) 'verified checksum manifest not installed'
     Assert ((Get-Content -Raw (Join-Path $install 'rclone.exe')) -eq "pinned-rclone-fixture`r`n") 'rclone binary not installed'
     Assert (Test-Path (Join-Path $install 'rclone-COPYING')) 'rclone license not installed'
     Remove-Item $root -Recurse -Force

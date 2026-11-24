@@ -111,7 +111,7 @@ func (o *WindowsHostOperations) CreateVerifiedSnapshot(ctx context.Context, tag 
 
 func (o *WindowsHostOperations) ReplaceInstalledFiles(_ context.Context, release VerifiedRelease) error {
 	verified, err := VerifyReleaseFiles(filepath.Dir(release.ServerExecutable), release.Tag)
-	if err != nil || verified.Commit != release.Commit || verified.ServerExecutable != release.ServerExecutable || verified.UpdaterExecutable != release.UpdaterExecutable || verified.BuildInfo != release.BuildInfo || verified.SHA256Sums != release.SHA256Sums {
+	if err != nil || verified.Commit != release.Commit || verified.ServerExecutable != release.ServerExecutable || verified.UpdaterExecutable != release.UpdaterExecutable || verified.BuildInfo != release.BuildInfo || verified.SHA256Sums != release.SHA256Sums || verified.GeoLiteUpdater != release.GeoLiteUpdater || verified.GeoLiteLicense != release.GeoLiteLicense {
 		return ErrUpdateUnavailable
 	}
 	if err := ReplaceInstalledBinaries(o.Paths.InstallDir, o.Paths.ServerExecutable, o.Paths.UpdaterExecutable, release); err != nil {

@@ -21,6 +21,8 @@ import (
 const (
 	WindowsServerAsset  = "bookmarksync-windows-amd64.exe"
 	WindowsUpdaterAsset = "bookmarksync-updater-windows-amd64.exe"
+	WindowsGeoLiteAsset = "geoipupdate-windows-amd64.exe"
+	GeoLiteLicenseAsset = "GEOIPUPDATE-LICENSES.txt"
 	BuildInfoAsset      = "BUILD_INFO.txt"
 	ChecksumsAsset      = "SHA256SUMS"
 )
@@ -61,7 +63,7 @@ func (v GitHubReleaseVerifier) Verify(ctx context.Context, tag string) (Verified
 	if json.Unmarshal(metadata, &release) != nil || release.TagName != tag || release.Draft || !release.Prerelease {
 		return VerifiedRelease{}, ErrReleaseInvalid
 	}
-	want := []string{WindowsServerAsset, WindowsUpdaterAsset, BuildInfoAsset, ChecksumsAsset}
+	want := []string{WindowsServerAsset, WindowsUpdaterAsset, WindowsGeoLiteAsset, GeoLiteLicenseAsset, BuildInfoAsset, ChecksumsAsset}
 	available := make(map[string]bool, len(release.Assets))
 	for _, asset := range release.Assets {
 		if available[asset.Name] || asset.Size < 1 || asset.Size > 512<<20 {
@@ -146,7 +148,7 @@ func VerifyReleaseFiles(dir, tag string) (VerifiedRelease, error) {
 	if err != nil {
 		return VerifiedRelease{}, ErrReleaseInvalid
 	}
-	assets := []string{WindowsServerAsset, WindowsUpdaterAsset, BuildInfoAsset}
+	assets := []string{WindowsServerAsset, WindowsUpdaterAsset, WindowsGeoLiteAsset, GeoLiteLicenseAsset, BuildInfoAsset}
 	for _, name := range assets {
 		actual, err := digestRegularFile(filepath.Join(dir, name))
 		if err != nil || checksums[name] != actual {
@@ -158,6 +160,7 @@ func VerifyReleaseFiles(dir, tag string) (VerifiedRelease, error) {
 		ServerExecutable:  filepath.Join(dir, WindowsServerAsset),
 		UpdaterExecutable: filepath.Join(dir, WindowsUpdaterAsset),
 		BuildInfo:         filepath.Join(dir, BuildInfoAsset), SHA256Sums: filepath.Join(dir, ChecksumsAsset),
+		GeoLiteUpdater: filepath.Join(dir, WindowsGeoLiteAsset), GeoLiteLicense: filepath.Join(dir, GeoLiteLicenseAsset),
 	}, nil
 }
 
@@ -228,12 +231,12 @@ func parseChecksums(path string) (map[string]string, error) {
 		if _, err := hex.DecodeString(digest); err != nil || values[name] != "" {
 			return nil, ErrReleaseInvalid
 		}
-		if name != WindowsServerAsset && name != WindowsUpdaterAsset && name != BuildInfoAsset && name != "bookmarksync-linux-amd64" {
+		if name != WindowsServerAsset && name != WindowsUpdaterAsset && name != WindowsGeoLiteAsset && name != GeoLiteLicenseAsset && name != BuildInfoAsset && name != "bookmarksync-linux-amd64" {
 			return nil, ErrReleaseInvalid
 		}
 		values[name] = strings.ToLower(digest)
 	}
-	if err := scanner.Err(); err != nil || len(values) != 4 || values["bookmarksync-linux-amd64"] == "" {
+	if err := scanner.Err(); err != nil || len(values) != 6 || values["bookmarksync-linux-amd64"] == "" {
 		return nil, ErrReleaseInvalid
 	}
 	return values, nil

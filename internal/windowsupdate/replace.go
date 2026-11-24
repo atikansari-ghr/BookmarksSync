@@ -21,15 +21,20 @@ func replaceInstalledBinaries(installDir, serverPath, updaterPath string, releas
 		return ErrReleaseInvalid
 	}
 	verified, err := VerifyReleaseFiles(filepath.Dir(release.ServerExecutable), release.Tag)
-	if err != nil || verified.Commit != release.Commit || verified.ServerExecutable != release.ServerExecutable || verified.UpdaterExecutable != release.UpdaterExecutable || verified.BuildInfo != release.BuildInfo || verified.SHA256Sums != release.SHA256Sums {
+	if err != nil || verified.Commit != release.Commit || verified.ServerExecutable != release.ServerExecutable || verified.UpdaterExecutable != release.UpdaterExecutable || verified.BuildInfo != release.BuildInfo || verified.SHA256Sums != release.SHA256Sums || verified.GeoLiteUpdater != release.GeoLiteUpdater || verified.GeoLiteLicense != release.GeoLiteLicense {
 		return ErrReleaseInvalid
 	}
 	checksums, err := parseChecksums(release.SHA256Sums)
 	if err != nil {
 		return ErrReleaseInvalid
 	}
-	for _, target := range []string{serverPath, updaterPath} {
-		if info, err := os.Lstat(target); err == nil {
+	type asset struct {
+		source, target, name string
+		checked              bool
+	}
+	assets := []asset{{release.ServerExecutable, serverPath, WindowsServerAsset, true}, {release.UpdaterExecutable, updaterPath, WindowsUpdaterAsset, true}, {release.GeoLiteUpdater, filepath.Join(installDir, "geoipupdate.exe"), WindowsGeoLiteAsset, true}, {release.GeoLiteLicense, filepath.Join(installDir, GeoLiteLicenseAsset), GeoLiteLicenseAsset, true}, {release.SHA256Sums, filepath.Join(installDir, ChecksumsAsset), ChecksumsAsset, false}}
+	for _, item := range assets {
+		if info, err := os.Lstat(item.target); err == nil {
 			if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 				return ErrReleaseInvalid
 			}
@@ -43,23 +48,25 @@ func replaceInstalledBinaries(installDir, serverPath, updaterPath string, releas
 	if rejectReparseAncestors(installDir) != nil {
 		return ErrReleaseInvalid
 	}
-	stagedServer, serverHash, err := stageVerifiedBinary(installDir, release.ServerExecutable)
-	if err != nil || serverHash != checksums[WindowsServerAsset] {
-		if stagedServer != "" {
-			_ = os.Remove(stagedServer)
+	moves := make([]binaryMove, 0, len(assets))
+	for _, item := range assets {
+		staged, digest, err := stageVerifiedBinary(installDir, item.source)
+		if err != nil || (item.checked && digest != checksums[item.name]) {
+			if staged != "" {
+				_ = os.Remove(staged)
+			}
+			for _, move := range moves {
+				_ = os.Remove(move.stage)
+			}
+			return ErrReleaseInvalid
 		}
-		return ErrReleaseInvalid
+		moves = append(moves, binaryMove{target: item.target, stage: staged})
 	}
-	defer os.Remove(stagedServer)
-	stagedUpdater, updaterHash, err := stageVerifiedBinary(installDir, release.UpdaterExecutable)
-	if err != nil || updaterHash != checksums[WindowsUpdaterAsset] {
-		if stagedUpdater != "" {
-			_ = os.Remove(stagedUpdater)
+	defer func() {
+		for _, move := range moves {
+			_ = os.Remove(move.stage)
 		}
-		return ErrReleaseInvalid
-	}
-	defer os.Remove(stagedUpdater)
-	moves := []binaryMove{{target: serverPath, stage: stagedServer}, {target: updaterPath, stage: stagedUpdater}}
+	}()
 	for i := range moves {
 		if _, err := os.Lstat(moves[i].target); err == nil {
 			backupFile, err := os.CreateTemp(installDir, ".bookmarksync-update-backup-*")

@@ -131,7 +131,7 @@ func (o *fakeHostOps) VerifyRelease(context.Context, string) (VerifiedRelease, e
 		return VerifiedRelease{}, errors.New("untrusted release details")
 	}
 	root := os.TempDir()
-	return VerifiedRelease{Tag: validTag, Commit: validTag[len("build-"):], ServerExecutable: filepath.Join(root, "server.exe"), UpdaterExecutable: filepath.Join(root, "updater.exe"), BuildInfo: filepath.Join(root, "BUILD_INFO.txt"), SHA256Sums: filepath.Join(root, "SHA256SUMS")}, nil
+	return VerifiedRelease{Tag: validTag, Commit: validTag[len("build-"):], ServerExecutable: filepath.Join(root, "server.exe"), UpdaterExecutable: filepath.Join(root, "updater.exe"), BuildInfo: filepath.Join(root, "BUILD_INFO.txt"), SHA256Sums: filepath.Join(root, "SHA256SUMS"), GeoLiteUpdater: filepath.Join(root, "geoipupdate.exe"), GeoLiteLicense: filepath.Join(root, "GEOIPUPDATE-LICENSES.txt")}, nil
 }
 func (o *fakeHostOps) StopService(_ context.Context, name string) error {
 	o.calls = append(o.calls, "stop:"+name)

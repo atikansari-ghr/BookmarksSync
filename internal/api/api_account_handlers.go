@@ -12,11 +12,13 @@ import (
 	"time"
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/bookmarks"
+	"github.com/atikansari-ghr/BookmarksSync/internal/geolite"
 	"github.com/atikansari-ghr/BookmarksSync/internal/identity"
 	"github.com/atikansari-ghr/BookmarksSync/internal/interchange"
 	"github.com/atikansari-ghr/BookmarksSync/internal/network"
 	"github.com/atikansari-ghr/BookmarksSync/internal/notifications"
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
+	"github.com/atikansari-ghr/BookmarksSync/internal/updates"
 )
 
 func (a *API) servePresentation(w http.ResponseWriter, r *http.Request) bool {
@@ -353,6 +355,70 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 	p := r.URL.Path
 	if !strings.HasPrefix(p, "/api/v1/admin/") {
 		return false
+	}
+	if p == "/api/v1/admin/geolite" {
+		if a.geoLite == nil {
+			server.WriteError(w, http.StatusServiceUnavailable, "geolite_unavailable", "GeoLite updates are unavailable on this installation")
+			return true
+		}
+		switch r.Method {
+		case http.MethodGet:
+			status, err := a.geoLite.Status(r.Context())
+			if err != nil {
+				writeGeoLiteError(w, err)
+				return true
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"status": status})
+			return true
+		case http.MethodPut:
+			var config geolite.Config
+			if !decodeJSON(w, r, &config) {
+				return true
+			}
+			if geolite.ValidateConfig(config) != nil {
+				server.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid GeoLite configuration")
+				return true
+			}
+			if err := a.geoLite.Configure(r.Context(), config); err != nil {
+				writeGeoLiteError(w, err)
+				return true
+			}
+			a.recordAdminActivity(r, "geolite_configured", "system", 0)
+			status, err := a.geoLite.Status(r.Context())
+			if err != nil {
+				writeGeoLiteError(w, err)
+				return true
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"status": status})
+			return true
+		case http.MethodDelete:
+			if err := a.geoLite.Clear(r.Context()); err != nil {
+				writeGeoLiteError(w, err)
+				return true
+			}
+			a.recordAdminActivity(r, "geolite_cleared", "system", 0)
+			status, err := a.geoLite.Status(r.Context())
+			if err != nil {
+				writeGeoLiteError(w, err)
+				return true
+			}
+			writeJSON(w, http.StatusOK, map[string]any{"status": status})
+			return true
+		}
+	}
+	if p == "/api/v1/admin/geolite/run" && r.Method == http.MethodPost {
+		if a.geoLite == nil {
+			server.WriteError(w, http.StatusServiceUnavailable, "geolite_unavailable", "GeoLite updates are unavailable on this installation")
+			return true
+		}
+		job, err := a.geoLite.Run(r.Context())
+		if err != nil {
+			writeGeoLiteError(w, err)
+			return true
+		}
+		a.recordAdminActivity(r, "geolite_update_requested", "system", 0)
+		writeJSON(w, http.StatusAccepted, map[string]string{"job": job})
+		return true
 	}
 	if p == "/api/v1/admin/network-access" {
 		switch r.Method {
@@ -721,6 +787,17 @@ func (a *API) serveAdmin(w http.ResponseWriter, r *http.Request) bool {
 		}
 	}
 	return false
+}
+
+func writeGeoLiteError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, updates.ErrGeoLiteBusy):
+		server.WriteError(w, http.StatusConflict, "busy", "another updater task is running")
+	case errors.Is(err, updates.ErrGeoLiteInvalid), errors.Is(err, geolite.ErrInvalidConfig):
+		server.WriteError(w, http.StatusBadRequest, "invalid_request", "invalid GeoLite configuration")
+	default:
+		server.WriteError(w, http.StatusServiceUnavailable, "geolite_unavailable", "GeoLite operation could not be completed")
+	}
 }
 
 func geoBuildTime(value time.Time) any {

@@ -11,6 +11,7 @@ import (
 var (
 	ErrInvalidConfig = errors.New("invalid GeoLite configuration")
 	timePattern      = regexp.MustCompile(`^(?:[01][0-9]|2[0-3]):[0-5][0-9]$`)
+	keyPattern       = regexp.MustCompile(`^[A-Za-z0-9_]{1,64}$`)
 )
 
 // Config contains operator-supplied credentials and a weekly local-time schedule.
@@ -35,6 +36,7 @@ type Status struct {
 	LastResult        string     `json:"lastResult"`
 	LastErrorCode     string     `json:"lastErrorCode,omitempty"`
 	Running           bool       `json:"running"`
+	RecoveryRequired  bool       `json:"recoveryRequired"`
 }
 
 // DefaultConfig returns the Debian-aligned schedule without enabling it before
@@ -45,10 +47,13 @@ func DefaultConfig() Config {
 
 // ValidateConfig checks credential field safety and the local weekly schedule.
 func ValidateConfig(config Config) error {
-	if len(config.AccountID) > 64 || hasControl(config.AccountID) || !digitsOnly(config.AccountID) && config.AccountID != "" {
+	if (config.AccountID == "") != (config.LicenseKey == "") {
 		return ErrInvalidConfig
 	}
-	if len(config.LicenseKey) > 256 || hasControl(config.LicenseKey) {
+	if config.AccountID != "" && (len(config.AccountID) > 64 || !digitsOnly(config.AccountID)) {
+		return ErrInvalidConfig
+	}
+	if config.LicenseKey != "" && !keyPattern.MatchString(config.LicenseKey) {
 		return ErrInvalidConfig
 	}
 	if len(config.Days) < 2 || len(config.Days) > 7 || !timePattern.MatchString(config.StartTime) {
@@ -72,13 +77,4 @@ func digitsOnly(value string) bool {
 		}
 	}
 	return true
-}
-
-func hasControl(value string) bool {
-	for _, r := range value {
-		if r < 0x20 || r == 0x7f {
-			return true
-		}
-	}
-	return false
 }

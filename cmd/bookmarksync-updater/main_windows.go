@@ -32,6 +32,32 @@ func main() {
 }
 
 func run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
+	if len(args) == 1 && args[0] == "geolite-run" {
+		if !isLocalSystem() {
+			fmt.Fprintln(stderr, "updater: GeoLite task requires LocalSystem")
+			return 1
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		pipe, err := updateipc.DialPipe(ctx)
+		if err == nil {
+			err = updateipc.EncodeGeoLiteRequest(pipe, updateipc.GeoLiteRequest{Operation: updateipc.GeoLiteOperationRun})
+			if err == nil {
+				response, decodeErr := updateipc.DecodeGeoLiteResponse(pipe)
+				err = decodeErr
+				if err == nil && !response.OK {
+					err = windowsupdate.ErrUpdateUnavailable
+				}
+			}
+			_ = pipe.Close()
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, "updater: GeoLite run request failed")
+			return 1
+		}
+		_, _ = fmt.Fprintln(stdout, "GeoLite update queued")
+		return 0
+	}
 	if len(args) > 0 && args[0] == "worker" {
 		if !isLocalSystem() {
 			fmt.Fprintln(stderr, "updater: worker requires LocalSystem")
@@ -96,6 +122,15 @@ func newUpdaterService() (*updaterService, error) {
 		return nil, err
 	}
 	handler := &updaterService{serviceSID: serviceSID.String(), listener: updateipc.ListenAndServe}
+	geoPaths, err := windowsupdate.GeoLitePathsForRoots(programData, programFiles)
+	if err != nil {
+		return nil, err
+	}
+	geoHost := &windowsupdate.WindowsGeoLiteHost{ApplicationServiceSID: serviceSID.String()}
+	if err := geoHost.EnsureDirectories(geoPaths); err != nil {
+		return nil, err
+	}
+	geoManager := windowsupdate.NewGeoLiteManager(geoPaths, geoHost)
 	handler.manager = windowsupdate.NewJobManager(context.Background(), func(ctx context.Context, tag string) error {
 		release, err := ops.VerifyRelease(ctx, tag)
 		if err != nil {
@@ -113,6 +148,7 @@ func newUpdaterService() (*updaterService, error) {
 		}
 		return nil
 	})
+	handler.manager.SetGeoLiteManager(geoManager)
 	return handler, nil
 }
 

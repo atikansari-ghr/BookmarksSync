@@ -74,6 +74,14 @@ func newTEnv(t *testing.T) *tenv {
 }
 
 func newTEnvWithCatalog(t *testing.T, updateCatalog func(context.Context, string) (updates.Catalog, error), updateApply func(context.Context, string) (string, error)) *tenv {
+	return newTEnvWithOptions(t, updateCatalog, updateApply, nil)
+}
+
+func newTEnvWithGeoLite(t *testing.T, runner updates.GeoLiteRunner) *tenv {
+	return newTEnvWithOptions(t, nil, nil, runner)
+}
+
+func newTEnvWithOptions(t *testing.T, updateCatalog func(context.Context, string) (updates.Catalog, error), updateApply func(context.Context, string) (string, error), geoLite updates.GeoLiteRunner) *tenv {
 	t.Helper()
 	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "api.db"))
 	if err != nil {
@@ -100,7 +108,7 @@ func newTEnvWithCatalog(t *testing.T, updateCatalog func(context.Context, string
 		t.Fatal(err)
 	}
 	assetDir := filepath.Join(t.TempDir(), "branding")
-	a, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupTestAdapter{manager: backupManager}, Notifications: notificationService, NotificationUsers: notifications.NewUserService(db.SQL(), notificationService, clock.Now), UpdateCatalog: updateCatalog, UpdateApply: updateApply, Now: clock.Now, Logger: log, Health: health.New(t.TempDir()), Readiness: db, AssetDir: assetDir,
+	a, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupTestAdapter{manager: backupManager}, Notifications: notificationService, NotificationUsers: notifications.NewUserService(db.SQL(), notificationService, clock.Now), UpdateCatalog: updateCatalog, UpdateApply: updateApply, GeoLite: geoLite, Now: clock.Now, Logger: log, Health: health.New(t.TempDir()), Readiness: db, AssetDir: assetDir,
 		System: api.SystemInfo{Version: "test", Commit: "dddddddddddddddddddddddddddddddddddddddd", PublicOrigin: origin, PasskeysEnabled: false, OIDCProviders: []string{}}})
 	if err != nil {
 		t.Fatal(err)

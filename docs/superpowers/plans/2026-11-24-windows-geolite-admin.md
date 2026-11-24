@@ -1,4 +1,4 @@
-# Windows GeoLite Admin Implementation Plan
+﻿# Windows GeoLite Admin Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -121,7 +121,7 @@ Use these shared contracts across tasks:
 
 - [ ] Test that the Windows release catalog requires `geoipupdate-windows-amd64.exe` and tests reject a release missing that asset.
 - [ ] Update CI packaging to download the official v8.0.0 Windows archive, verify archive SHA-256 `1aadec5283389670729b1332ca938e3cf12a1413853c30a2193cfe9d3fc8bbea`, extract only `geoipupdate.exe` as `geoipupdate-windows-amd64.exe`, preserve its applicable license notice, include the executable in release SHA256SUMS, and attest/publish it with the Windows build.
-- [ ] Test install, upgrade, and repair stage and verify `geoipupdate-windows-amd64.exe`, preserve its license, set `BOOKMARKSYNC_GEOIP_DB` to `%ProgramData%\BookmarksSync\geoip\GeoLite2-Country.mmdb`, grant the app service read-only database access, and do not create or enable a scheduled task before GUI configuration.
+- [ ] Test install, upgrade, and repair stage and verify `geoipupdate-windows-amd64.exe`, preserve its license, set `BOOKMARKSYNC_GEOIP_DB` to `%ProgramData%\BookmarksSync\geolite\database\GeoLite2-Country.mmdb`, grant the app service read-only database access, and do not create or enable a scheduled task before GUI configuration.
 - [ ] Implement install/upgrade/repair handling so existing GeoLite credentials/task state survive application upgrades, pinned updater assets are validated, and task repair does not drop the last valid database.
 - [ ] Document GUI steps, key handling, default schedule, task/status behavior, update-now feedback, recovery when no valid database exists, MaxMind licensing/account requirements, proxy limitations, and Windows versus Docker scope.
 - [ ] Run PowerShell Pester tests, actionlint/static packaging checks, documentation link checks used by the repo, frontend suite, full Go suite/vet, and clean diff check.

@@ -69,6 +69,40 @@ func DecodeRequest(r io.Reader) (Request, error) {
 	return req, nil
 }
 
+// DecodeServiceRequest distinguishes the legacy release request from the
+// bounded GeoLite operation envelope without weakening either decoder.
+func DecodeServiceRequest(r io.Reader) (Request, *GeoLiteRequest, error) {
+	var header [2]byte
+	if _, err := io.ReadFull(r, header[:]); err != nil {
+		return Request{}, nil, errProtocol
+	}
+	n := int(binary.BigEndian.Uint16(header[:]))
+	if n == 0 || n > maxFrameBytes {
+		return Request{}, nil, errProtocol
+	}
+	body := make([]byte, n)
+	if _, err := io.ReadFull(r, body); err != nil {
+		return Request{}, nil, errProtocol
+	}
+	var discriminator map[string]json.RawMessage
+	if json.Unmarshal(body, &discriminator) != nil {
+		return Request{}, nil, errProtocol
+	}
+	framed := bytes.NewReader(append(header[:], body...))
+	if _, ok := discriminator["operation"]; ok {
+		request, err := DecodeGeoLiteRequest(framed)
+		if err != nil {
+			return Request{}, nil, err
+		}
+		return Request{}, &request, nil
+	}
+	request, err := DecodeRequest(framed)
+	if err != nil {
+		return Request{}, nil, err
+	}
+	return request, nil, nil
+}
+
 func EncodeResponse(w io.Writer, response Response) error {
 	if response.Accepted != (response.Job != "") {
 		return errProtocol
@@ -130,7 +164,7 @@ func DecodeGeoLiteResponse(r io.Reader) (GeoLiteResponse, error) {
 	var response GeoLiteResponse
 	keys := objectKeyRules{
 		"$":        keySet("ok", "job", "errorCode", "status"),
-		"$.status": keySet("configured", "enabled", "days", "startTime", "databaseAvailable", "databaseBuildTime", "lastAttempt", "lastResult", "lastErrorCode", "running"),
+		"$.status": keySet("configured", "enabled", "days", "startTime", "databaseAvailable", "databaseBuildTime", "lastAttempt", "lastResult", "lastErrorCode", "running", "recoveryRequired"),
 	}
 	if err := readFrameWithKeys(r, &response, keys); err != nil || validateGeoLiteResponse(response) != nil {
 		return GeoLiteResponse{}, errProtocol

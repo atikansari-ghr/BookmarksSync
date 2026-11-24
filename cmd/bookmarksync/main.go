@@ -262,7 +262,7 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 		if hostUpdater := updates.InstalledHostRunner(os.Getenv("BOOKMARKSYNC_UPDATE_SERVICE_USER")); hostUpdater != nil {
 			updateApply = hostUpdater.Start
 		}
-		apiH, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupAPI{manager: backupManager}, Notifications: notificationService, NotificationUsers: userNotificationService, UpdateCatalog: updateCatalog.List, UpdateApply: updateApply, AssetMu: assetMu, Logger: log, Health: health.New(cfg.DataDir), Readiness: db, SyncErrors: adapter.SyncErrors, AssetDir: filepath.Join(cfg.DataDir, "branding"),
+		apiH, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupAPI{manager: backupManager}, Notifications: notificationService, NotificationUsers: userNotificationService, UpdateCatalog: updateCatalog.List, UpdateApply: updateApply, GeoLite: updates.InstalledGeoLiteRunner(), AssetMu: assetMu, Logger: log, Health: health.New(cfg.DataDir), Readiness: db, SyncErrors: adapter.SyncErrors, AssetDir: filepath.Join(cfg.DataDir, "branding"),
 			System: api.SystemInfo{Version: version.Current().Version, Commit: version.Current().Commit, PublicOrigin: cfg.PublicOrigin,
 				PasskeysEnabled: passkeysEnabled, OIDCProviders: configuredOIDCNames(cfg.OIDCProviders),
 				GeoIPAvailable: geoDB != nil, GeoIPBuildTime: geoBuildTime(geoDB), TrustedProxyCount: len(cfg.TrustedProxies)}})

@@ -19,7 +19,7 @@ func TestGitHubVerifierChecksPublishedReleaseChecksumsAndEveryAttestation(t *tes
 	verify.Run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		commands = append(commands, append([]string(nil), args...))
 		if args[0] == "release" && args[1] == "view" {
-			return []byte(`{"tagName":"` + validTag + `","isDraft":false,"isPrerelease":true,"assets":[{"name":"` + WindowsServerAsset + `","size":10},{"name":"` + WindowsUpdaterAsset + `","size":10},{"name":"` + BuildInfoAsset + `","size":10},{"name":"` + ChecksumsAsset + `","size":10}]}`), nil
+			return releaseMetadataForTest(), nil
 		}
 		if args[0] == "release" && args[1] == "download" {
 			if fixture == "" {
@@ -45,10 +45,10 @@ func TestGitHubVerifierChecksPublishedReleaseChecksumsAndEveryAttestation(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Tag != validTag || len(commands) != 9 {
+	if got.Tag != validTag || len(commands) != 13 {
 		t.Fatalf("release=%#v; commands=%d", got, len(commands))
 	}
-	for _, args := range commands[5:] {
+	for _, args := range commands[7:] {
 		if len(args) < 8 || args[0] != "attestation" || args[1] != "verify" || !containsArg(args, "--signer-workflow") || !containsArg(args, releaseRepository+"/.github/workflows/ci.yml") || !containsArg(args, "refs/heads/main") || !containsArg(args, strings.TrimPrefix(validTag, "build-")) {
 			t.Fatalf("attestation command is not scoped to the publishing workflow: %v", args)
 		}
@@ -78,7 +78,7 @@ func TestGitHubVerifierRejectsAttestationFailureAndCleansStaging(t *testing.T) {
 	verify := GitHubReleaseVerifier{GHPath: filepath.Join(work, "gh.exe"), WorkDir: work}
 	verify.Run = func(_ context.Context, _ string, args ...string) ([]byte, error) {
 		if args[0] == "release" && args[1] == "view" {
-			return []byte(`{"tagName":"` + validTag + `","isDraft":false,"isPrerelease":true,"assets":[{"name":"` + WindowsServerAsset + `","size":10},{"name":"` + WindowsUpdaterAsset + `","size":10},{"name":"` + BuildInfoAsset + `","size":10},{"name":"` + ChecksumsAsset + `","size":10}]}`), nil
+			return releaseMetadataForTest(), nil
 		}
 		if args[0] == "release" && args[1] == "download" {
 			if fixture == "" {
@@ -187,6 +187,8 @@ func writeVerifiedReleaseFixture(t *testing.T, dir string) {
 	bodies := map[string][]byte{
 		WindowsServerAsset:         []byte("server executable fixture"),
 		WindowsUpdaterAsset:        []byte("updater executable fixture"),
+		WindowsGeoLiteAsset:        []byte("geoipupdate executable fixture"),
+		GeoLiteLicenseAsset:        []byte("third party licenses"),
 		BuildInfoAsset:             []byte("commit=" + commit + "\nbuild_date=2026-11-23T00:00:00Z\nversion=0.0.0-" + commit[:12] + "\n"),
 		"bookmarksync-linux-amd64": []byte("linux binary fixture"),
 	}
@@ -196,11 +198,15 @@ func writeVerifiedReleaseFixture(t *testing.T, dir string) {
 		}
 	}
 	var sums strings.Builder
-	for _, name := range []string{WindowsServerAsset, WindowsUpdaterAsset, BuildInfoAsset, "bookmarksync-linux-amd64"} {
+	for _, name := range []string{WindowsServerAsset, WindowsUpdaterAsset, WindowsGeoLiteAsset, GeoLiteLicenseAsset, BuildInfoAsset, "bookmarksync-linux-amd64"} {
 		digest := sha256.Sum256(bodies[name])
 		sums.WriteString(hex.EncodeToString(digest[:]) + "  " + name + "\n")
 	}
 	if err := os.WriteFile(filepath.Join(dir, ChecksumsAsset), []byte(sums.String()), 0600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func releaseMetadataForTest() []byte {
+	return []byte(`{"tagName":"` + validTag + `","isDraft":false,"isPrerelease":true,"assets":[{"name":"` + WindowsServerAsset + `","size":10},{"name":"` + WindowsUpdaterAsset + `","size":10},{"name":"` + WindowsGeoLiteAsset + `","size":10},{"name":"` + GeoLiteLicenseAsset + `","size":10},{"name":"` + BuildInfoAsset + `","size":10},{"name":"` + ChecksumsAsset + `","size":10}]}`)
 }

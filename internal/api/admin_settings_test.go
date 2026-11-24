@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"image"
 	"image/color"
@@ -12,6 +13,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/atikansari-ghr/BookmarksSync/internal/geolite"
 )
 
 func TestAdminPerUserDefaultsRequireAdminAndRespectOverrides(t *testing.T) {
@@ -35,6 +39,61 @@ func TestAdminPerUserDefaultsRequireAdminAndRespectOverrides(t *testing.T) {
 	effective = e.do("GET", "/api/v1/me/settings", nil, alice.mods()...)
 	if decode(t, effective)["settings"].(map[string]any)["ui.theme"] != "warm-glass" {
 		t.Fatalf("admin default overrode user choice: %s", effective.Body.String())
+	}
+}
+
+type fakeGeoLiteRunner struct {
+	config     geolite.Config
+	configured bool
+	runs       int
+}
+
+func (f *fakeGeoLiteRunner) Status(context.Context) (geolite.Status, error) {
+	return geolite.Status{Configured: f.configured, Enabled: f.config.Enabled, Days: f.config.Days, StartTime: f.config.StartTime, DatabaseAvailable: true, DatabaseBuildTime: timePtr(time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)), LastResult: "updated"}, nil
+}
+func (f *fakeGeoLiteRunner) Configure(_ context.Context, c geolite.Config) error {
+	f.config = c
+	f.configured = true
+	return nil
+}
+func (f *fakeGeoLiteRunner) Clear(context.Context) error {
+	f.configured = false
+	f.config.AccountID = ""
+	f.config.LicenseKey = ""
+	f.config.Enabled = false
+	return nil
+}
+func (f *fakeGeoLiteRunner) Run(context.Context) (string, error) {
+	f.runs++
+	return "bookmarksync-geolite-abc123", nil
+}
+func timePtr(t time.Time) *time.Time { return &t }
+
+func TestAdminGeoLiteSettingsRequireAdminRecentAuthAndNeverReturnCredentials(t *testing.T) {
+	runner := &fakeGeoLiteRunner{}
+	e := newTEnvWithGeoLite(t, runner)
+	alice, root := e.login(e.alice), e.login(e.root)
+	if got := e.do("GET", "/api/v1/admin/geolite", nil, alice.mods()...); got.Code != http.StatusForbidden {
+		t.Fatalf("non-admin status=%d %s", got.Code, got.Body.String())
+	}
+	if got := e.do("PUT", "/api/v1/admin/geolite", map[string]any{"accountId": "123", "licenseKey": "bad-key!", "enabled": true, "days": []string{"MON", "THU"}, "startTime": "04:00"}, root.mods()...); got.Code != http.StatusBadRequest {
+		t.Fatalf("invalid credentials=%d %s", got.Code, got.Body.String())
+	}
+	secret := "private_key_123"
+	configured := e.do("PUT", "/api/v1/admin/geolite", map[string]any{"accountId": "12345", "licenseKey": secret, "enabled": true, "days": []string{"MON", "THU"}, "startTime": "04:00"}, root.mods()...)
+	if configured.Code != http.StatusOK || strings.Contains(configured.Body.String(), secret) || strings.Contains(configured.Body.String(), "12345") {
+		t.Fatalf("configuration response leaked credentials: %d %s", configured.Code, configured.Body.String())
+	}
+	run := e.do("POST", "/api/v1/admin/geolite/run", nil, root.mods()...)
+	if run.Code != http.StatusAccepted || runner.runs != 1 {
+		t.Fatalf("run=%d %s", run.Code, run.Body.String())
+	}
+	if got := e.do("DELETE", "/api/v1/admin/geolite", nil, root.mods()...); got.Code != http.StatusOK {
+		t.Fatalf("clear=%d %s", got.Code, got.Body.String())
+	}
+	activity := e.do("GET", "/api/v1/admin/activity", nil, root.mods()...)
+	if strings.Contains(activity.Body.String(), secret) {
+		t.Fatal("audit log included the credential")
 	}
 }
 

@@ -20,7 +20,9 @@ sudo systemctl start bookmarksync-geoip-update.service
 journalctl -u bookmarksync-geoip-update.service --since today
 ```
 
-Validate a local database explicitly with `bookmarksync network validate-geo --file /path/to/GeoLite2-Country.mmdb`. The setup script supports Debian amd64 and arm64. Docker and Windows operators must currently use their host/container scheduler and provide the validated MMDB path through `BOOKMARKSYNC_GEOIP_DB`.
+Validate a local database explicitly with `bookmarksync network validate-geo --file /path/to/GeoLite2-Country.mmdb`. The setup script supports Debian amd64 and arm64. **Windows admins configure GeoLite in Administration → GeoLite**; do not edit the service environment or use a separate setup command for routine GeoLite settings. Windows releases include a pinned updater. The admin page stores credentials in the protected updater service area, schedules the task, and reports its sanitized status. Clearing credentials keeps the last valid database. The fixed Windows database path is `%ProgramData%\BookmarksSync\geolite\database\GeoLite2-Country.mmdb`.
+
+Docker does not yet have automatic GeoLite scheduling; provide a validated MMDB path through `BOOKMARKSYNC_GEOIP_DB` and manage its refresh with the container host.
 
 This product includes GeoLite Data created by MaxMind, available from https://www.maxmind.com. The Country code is used only to apply the configured access policy; BookmarksSync does not expose visitor locations in its UI or API.
 
@@ -56,4 +58,4 @@ BOOKMARKSYNC_TRUSTED_PROXIES=127.0.0.1/32,192.168.10.20/32
 BOOKMARKSYNC_MANAGEMENT_CIDRS=192.168.10.0/24
 ```
 
-Debian/LXC provisioning and scheduled updates are automated by the setup script. Docker and Windows scheduling and the final public proxy/country acceptance remain pending.
+Debian/LXC provisioning and scheduled updates are automated by the setup script. Windows scheduling is managed through Administration → GeoLite. Docker scheduling and final public proxy/country acceptance remain pending.

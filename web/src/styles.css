@@ -230,6 +230,10 @@ a { color: var(--accent-text); }
 
 .actions { display: flex; gap: 10px; justify-content: flex-end; flex-wrap: wrap; }
 .actions.start { justify-content: flex-start; }
+.admin-day-list { display: flex; flex-wrap: wrap; gap: 14px; }
+.admin-day-list label, .inline-check { display: inline-flex; align-items: center; gap: 8px; }
+.admin-day-list input, .inline-check input { width: auto; }
+.field-hint { display: inline-grid; place-items: center; width: 1.2em; height: 1.2em; border: 1px solid currentColor; border-radius: 50%; font-size: .75em; cursor: help; }
 .inline-form { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
 
 .reveal { border: 2px solid var(--teal); border-radius: 14px; padding: 16px; background: rgba(236, 253, 248, 0.85); display: flex; flex-direction: column; gap: 12px; align-items: flex-start; }

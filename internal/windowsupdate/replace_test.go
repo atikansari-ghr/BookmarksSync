@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestReplaceInstalledBinariesStagesAndReplacesBothVerifiedAssets(t *testing.T) {
+func TestReplaceInstalledBinariesStagesAndReplacesServerUpdaterGeoLiteAndManifest(t *testing.T) {
 	releaseDir := t.TempDir()
 	writeVerifiedReleaseFixture(t, releaseDir)
 	release, err := VerifyReleaseFiles(releaseDir, validTag)
@@ -17,6 +17,9 @@ func TestReplaceInstalledBinariesStagesAndReplacesBothVerifiedAssets(t *testing.
 	installDir := t.TempDir()
 	server := filepath.Join(installDir, "bookmarksync.exe")
 	updater := filepath.Join(installDir, "bookmarksync-updater.exe")
+	geoip := filepath.Join(installDir, "geoipupdate.exe")
+	license := filepath.Join(installDir, GeoLiteLicenseAsset)
+	checksums := filepath.Join(installDir, ChecksumsAsset)
 	if err := os.WriteFile(server, []byte("old server"), 0600); err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +29,7 @@ func TestReplaceInstalledBinariesStagesAndReplacesBothVerifiedAssets(t *testing.
 	if err := ReplaceInstalledBinaries(installDir, server, updater, release); err != nil {
 		t.Fatal(err)
 	}
-	for path, name := range map[string]string{server: WindowsServerAsset, updater: WindowsUpdaterAsset} {
+	for path, name := range map[string]string{server: WindowsServerAsset, updater: WindowsUpdaterAsset, geoip: WindowsGeoLiteAsset, license: GeoLiteLicenseAsset, checksums: ChecksumsAsset} {
 		got, err := os.ReadFile(path)
 		want, _ := os.ReadFile(filepath.Join(releaseDir, name))
 		if err != nil || string(got) != string(want) {
@@ -74,7 +77,7 @@ func TestReplaceInstalledBinariesRollsBackFirstExecutableWhenSecondRenameFails(t
 	_ = os.WriteFile(server, []byte("old server"), 0600)
 	_ = os.WriteFile(updater, []byte("old updater"), 0600)
 	rename := func(old, new string) error {
-		if strings.Contains(old, "stage") && new == updater {
+		if strings.Contains(old, "stage") && new == filepath.Join(installDir, "geoipupdate.exe") {
 			return os.ErrPermission
 		}
 		return os.Rename(old, new)

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"os"
 	"strings"
 	"time"
 
@@ -27,8 +28,9 @@ type CountryLookup interface {
 }
 
 type CountryDatabase struct {
-	reader *geoip2.Reader
-	build  time.Time
+	reader       *geoip2.Reader
+	build        time.Time
+	databaseType string
 }
 
 func DefaultPolicy() Policy { return Policy{Mode: "allow", Countries: []string{"IN", "SA"}} }
@@ -153,11 +155,35 @@ func CountryAllowed(ip netip.Addr, policy Policy, management []netip.Prefix, loo
 // OpenCountryDatabase loads an offline GeoLite2-Country or GeoIP2-Country database.
 // The selected file is read at startup; replacing it on disk requires a restart.
 func OpenCountryDatabase(path string) (*CountryDatabase, error) {
+	return openCountryDatabase(path, "")
+}
+
+// OpenGeoLiteCountryDatabase opens only GeoLite2 Country files and rejects
+// non-regular files and files larger than 64 MiB before memory-mapping them.
+func OpenGeoLiteCountryDatabase(path string) (*CountryDatabase, error) {
+	if err := rejectGeoLiteReparsePath(path); err != nil {
+		return nil, errors.New("invalid GeoLite country database path")
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("open GeoLite country database: %w", err)
+	}
+	if !info.Mode().IsRegular() || info.Size() < 1 || info.Size() > 64<<20 {
+		return nil, errors.New("invalid GeoLite country database file")
+	}
+	return openCountryDatabase(path, "GeoLite2-Country")
+}
+
+func openCountryDatabase(path, requiredType string) (*CountryDatabase, error) {
 	reader, err := geoip2.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open country database: %w", err)
 	}
 	metadata := reader.Metadata()
+	if requiredType != "" && metadata.DatabaseType != requiredType {
+		_ = reader.Close()
+		return nil, fmt.Errorf("unsupported GeoLite database type %q", metadata.DatabaseType)
+	}
 	if metadata.DatabaseType != "GeoLite2-Country" && metadata.DatabaseType != "GeoIP2-Country" {
 		_ = reader.Close()
 		return nil, fmt.Errorf("unsupported GeoIP database type %q", metadata.DatabaseType)
@@ -167,10 +193,17 @@ func OpenCountryDatabase(path string) (*CountryDatabase, error) {
 		_ = reader.Close()
 		return nil, errors.New("GeoIP database has invalid build time")
 	}
-	return &CountryDatabase{reader: reader, build: build}, nil
+	return &CountryDatabase{reader: reader, build: build, databaseType: metadata.DatabaseType}, nil
 }
 
 func (db *CountryDatabase) BuildTime() time.Time { return db.build }
+
+func (db *CountryDatabase) DatabaseType() string {
+	if db == nil {
+		return ""
+	}
+	return db.databaseType
+}
 
 func (db *CountryDatabase) Close() error {
 	if db == nil || db.reader == nil {

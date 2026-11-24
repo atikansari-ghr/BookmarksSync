@@ -5,6 +5,7 @@ import { Workspace } from '../components/Workspace'
 import { AdminBackups } from '../components/AdminBackups'
 import { AdminNotifications } from '../components/AdminNotifications'
 import { AdminUpdates } from '../components/AdminUpdates'
+import { AdminGeoLite } from '../components/AdminGeoLite'
 import { useApp } from '../context'
 
 type AdminUser = { id: number; username: string; active: boolean; isAdmin: boolean; bookmarkCount: number; folderCount: number; storageBytes: number; connectionCount: number; themeDefault?: string | null }
@@ -155,6 +156,7 @@ function Admin() {
       <AdminUpdates />
       <AdminBackups />
       <AdminNotifications />
+      <AdminGeoLite />
 
       <section className="ws-card glass admin-section" aria-labelledby="network-access-title">
         <form className="stack" onSubmit={saveNetworkAccess}>
@@ -209,4 +211,4 @@ function BrandText({ label, setting, maxLength, value, set }: { label: string; s
 function BrandColor({ label, setting, value, set }: { label: string; setting: string; value: Branding; set: (k: string, v: string) => void }) { return <label className="field"><span>{label} (hex)</span><input aria-label={label} pattern="#[0-9a-fA-F]{6}" maxLength={7} value={value[setting] ?? ''} onChange={(e) => set(setting, e.target.value)} /></label> }
 function formatBytes(value: number) { if (!value) return '0 B'; const n = Math.floor(Math.log(value) / Math.log(1024)); return `${(value / 1024 ** n).toLocaleString(undefined, { maximumFractionDigits: n ? 1 : 0 })} ${['B','KB','MB','GB','TB'][n]}` }
 function formatDuration(seconds: number) { const days = Math.floor(seconds / 86400); const hours = Math.floor((seconds % 86400) / 3600); return days ? `${days}d ${hours}h` : `${hours}h ${Math.floor(seconds % 3600 / 60)}m` }
-function activityLabel(action: string) { return ({ user_created: 'User created', user_updated: 'User updated', user_settings_updated: 'User defaults updated', system_settings_updated: 'System settings updated', software_update_approved: 'Software update approved', branding_asset_uploaded: 'Branding image uploaded', connection_revoked: 'Browser connection revoked', password_reset: 'Password reset', factor_reset: 'Sign-in factors reset' } as Record<string, string>)[action] ?? 'Administrative event' }
+function activityLabel(action: string) { return ({ user_created: 'User created', user_updated: 'User updated', user_settings_updated: 'User defaults updated', system_settings_updated: 'System settings updated', software_update_approved: 'Software update approved', branding_asset_uploaded: 'Branding image uploaded', connection_revoked: 'Browser connection revoked', password_reset: 'Password reset', factor_reset: 'Sign-in factors reset', geolite_configured: 'GeoLite settings updated', geolite_cleared: 'GeoLite credentials removed', geolite_update_requested: 'GeoLite update requested' } as Record<string, string>)[action] ?? 'Administrative event' }

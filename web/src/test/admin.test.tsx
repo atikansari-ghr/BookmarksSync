@@ -20,6 +20,10 @@ function adminRoutes(): Record<string, Route> {
     'POST /api/v1/admin/updates/approve': { status: 202, body: { status: 'accepted', tag: 'build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', job: 'bookmarksync-update-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } },
     'GET /api/v1/admin/settings': { status: 200, body: { settings: { 'branding.app-title': 'BookmarksSync' } } },
     'GET /api/v1/admin/network-access': { status: 200, body: { mode: 'allow', countries: ['IN', 'SA'], geoDatabaseAvailable: false, geoDatabaseBuildTime: null, trustedProxyCount: 1 } },
+    'GET /api/v1/admin/geolite': { status: 200, body: { status: { configured: false, enabled: false, days: ['MON', 'THU'], startTime: '04:00', databaseAvailable: false, databaseBuildTime: null, lastAttempt: null, lastResult: '', running: false, recoveryRequired: false } } },
+    'PUT /api/v1/admin/geolite': { status: 200, body: { status: { configured: true, enabled: true, days: ['MON', 'THU'], startTime: '04:00', databaseAvailable: false, databaseBuildTime: null, lastAttempt: null, lastResult: '', running: false, recoveryRequired: false } } },
+    'DELETE /api/v1/admin/geolite': { status: 200, body: { status: { configured: false, enabled: false, days: ['MON', 'THU'], startTime: '04:00', databaseAvailable: false, databaseBuildTime: null, lastAttempt: null, lastResult: '', running: false, recoveryRequired: false } } },
+    'POST /api/v1/admin/geolite/run': { status: 202, body: { job: 'bookmarksync-geolite-abc123' } },
     'GET /api/v1/admin/activity': { status: 200, body: { items: [{ id: 1, actorId: 1, action: 'user_created', targetType: 'user', targetId: 2, createdAt: '2026-11-20T12:00:00Z' }] } },
     'GET /api/v1/admin/backups': { status: 200, body: { schedule: { weeklyEnabled: false, monthlyEnabled: false, timezone: 'Asia/Riyadh', weeklyDay: 0, weeklyHour: 3, weeklyMinute: 0, monthlyDay: 1, monthlyHour: 4, monthlyMinute: 0, weeklyRetention: 8, monthlyRetention: 12 }, destinations: [{ id: '0123456789abcdef0123456789abcdef', label: 'NAS', kind: 'rclone', reference: 'nas:bookmarks', enabled: true, encrypted: true, hasRecoveryKey: true }], runs: [], running: false } },
     'GET /api/v1/admin/notifications': { status: 200, body: { smtp: { host: '', port: 587, tlsMode: 'starttls', from: '', recipient: '', configured: false, authenticationConfigured: false }, telegram: { configured: false, chatConfigured: false }, adminAlerts: { backupSuccess: false, backupFailure: false, security: false }, deliveryFailures: 0, userDeliveryFailures: 0 } },
@@ -53,6 +57,24 @@ describe('admin workspace', () => {
     expect(screen.getByText('User created')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'System backups' })).toBeInTheDocument()
     expect(screen.getAllByText(/nas:bookmarks/)).toHaveLength(2)
+  })
+
+  it('saves GeoLite credentials as write-only GUI input and queues a manual update', async () => {
+    const api = mockServer(adminRoutes())
+    render(<App />)
+    const user = userEvent.setup()
+    await screen.findByRole('heading', { name: 'GeoLite country database' })
+    await screen.findByRole('button', { name: 'Save GeoLite settings' })
+    await user.type(screen.getByRole('textbox', { name: /MaxMind Account ID/ }), '12345')
+    await user.type(screen.getByLabelText(/MaxMind License Key/), 'private_key_123')
+    await user.click(screen.getByRole('button', { name: 'Save GeoLite settings' }))
+    await waitFor(() => expect(api.find('PUT', '/api/v1/admin/geolite')).toHaveLength(1))
+    expect(api.find('PUT', '/api/v1/admin/geolite')[0].body).toEqual({ accountId: '12345', licenseKey: 'private_key_123', enabled: false, days: ['MON', 'THU'], startTime: '04:00' })
+    expect(await screen.findByText(/Blank credentials keep the saved MaxMind account/)).toBeInTheDocument()
+    expect(screen.queryByDisplayValue('private_key_123')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Run update now' }))
+    await waitFor(() => expect(api.find('POST', '/api/v1/admin/geolite/run')).toHaveLength(1))
+    expect(await screen.findByText(/GeoLite update queued/)).toBeInTheDocument()
   })
 
   it('shows the installed build and available release without auto-installing', async () => {

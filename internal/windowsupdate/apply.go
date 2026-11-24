@@ -34,10 +34,12 @@ type VerifiedRelease struct {
 	UpdaterExecutable string
 	BuildInfo         string
 	SHA256Sums        string
+	GeoLiteUpdater    string
+	GeoLiteLicense    string
 }
 
 func (r VerifiedRelease) IsComplete() bool {
-	return filepath.IsAbs(r.ServerExecutable) && filepath.IsAbs(r.UpdaterExecutable) && filepath.IsAbs(r.BuildInfo) && filepath.IsAbs(r.SHA256Sums)
+	return filepath.IsAbs(r.ServerExecutable) && filepath.IsAbs(r.UpdaterExecutable) && filepath.IsAbs(r.BuildInfo) && filepath.IsAbs(r.SHA256Sums) && filepath.IsAbs(r.GeoLiteUpdater) && filepath.IsAbs(r.GeoLiteLicense)
 }
 
 type Snapshot struct {

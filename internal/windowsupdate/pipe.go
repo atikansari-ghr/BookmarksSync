@@ -9,9 +9,14 @@ import (
 
 func HandlePipeRequest(ctx context.Context, conn io.ReadWriteCloser, manager *JobManager) {
 	defer conn.Close()
-	request, err := updateipc.DecodeRequest(conn)
+	request, geoRequest, err := updateipc.DecodeServiceRequest(conn)
 	if err != nil || ctx.Err() != nil || manager == nil {
 		_ = updateipc.EncodeResponse(conn, updateipc.Response{})
+		return
+	}
+	if geoRequest != nil {
+		response, _ := manager.SubmitGeoLite(ctx, *geoRequest)
+		_ = updateipc.EncodeGeoLiteResponse(conn, response)
 		return
 	}
 	job, err := manager.Submit(request.Tag)

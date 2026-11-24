@@ -46,6 +46,28 @@ func TestDecodeRequestReadsExactlyOneBoundedFrame(t *testing.T) {
 	}
 }
 
+func TestDecodeServiceRequestSelectsClosedLegacyOrGeoLiteEnvelope(t *testing.T) {
+	var release bytes.Buffer
+	if err := EncodeRequest(&release, protocolTestTag); err != nil {
+		t.Fatal(err)
+	}
+	gotRelease, gotGeo, err := DecodeServiceRequest(bytes.NewReader(release.Bytes()))
+	if err != nil || gotGeo != nil || gotRelease.Tag != protocolTestTag {
+		t.Fatalf("release request=%#v geo=%#v err=%v", gotRelease, gotGeo, err)
+	}
+	var geo bytes.Buffer
+	if err := EncodeGeoLiteRequest(&geo, GeoLiteRequest{Operation: GeoLiteOperationRun}); err != nil {
+		t.Fatal(err)
+	}
+	gotRelease, gotGeo, err = DecodeServiceRequest(bytes.NewReader(geo.Bytes()))
+	if err != nil || gotGeo == nil || gotGeo.Operation != GeoLiteOperationRun || gotRelease.Tag != "" {
+		t.Fatalf("GeoLite request=%#v geo=%#v err=%v", gotRelease, gotGeo, err)
+	}
+	if _, _, err := DecodeServiceRequest(bytes.NewReader(frameForTest(`{"operation":"run","command":"powershell"}`))); err == nil {
+		t.Fatal("service decoder accepted arbitrary command")
+	}
+}
+
 func TestDecodeRequestRejectsMalformedFrames(t *testing.T) {
 	cases := map[string][]byte{
 		"empty frame":            frameForTest(""),
@@ -72,7 +94,7 @@ func TestDecodeRequestRejectsMalformedFrames(t *testing.T) {
 }
 
 func TestGeoLiteRequestRoundTripsClosedOperations(t *testing.T) {
-	config := &geolite.Config{AccountID: "12345", LicenseKey: "secret-key", Enabled: true, Days: []string{"MON", "THU"}, StartTime: "04:00"}
+	config := &geolite.Config{AccountID: "12345", LicenseKey: "secret_key", Enabled: true, Days: []string{"MON", "THU"}, StartTime: "04:00"}
 	for _, request := range []GeoLiteRequest{
 		{Operation: GeoLiteOperationStatus},
 		{Operation: GeoLiteOperationConfigure, Config: config},

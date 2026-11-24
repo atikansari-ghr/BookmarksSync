@@ -1,4 +1,4 @@
-Set-StrictMode -Version Latest
+﻿Set-StrictMode -Version Latest
 
 $script:ReleaseRepository = 'atikansari-ghr/BookmarksSync'
 $script:RcloneVersion = '1.76.0'
@@ -32,7 +32,17 @@ function Assert-NoReparseTree([string]$Path) {
 }
 
 function Get-RequiredAssets {
-    return @('bookmarksync-windows-amd64.exe','bookmarksync-updater-windows-amd64.exe','BUILD_INFO.txt','SHA256SUMS')
+    return @('bookmarksync-windows-amd64.exe','bookmarksync-updater-windows-amd64.exe','geoipupdate-windows-amd64.exe','GEOIPUPDATE-LICENSES.txt','BUILD_INFO.txt','SHA256SUMS')
+}
+
+function Set-GeoLiteDatabasePath([string]$EnvFile,[string]$DataDir) {
+    if (-not (Test-Path -LiteralPath $EnvFile -PathType Leaf)) { throw 'The managed service environment file is missing.' }
+    $dbPath=Join-Path (Split-Path -Parent $DataDir) 'geolite\database\GeoLite2-Country.mmdb'
+    $lines=@(Get-Content -LiteralPath $EnvFile | Where-Object { $_ -notmatch '^BOOKMARKSYNC_GEOIP_DB=' })
+    $lines += "BOOKMARKSYNC_GEOIP_DB=$dbPath"
+    $temp=$EnvFile+'.geolite.tmp'
+    [IO.File]::WriteAllLines($temp,$lines,[Text.UTF8Encoding]::new($false))
+    Move-Item -LiteralPath $temp -Destination $EnvFile -Force
 }
 
 function Get-LatestReleaseTag([string]$GhPath) {
@@ -72,27 +82,64 @@ function Get-VerifiedRelease([string]$Tag, [string]$Stage, [string]$GhPath) {
     if ($info.Count -ne 3 -or $info.commit -cne $Tag.Substring(6) -or $info.version -cne ('0.0.0-'+$Tag.Substring(6,12)) -or -not [DateTimeOffset]::TryParse($info.build_date,[ref]$buildTime)) { throw 'Release build metadata does not match the selected tag.' }
     $sumLines = @(Get-Content -LiteralPath (Join-Path $Stage 'SHA256SUMS'))
     $sumNames = @($sumLines | ForEach-Object { if ($_ -match '^([0-9a-f]{64})  ([^/\\]+)$') { $Matches[2] } else { '' } })
-    $expectedNames = @('bookmarksync-linux-amd64','bookmarksync-windows-amd64.exe','bookmarksync-updater-windows-amd64.exe','BUILD_INFO.txt')
-    if ($sumLines.Count -ne 4 -or ((($sumNames | Sort-Object) -join ',') -cne (($expectedNames | Sort-Object) -join ','))) { throw 'Release checksum manifest has an unexpected asset set.' }
+    $expectedNames = @('bookmarksync-linux-amd64','bookmarksync-windows-amd64.exe','bookmarksync-updater-windows-amd64.exe','geoipupdate-windows-amd64.exe','GEOIPUPDATE-LICENSES.txt','BUILD_INFO.txt')
+    if ($sumLines.Count -ne 6 -or ((($sumNames | Sort-Object) -join ',') -cne (($expectedNames | Sort-Object) -join ','))) { throw 'Release checksum manifest has an unexpected asset set.' }
     foreach ($asset in Get-RequiredAssets | Where-Object { $_ -ne 'SHA256SUMS' }) {
         $line = (Get-Content -LiteralPath (Join-Path $Stage 'SHA256SUMS') | Where-Object { $_ -match ('^[0-9a-f]{64}  ' + [regex]::Escape($asset) + '$') }) | Select-Object -First 1
         if (-not $line) { throw 'Release checksum manifest is incomplete.' }
         $expected = $line.Substring(0,64)
         if ((Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $Stage $asset)).Hash.ToLowerInvariant() -cne $expected) { throw 'Release checksum verification failed.' }
     }
-    foreach ($asset in @('bookmarksync-windows-amd64.exe','bookmarksync-updater-windows-amd64.exe')) {
+    foreach ($asset in Get-RequiredAssets | Where-Object { $_ -ne 'SHA256SUMS' }) {
         & $GhPath attestation verify (Join-Path $Stage $asset) --repo $script:ReleaseRepository --signer-workflow "$script:ReleaseRepository/.github/workflows/ci.yml" --source-ref refs/heads/main --source-digest $Tag.Substring(6) --predicate-type https://slsa.dev/provenance/v1 2>$null | Out-Null
         if ($LASTEXITCODE -ne 0) { throw 'GitHub build attestation verification failed.' }
     }
     return $Stage
 }
 
-function Set-PrivateAcl([string]$Path, [string[]]$Principals) {
-    & icacls.exe $Path /remove 'NT SERVICE\BookmarksSync' /T /C | Out-Null
+function Get-AppPathAccessPolicies([System.Collections.IDictionary]$Paths) {
+    return @(
+        [pscustomobject]@{Path=$Paths.root;ServiceRights='X';ServiceInheritance=$false;Recursive=$false}
+        [pscustomobject]@{Path=$Paths.data;ServiceRights='F';ServiceInheritance=$true;Recursive=$true}
+        [pscustomobject]@{Path=$Paths.env;ServiceRights='R';ServiceInheritance=$false;Recursive=$false}
+        [pscustomobject]@{Path=$Paths.rclone;ServiceRights='F';ServiceInheritance=$true;Recursive=$true}
+        [pscustomobject]@{Path=$Paths.snapshots;ServiceRights=$null;ServiceInheritance=$false;Recursive=$true}
+        [pscustomobject]@{Path=$Paths.staging;ServiceRights=$null;ServiceInheritance=$false;Recursive=$true}
+        [pscustomobject]@{Path=$Paths.geoLite;ServiceRights='X';ServiceInheritance=$false;Recursive=$false}
+        [pscustomobject]@{Path=(Join-Path $Paths.geoLite 'config');ServiceRights=$null;ServiceInheritance=$false;Recursive=$true}
+        [pscustomobject]@{Path=(Join-Path $Paths.geoLite 'stage');ServiceRights=$null;ServiceInheritance=$false;Recursive=$true}
+        [pscustomobject]@{Path=(Join-Path $Paths.geoLite 'backup');ServiceRights=$null;ServiceInheritance=$false;Recursive=$true}
+        [pscustomobject]@{Path=(Join-Path $Paths.geoLite 'database');ServiceRights='X';ServiceInheritance=$false;Recursive=$false}
+        [pscustomobject]@{Path=(Join-Path $Paths.geoLite 'database\GeoLite2-Country.mmdb');ServiceRights='R';ServiceInheritance=$false;Recursive=$false}
+    )
+}
+
+function Set-PrivateAcl([string]$Path, [string[]]$Principals, [bool]$Recursive = $true) {
+    $walk = @(); if ($Recursive) { $walk = @('/T','/C') }
+    & icacls.exe $Path /remove 'NT SERVICE\BookmarksSync' @walk | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not remove inherited application access from a protected path.' }
     $grant = @('SYSTEM:(OI)(CI)F','BUILTIN\Administrators:(OI)(CI)F') + $Principals
-    & icacls.exe $Path /inheritance:r /grant:r @grant /T /C | Out-Null
+    & icacls.exe $Path /inheritance:r /grant:r @grant @walk | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not apply the required Windows ACL.' }
+}
+
+function Set-BookmarksSyncPathAcls([System.Collections.IDictionary]$Paths) {
+    Assert-NoReparsePath $Paths.geoLite
+    if (Test-Path -LiteralPath $Paths.geoLite) { Assert-NoReparseTree $Paths.geoLite }
+    New-Item -ItemType Directory -Force -Path $Paths.geoLite,(Join-Path $Paths.geoLite 'database') | Out-Null
+    # Scrub old recursive grants first, then grant only traversal and active-file read access.
+    Set-PrivateAcl $Paths.geoLite @() $true
+    foreach ($policy in Get-AppPathAccessPolicies $Paths) {
+        if (-not (Test-Path -LiteralPath $policy.Path)) { continue }
+        Assert-NoReparsePath $policy.Path
+        if ($policy.Recursive) { Assert-NoReparseTree $policy.Path }
+        $principals = @()
+        if ($policy.ServiceRights) {
+            $inheritance = if ($policy.ServiceInheritance) { '(OI)(CI)' } else { '' }
+            $principals = @('NT SERVICE\BookmarksSync:' + $inheritance + '(' + $policy.ServiceRights + ')')
+        }
+        Set-PrivateAcl $policy.Path $principals $policy.Recursive
+    }
 }
 
 function Set-InstallAcl([string]$Path) {
@@ -174,7 +221,7 @@ function Invoke-BookmarksSyncInstall {
     if ($PublicUrl) { $uri=$null; if (-not [Uri]::TryCreate($PublicUrl,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -cne 'https' -or $uri.UserInfo -or $uri.Query -or $uri.Fragment -or $uri.AbsolutePath -ne '/') { throw 'Public URL must be an HTTPS origin without a path.' } }
     if ($ManagementCidrs) { Assert-CidrList $ManagementCidrs }
     if (-not $Operations) { $Operations = New-DefaultOperations }
-    $paths = [ordered]@{ root=$Root; install=$InstallDir; data=(Join-Path $Root 'data'); env=(Join-Path $Root 'bookmarksync.env'); rclone=(Join-Path $Root 'rclone'); snapshots=(Join-Path $Root 'snapshots'); staging=(Join-Path $Root 'staging') }
+    $paths = [ordered]@{ root=$Root; install=$InstallDir; data=(Join-Path $Root 'data'); env=(Join-Path $Root 'bookmarksync.env'); rclone=(Join-Path $Root 'rclone'); snapshots=(Join-Path $Root 'snapshots'); staging=(Join-Path $Root 'staging'); geoLite=(Join-Path $Root 'geolite') }
     $rootFull=[IO.Path]::GetFullPath($paths.root).TrimEnd('\')
     $installFull=[IO.Path]::GetFullPath($paths.install).TrimEnd('\')
     $separator=[IO.Path]::DirectorySeparatorChar
@@ -209,6 +256,7 @@ function Invoke-BookmarksSyncInstall {
         try {
             if (-not $fresh) { & $Operations.StopServices; $snapshot = & $Operations.CreateSnapshot $paths $Tag }
             & $Operations.InstallAssets $verified $rcloneStage $paths
+            Set-GeoLiteDatabasePath $paths.env $paths.data
             & $Operations.ConfigureServices $paths.install $paths.data $paths.env ($Action -eq 'repair')
             & $Operations.ProtectPaths $paths
             & $Operations.ProtectInstall $paths.install
@@ -243,14 +291,14 @@ function New-DefaultOperations {
         RollbackFresh = { param($paths) Remove-FreshInstall $paths }
         VerifyRelease = { param($tag,$stage,$gh) Get-VerifiedRelease $tag $stage $gh }
         PrepareRclone = { param($dest) New-Item -ItemType Directory -Force $dest | Out-Null; $zip=Join-Path $dest 'rclone.zip'; Invoke-WebRequest -UseBasicParsing -Uri $script:RcloneURL -OutFile $zip; if ((Get-FileHash $zip -Algorithm SHA256).Hash.ToLowerInvariant() -cne $script:RcloneSHA256) { throw 'Pinned rclone checksum verification failed.' }; Expand-Archive -LiteralPath $zip -DestinationPath $dest; $bin=Get-ChildItem $dest -Filter rclone.exe -Recurse | Select-Object -First 1; if (-not $bin) { throw 'Pinned rclone archive is incomplete.' }; Copy-Item $bin.FullName (Join-Path $dest 'rclone.exe'); Remove-Item $zip }
-        ProtectPaths = { param($p) Set-PrivateAcl $p.root @('NT SERVICE\BookmarksSync:(OI)(CI)F'); Set-PrivateAcl $p.snapshots @(); Set-PrivateAcl $p.staging @() }
+        ProtectPaths = { param($p) Set-BookmarksSyncPathAcls $p }
         ProtectInstall = { param($path) Set-InstallAcl $path }
         CreateSnapshot = { param($p,$tag) Assert-NoReparseTree $p.data; New-Item -ItemType Directory -Force $p.snapshots,$p.staging | Out-Null; $stage=Join-Path $p.staging ('snapshot-source-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Force $stage | Out-Null; Copy-Item $p.data (Join-Path $stage 'data') -Recurse; Copy-Item $p.env (Join-Path $stage 'bookmarksync.env'); if (Test-Path (Join-Path $p.rclone 'rclone.conf')) { New-Item -ItemType Directory -Force (Join-Path $stage 'rclone') | Out-Null; Copy-Item (Join-Path $p.rclone 'rclone.conf') (Join-Path $stage 'rclone\rclone.conf') }; Copy-Item $p.install (Join-Path $stage 'install') -Recurse; $entries=@(Get-ChildItem -LiteralPath $stage -File -Recurse | ForEach-Object { [ordered]@{ path=$_.FullName.Substring($stage.Length+1).Replace('\','/'); sha256=(Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(); size=$_.Length } }); [ordered]@{tag=$tag;createdAt=[DateTimeOffset]::UtcNow.ToString('o');files=$entries} | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8 (Join-Path $stage 'manifest.json'); $archive=Join-Path $p.snapshots ("snapshot-{0}-{1}.zip" -f (Get-Date -Format 'yyyyMMddTHHmmssfffZ'),$tag.Substring(6,12)); Compress-Archive -Path (Join-Path $stage '*') -DestinationPath $archive -CompressionLevel Optimal -ErrorAction Stop; $hash=(Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant(); Set-Content -NoNewline -Encoding ascii ($archive+'.sha256') $hash; if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne (Get-Content -Raw ($archive+'.sha256'))) { throw 'Snapshot verification failed.' }; Remove-Item $stage -Recurse -Force; return $archive }
         StopServices = { foreach ($name in @('BookmarksSync','BookmarksSyncUpdater')) { $s=Get-Service $name -ErrorAction SilentlyContinue; if ($s -and $s.Status -ne 'Stopped') { Stop-Service $name -Force; (Get-Service $name).WaitForStatus('Stopped',[TimeSpan]::FromSeconds(60)) } } }
-        InstallAssets = { param($release,$rclone,$p) Copy-Item (Join-Path $release 'bookmarksync-windows-amd64.exe') (Join-Path $p.install 'bookmarksync.exe') -Force; Copy-Item (Join-Path $release 'bookmarksync-updater-windows-amd64.exe') (Join-Path $p.install 'bookmarksync-updater.exe') -Force; Copy-Item (Join-Path $rclone 'rclone.exe') (Join-Path $p.install 'rclone.exe') -Force; $license=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'third_party\rclone-COPYING'; if (Test-Path $license) { Copy-Item $license (Join-Path $p.install 'rclone-COPYING') -Force } }
+        InstallAssets = { param($release,$rclone,$p) Copy-Item (Join-Path $release 'bookmarksync-windows-amd64.exe') (Join-Path $p.install 'bookmarksync.exe') -Force; Copy-Item (Join-Path $release 'bookmarksync-updater-windows-amd64.exe') (Join-Path $p.install 'bookmarksync-updater.exe') -Force; Copy-Item (Join-Path $release 'geoipupdate-windows-amd64.exe') (Join-Path $p.install 'geoipupdate.exe') -Force; Copy-Item (Join-Path $release 'GEOIPUPDATE-LICENSES.txt') (Join-Path $p.install 'GEOIPUPDATE-LICENSES.txt') -Force; Copy-Item (Join-Path $release 'SHA256SUMS') (Join-Path $p.install 'SHA256SUMS') -Force; Copy-Item (Join-Path $rclone 'rclone.exe') (Join-Path $p.install 'rclone.exe') -Force; $license=Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'third_party\rclone-COPYING'; if (Test-Path $license) { Copy-Item $license (Join-Path $p.install 'rclone-COPYING') -Force } }
         StartServices = { foreach ($name in @('BookmarksSyncUpdater','BookmarksSync')) { $s=Get-Service $name -ErrorAction SilentlyContinue; if ($s -and $s.Status -ne 'Running') { Start-Service $name } } }
         WaitReady = { param($url) $until=(Get-Date).AddSeconds(45); do { try { $r=Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 2; if ($r.StatusCode -eq 200) { return } } catch {}; Start-Sleep -Milliseconds 500 } while ((Get-Date) -lt $until); throw 'BookmarksSync did not become ready.' }
-        RestoreSnapshot = { param($archive,$p) if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne (Get-Content -Raw ($archive+'.sha256'))) { throw 'Rollback snapshot checksum is invalid.' }; $stage=Join-Path $p.staging ('restore-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Force $stage | Out-Null; Expand-Archive -LiteralPath $archive -DestinationPath $stage -Force; $manifest=Get-Content -Raw (Join-Path $stage 'manifest.json') | ConvertFrom-Json; foreach ($entry in $manifest.files) { if ($entry.path -match '(^/|(^|/)\.\.(\/|$)|\\)' -or $entry.path -eq 'manifest.json') { throw 'Rollback snapshot manifest is invalid.' }; $file=Join-Path $stage ($entry.path.Replace('/', '\')); if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.sha256) { throw 'Rollback snapshot file verification failed.' } }; if ($manifest.tag -notmatch '^build-[0-9a-f]{40}$') { throw 'Rollback snapshot release tag is invalid.' }; Remove-Item -LiteralPath $p.data -Recurse -Force; Move-Item (Join-Path $stage 'data') $p.data; Copy-Item (Join-Path $stage 'bookmarksync.env') $p.env -Force; if (Test-Path (Join-Path $stage 'rclone')) { Remove-Item -LiteralPath $p.rclone -Recurse -Force -ErrorAction SilentlyContinue; Move-Item (Join-Path $stage 'rclone') $p.rclone }; Remove-Item -LiteralPath $p.install -Recurse -Force; Move-Item (Join-Path $stage 'install') $p.install; Set-PrivateAcl $p.root @('NT SERVICE\BookmarksSync:(OI)(CI)F'); Set-PrivateAcl $p.snapshots @(); Set-InstallAcl $p.install; Remove-Item $stage -Recurse -Force }
+        RestoreSnapshot = { param($archive,$p) if ((Get-FileHash $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne (Get-Content -Raw ($archive+'.sha256'))) { throw 'Rollback snapshot checksum is invalid.' }; $stage=Join-Path $p.staging ('restore-' + [guid]::NewGuid().ToString('N')); New-Item -ItemType Directory -Force $stage | Out-Null; Expand-Archive -LiteralPath $archive -DestinationPath $stage -Force; $manifest=Get-Content -Raw (Join-Path $stage 'manifest.json') | ConvertFrom-Json; foreach ($entry in $manifest.files) { if ($entry.path -match '(^/|(^|/)\.\.(\/|$)|\\)' -or $entry.path -eq 'manifest.json') { throw 'Rollback snapshot manifest is invalid.' }; $file=Join-Path $stage ($entry.path.Replace('/', '\')); if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant() -cne $entry.sha256) { throw 'Rollback snapshot file verification failed.' } }; if ($manifest.tag -notmatch '^build-[0-9a-f]{40}$') { throw 'Rollback snapshot release tag is invalid.' }; Remove-Item -LiteralPath $p.data -Recurse -Force; Move-Item (Join-Path $stage 'data') $p.data; Copy-Item (Join-Path $stage 'bookmarksync.env') $p.env -Force; if (Test-Path (Join-Path $stage 'rclone')) { Remove-Item -LiteralPath $p.rclone -Recurse -Force -ErrorAction SilentlyContinue; Move-Item (Join-Path $stage 'rclone') $p.rclone }; Remove-Item -LiteralPath $p.install -Recurse -Force; Move-Item (Join-Path $stage 'install') $p.install; Set-BookmarksSyncPathAcls $p; Set-InstallAcl $p.install; Remove-Item $stage -Recurse -Force }
         ConfigureServices = { param($install,$data,$envFile,$repair) Install-Services $install $data $envFile $repair }
         PruneSnapshots = { param($p) $snapshots=@(Get-ChildItem -LiteralPath $p.snapshots -Filter 'snapshot-*.zip' -File | Sort-Object LastWriteTimeUtc -Descending); foreach ($old in $snapshots | Select-Object -Skip 3) { Remove-Item -LiteralPath $old.FullName -Force; Remove-Item -LiteralPath ($old.FullName+'.sha256') -Force -ErrorAction SilentlyContinue } }
         CreateAdmin = { param($p,$user,$password) if ($user -notmatch '^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$' -or $password.Length -lt 12) { throw 'Choose a valid administrator name and a password of at least 12 characters.' }; $exe=Join-Path $p.install 'bookmarksync.exe'; $psi=[Diagnostics.ProcessStartInfo]::new($exe); $psi.Arguments='user create --username ' + $user + ' --password-stdin --admin --data-dir "' + $p.data + '"'; $psi.UseShellExecute=$false; $psi.RedirectStandardInput=$true; $psi.RedirectStandardOutput=$true; $psi.RedirectStandardError=$true; $proc=[Diagnostics.Process]::Start($psi); $proc.StandardInput.WriteLine($password); $proc.StandardInput.Close(); $out=$proc.StandardOutput.ReadToEnd(); $err=$proc.StandardError.ReadToEnd(); $proc.WaitForExit(); if ($proc.ExitCode -ne 0) { throw 'Initial administrator could not be created. Review local setup and retry.' } }
@@ -258,5 +306,5 @@ function New-DefaultOperations {
     }
 }
 
-Export-ModuleMember -Function Assert-ApprovedTag,Get-RequiredAssets,Get-VerifiedRelease,Invoke-BookmarksSyncInstall,New-DefaultOperations
+Export-ModuleMember -Function Assert-ApprovedTag,Get-RequiredAssets,Get-VerifiedRelease,Get-AppPathAccessPolicies,Invoke-BookmarksSyncInstall,New-DefaultOperations
 
