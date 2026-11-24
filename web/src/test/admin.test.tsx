@@ -77,6 +77,47 @@ describe('admin workspace', () => {
     expect(await screen.findByText(/GeoLite update queued/)).toBeInTheDocument()
   })
 
+  it('updates the schedule with blank credentials to preserve the saved MaxMind pair', async () => {
+    const routes = adminRoutes()
+    routes['GET /api/v1/admin/geolite'] = { status: 200, body: { status: { configured: true, enabled: false, days: ['MON', 'THU'], startTime: '04:00', databaseAvailable: true, databaseBuildTime: null, lastAttempt: null, lastResult: '', running: false, recoveryRequired: false } } }
+    const api = mockServer(routes)
+    render(<App />)
+    const user = userEvent.setup()
+    await screen.findByRole('heading', { name: 'GeoLite country database' })
+    await screen.findByRole('button', { name: 'Save GeoLite settings' })
+    await user.click(screen.getByRole('checkbox', { name: 'MON' }))
+    await user.click(screen.getByRole('checkbox', { name: 'TUE' }))
+    await user.click(screen.getByRole('checkbox', { name: 'SAT' }))
+    fireEvent.change(screen.getByLabelText('Local update time'), { target: { value: '23:15' } })
+    await user.click(screen.getByRole('checkbox', { name: 'Enable scheduled GeoLite updates' }))
+    await user.click(screen.getByRole('button', { name: 'Save GeoLite settings' }))
+    await waitFor(() => expect(api.find('PUT', '/api/v1/admin/geolite')).toHaveLength(1))
+    expect(api.find('PUT', '/api/v1/admin/geolite')[0].body).toEqual({ accountId: '', licenseKey: '', enabled: true, days: ['TUE', 'THU', 'SAT'], startTime: '23:15' })
+  })
+
+  it('clears credentials and schedule while retaining the active database', async () => {
+    const routes = adminRoutes()
+    routes['GET /api/v1/admin/geolite'] = { status: 200, body: { status: { configured: true, enabled: true, days: ['MON', 'THU'], startTime: '04:00', databaseAvailable: true, databaseBuildTime: '2026-11-20T00:00:00Z', lastAttempt: '2026-11-23T04:00:00Z', lastResult: 'updated', running: false, recoveryRequired: false } } }
+    const api = mockServer(routes)
+    render(<App />)
+    const user = userEvent.setup()
+    await screen.findByRole('heading', { name: 'GeoLite country database' })
+    await user.click(await screen.findByRole('button', { name: 'Remove credentials' }))
+    await waitFor(() => expect(api.find('DELETE', '/api/v1/admin/geolite')).toHaveLength(1))
+    expect(await screen.findByText(/The active database is retained/)).toBeInTheDocument()
+    expect(screen.getByText('Database ready')).toBeInTheDocument()
+  })
+
+  it('shows unavailable updater status and prevents configuration attempts', async () => {
+    const routes = adminRoutes()
+    routes['GET /api/v1/admin/geolite'] = err(503, 'geolite_unavailable', 'GeoLite unavailable')
+    mockServer(routes)
+    render(<App />)
+    await screen.findByRole('heading', { name: 'GeoLite country database' })
+    expect(await screen.findByText('GeoLite updates are unavailable on this installation.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save GeoLite settings' })).toBeDisabled()
+  })
+
   it('shows the installed build and available release without auto-installing', async () => {
     mockServer(adminRoutes())
     render(<App />)
