@@ -66,6 +66,20 @@ describe('admin workspace', () => {
     expect(screen.getByRole('link', { name: 'View release' })).toHaveAttribute('href', 'https://github.com/atikansari-ghr/BookmarksSync/releases/tag/build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')
   })
 
+  it('keeps the admin workspace usable when the server reports no eligible releases', async () => {
+    // Legacy empty-catalog responses used null. Keep the workspace usable even
+    // if such a response reaches the client; the server now guarantees an array.
+    const routes = adminRoutes()
+    routes['GET /api/v1/admin/updates'] = { status: 200, body: { releases: null, updateAvailable: false, applyAvailable: false } }
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined)
+    mockServer(routes)
+    render(<App />)
+    expect(await screen.findByText('No eligible published Linux builds were found.')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Server health' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Sign out' })).toBeInTheDocument()
+    expect(errors).not.toHaveBeenCalled()
+  })
+
   it('requires explicit confirmation before queueing an update', async () => {
     const routes = adminRoutes()
     routes['GET /api/v1/admin/updates'] = { status: 200, body: { installedCommit: 'dddddddddddddddddddddddddddddddddddddddd', updateAvailable: true, applyAvailable: true, releases: [{ tag: 'build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', publishedAt: '2026-11-23T12:00:00Z', url: 'https://github.com/atikansari-ghr/BookmarksSync/releases/tag/build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }], latest: { tag: 'build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', commit: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', publishedAt: '2026-11-23T12:00:00Z', url: 'https://github.com/atikansari-ghr/BookmarksSync/releases/tag/build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' } } }

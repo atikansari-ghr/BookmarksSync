@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test test/cleanup.test.mjs test/server-sync.test.mjs test/fix-round1.test.mjs test/fix-round2.test.mjs test/ci-ui-smoke.test.mjs test/offline-evidence.test.mjs",
+    "test": "node --test test/cleanup.test.mjs test/server-sync.test.mjs test/fix-round1.test.mjs test/fix-round2.test.mjs test/ci-ui-smoke.test.mjs test/offline-evidence.test.mjs test/ui-smoke-navigation.test.mjs",
     "smoke": "node smoke.mjs",
     "smoke:chromium": "node smoke.mjs --browser=chromium",
     "smoke:brave": "node smoke.mjs --browser=brave",

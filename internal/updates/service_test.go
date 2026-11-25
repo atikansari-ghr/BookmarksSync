@@ -2,11 +2,43 @@ package updates
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 )
+
+func TestCatalogServiceEmptyReleasesEncodeAsArrayOnFreshAndCachedReads(t *testing.T) {
+	var requests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	defer upstream.Close()
+	service := NewCatalogService(CatalogClient{BaseURL: upstream.URL, HTTPClient: upstream.Client()})
+	service.goos, service.goarch = "linux", "amd64"
+	for i := 0; i < 2; i++ {
+		catalog, err := service.List(context.Background(), "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, err := json.Marshal(catalog)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(body, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if string(fields["releases"]) != "[]" {
+			t.Fatalf("read %d: release list must remain a JSON array, got %s", i, fields["releases"])
+		}
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("upstream requests = %d, want cached read", requests.Load())
+	}
+}
 
 func TestCatalogServiceCachesUpstreamAndRecomputesInstalledState(t *testing.T) {
 	var requests atomic.Int32

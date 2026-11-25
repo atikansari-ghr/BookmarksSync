@@ -10,8 +10,10 @@
 // After every step it asserts that localStorage and sessionStorage stay empty and no
 // auth cookie is visible to scripts. Exit codes: 0 PASS, 1 FAIL, 2 NOT_RUN, 3 BLOCKED.
 import crypto from 'node:crypto'
+import fs from 'node:fs'
 import http from 'node:http'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { loadPlaywright, REPO_ROOT, writeResult, withTimeout } from './lib/harness.mjs'
 import { makeRunRoot, removeRunRoot, findGo, pickLoopbackPort, startProcessServer, runCommand, sanitize } from './lib/server-sync.mjs'
 
@@ -20,6 +22,72 @@ const results = []
 const record = (name, status, detail = '') => { results.push({ name, status, detail }); console.log(`${status.padEnd(7)} ${name}${detail ? ' - ' + detail : ''}`) }
 class Fail extends Error {}
 const must = (cond, name, detail = '') => { if (!cond) { record(name, 'FAIL', detail); throw new Fail(name) } record(name, 'PASS', detail) }
+
+/**
+ * The full, sanitized text of an unexpected error, including Playwright's multi-line call
+ * log (which names the locator and why each click attempt was refused), bounded so a
+ * runaway log cannot flood CI output. Secrets, session cookies and bearer tokens are redacted.
+ */
+export function formatFailure(err, secrets = [], { maxLines = 60, maxChars = 6000 } = {}) {
+  let text = String(err?.message || err)
+  if (err?.stack && !text.includes('\n    at ')) {
+    const frames = String(err.stack).split('\n').filter((l) => /^\s+at /.test(l)).slice(0, 8)
+    if (frames.length) text += '\nstack:\n' + frames.join('\n')
+  }
+  text = sanitize(text, secrets)
+    .replace(/\x1b\[[0-9;]*m/g, '')
+    .replace(/(bookmarksync[^=\s;]*=)[^;\s]+/gi, '$1[REDACTED]')
+    .replace(/(Bearer\s+)\S+/gi, '$1[REDACTED]')
+    .replace(/bmt1_[A-Za-z0-9_-]+/g, '[REDACTED]')
+    .replace(/([?&](?:code|state|token|flowId)=)[^&\s"']+/gi, '$1[REDACTED]')
+  let lines = text.split('\n')
+  if (lines.length > maxLines) lines = [...lines.slice(0, maxLines), `... (${lines.length - maxLines} more lines omitted)`]
+  text = lines.join('\n')
+  return text.length > maxChars ? text.slice(0, maxChars) + `... (${text.length - maxChars} more chars omitted)` : text
+}
+
+/**
+ * Page state at the moment of an unexpected failure: path (no query or fragment), viewport,
+ * scroll position, document size, and the Sign out button's geometry, visibility, and the
+ * element that would actually receive a click at its centre. Never reads storage or cookies.
+ */
+export async function capturePageState(page, { timeoutMs = 5000 } = {}) {
+  const read = page.evaluate(() => {
+    const rect = (el) => { if (!el) return null; const r = el.getBoundingClientRect(); return { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) } }
+    const describe = (el) => el ? `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}${el.classList.length ? '.' + [...el.classList].join('.') : ''}` : null
+    const buttons = [...document.querySelectorAll('button')].filter((b) => b.textContent.trim() === 'Sign out')
+    const side = document.querySelector('.ws-side')
+    const sideStyle = side ? getComputedStyle(side) : null
+    return {
+      path: location.pathname,
+      viewport: { w: window.innerWidth, h: window.innerHeight },
+      scroll: { x: Math.round(window.scrollX), y: Math.round(window.scrollY) },
+      document: { w: document.documentElement.scrollWidth, h: document.documentElement.scrollHeight },
+      activeElement: describe(document.activeElement),
+      sidebar: side ? { rect: rect(side), position: sideStyle.position, top: sideStyle.top, minHeight: sideStyle.minHeight } : null,
+      signOut: buttons.map((b) => {
+        const r = b.getBoundingClientRect()
+        const cx = r.x + r.width / 2, cy = r.y + r.height / 2
+        const inViewport = cx >= 0 && cy >= 0 && cx < window.innerWidth && cy < window.innerHeight
+        const hit = inViewport ? document.elementFromPoint(cx, cy) : null
+        const style = getComputedStyle(b)
+        return { rect: rect(b), disabled: b.disabled, display: style.display, visibility: style.visibility, opacity: style.opacity,
+          inViewport, hitTarget: describe(hit), hitIsButton: hit === b || b.contains(hit) }
+      }),
+      dialogs: [...document.querySelectorAll('[role="dialog"], dialog[open]')].map(describe),
+      headings: [...document.querySelectorAll('h1, h2')].slice(0, 8).map((h) => h.textContent.trim().slice(0, 60)),
+    }
+  })
+  return withTimeout(read, timeoutMs, 'capture page state')
+}
+
+/** One viewport screenshot (not full page) into the ignored results folder; returns its path. */
+export async function captureFailureScreenshot(page, name, { dir = path.join(REPO_ROOT, '.tools', 'browser-results', 'ui-failure'), timeoutMs = 10000 } = {}) {
+  fs.mkdirSync(dir, { recursive: true })
+  const file = path.join(dir, `${name.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 60)}.png`)
+  await withTimeout(page.screenshot({ path: file, fullPage: false, timeout: timeoutMs }), timeoutMs + 1000, 'failure screenshot')
+  return file
+}
 
 function totp(secretB32, stepOffset = 0) {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'
@@ -94,7 +162,9 @@ async function main() {
   try { pw = loadPlaywright() } catch (e) { record('prerequisites', 'NOT_RUN', e.message); return 2 }
   const secrets = []
   const runRoot = makeRunRoot()
-  let server, browser, issuer
+  let server, browser, issuer, page
+  let step = 'setup'
+  const consoleErrors = []
   try {
     const exe = path.join(runRoot, process.platform === 'win32' ? 'bookmarksync.exe' : 'bookmarksync')
     const build = await runCommand({ command: go.exe, args: ['build', '-ldflags', `-X github.com/atikansari-ghr/BookmarksSync/internal/version.Version=${SMOKE_VERSION}`, '-o', exe, './cmd/bookmarksync'], cwd: REPO_ROOT,
@@ -116,16 +186,15 @@ async function main() {
     const { chromium } = pw.playwright
     try { browser = await chromium.launch({ headless: true }) } catch (e) { record('launch chromium', 'NOT_RUN', String(e.message).split('\n')[0]); return 2 }
     const context = await browser.newContext()
-    const page = await context.newPage()
+    page = await context.newPage()
     const cdp = await context.newCDPSession(page)
     await cdp.send('WebAuthn.enable', { enableUI: false })
     const { authenticatorId } = await cdp.send('WebAuthn.addVirtualAuthenticator', { options: { protocol: 'ctap2', ctap2Version: 'ctap2_1', transport: 'internal',
       hasResidentKey: true, hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true } })
-    const consoleErrors = []
     // Expected 401/404 probes are logged by the browser as "Failed to load resource";
     // anything else (script errors, CSP refusals) fails the run.
     page.on('console', (m) => { if (m.type() === 'error' && !/^Failed to load resource: the server responded with a status of (401|404)/.test(m.text())) consoleErrors.push(m.text()) })
-    page.on('pageerror', (e) => consoleErrors.push(String(e)))
+    page.on('pageerror', (e) => consoleErrors.push(String(e?.stack || e)))
 
     // Optional screenshots (UI_SMOKE_SCREENSHOTS=1) go to the ignored results folder.
     const shoot = async (name, full = false) => {
@@ -154,6 +223,7 @@ async function main() {
       await page.getByRole('heading', { name: 'Personal Bookmarks Server' }).waitFor()
     }
 
+    step = 'login page'
     // 1. Login page identity and password sign-in.
     await page.goto(`${origin}/`)
     await page.getByRole('heading', { name: 'Personal Bookmarks Server' }).waitFor()
@@ -169,6 +239,7 @@ async function main() {
     await shoot('security-desktop', true)
     await noStorage('after password sign-in')
 
+    step = 'api token'
     // 2. Personal API token: create (secret once) and revoke.
     const tokens = page.getByRole('region', { name: 'Personal API tokens' })
     await tokens.getByLabel('Token name').fill('ui smoke token')
@@ -188,6 +259,7 @@ async function main() {
     must(tokenAfter === 401, 'revoked token no longer authenticates', `status ${tokenAfter}`)
     await noStorage('after token create/revoke')
 
+    step = 'revoke session'
     // 3. Revoke another session from the session list.
     const other = await browser.newContext({ userAgent: 'UI-Smoke Other Device' })
     const otherPage = await other.newPage()
@@ -205,6 +277,7 @@ async function main() {
     must(otherStatus === 401, 'revoked session is signed out on the other device', `status ${otherStatus}`)
     await other.close()
 
+    step = 'passkey'
     // 4. Add a passkey, sign out, sign in with it.
     const passkeys = page.getByRole('region', { name: 'Passkeys' })
     await passkeys.getByLabel('Passkey name').fill('Virtual key')
@@ -218,6 +291,7 @@ async function main() {
     record('passkey sign-in through the UI', 'PASS')
     await noStorage('after passkey sign-in')
 
+    step = 'totp setup'
     // 5. TOTP setup with one-time recovery codes.
     const totpSec = page.getByRole('region', { name: 'Authenticator app' })
     await totpSec.getByRole('button', { name: 'Set up authenticator app' }).click()
@@ -235,6 +309,7 @@ async function main() {
     must(!(await page.content()).includes(recovery[0]), 'recovery codes gone from the page after saving')
     await noStorage('after TOTP setup')
 
+    step = 'password totp sign-in'
     // 6. Password + TOTP sign-in.
     await signOut()
     await passwordLogin()
@@ -244,6 +319,7 @@ async function main() {
     await security()
     record('password + TOTP sign-in through the UI', 'PASS')
 
+    step = 'oidc link'
     // 7. Link the provider account (OIDC) from the security page.
     const linked = page.getByRole('region', { name: 'Linked accounts' })
     await linked.getByRole('button', { name: 'Link Authentik' }).click()
@@ -254,6 +330,7 @@ async function main() {
     record('OIDC account linking through the UI', 'PASS')
     await noStorage('after OIDC linking')
 
+    step = 'oidc sign-in'
     // 8. Provider sign-in; the account has TOTP, so the second factor is required (recovery code).
     await signOut()
     await page.getByRole('button', { name: 'Sign in with Authentik' }).click()
@@ -266,6 +343,7 @@ async function main() {
     record('OIDC sign-in completed with a recovery code', 'PASS')
     await noStorage('after OIDC sign-in')
 
+    step = 'admin branding'
     // 9. Administrator health and branding upload. Build a real 1x1 PNG in the browser
     // canvas, so the smoke exercises the actual multipart upload and public image route.
     await page.goto(`${origin}/admin`)
@@ -292,7 +370,9 @@ async function main() {
     })), [presentation.logoUrl, presentation.backgroundUrl])
     must(images.every((image) => image.status === 200 && image.type === 'image/png' && image.nosniff === 'nosniff'), 'public branding images are served with a safe image type')
     await shoot('admin-desktop', true)
+    step = 'sign out after admin branding'
     await signOut()
+    step = 'branded login page'
     const logo = page.locator('.login-logo')
     const logoReady = await logo.waitFor({ timeout: 5000 }).then(() => true, () => false)
     const loginState = await page.evaluate(async () => ({
@@ -310,7 +390,17 @@ async function main() {
     must(consoleErrors.length === 0, 'no script errors or CSP violations', consoleErrors.slice(0, 3).join(' | '))
     return 0
   } catch (e) {
-    if (!(e instanceof Fail)) record('unexpected error', 'FAIL', String(e.message || e).split('\n')[0])
+    if (!(e instanceof Fail)) {
+      const full = formatFailure(e, secrets)
+      record('unexpected error', 'FAIL', `[step: ${step}] ${full.split('\n')[0]}`)
+      const rest = full.split('\n').slice(1)
+      if (rest.length) console.log('        call log:\n' + rest.map((l) => '        ' + l).join('\n'))
+      if (consoleErrors.length) console.log('        page errors (' + consoleErrors.length + '):\n' + consoleErrors.slice(0, 5).map((m) => '        ' + formatFailure(m, secrets, { maxLines: 12, maxChars: 1500 }).split('\n').join('\n        ')).join('\n'))
+      if (page && !page.isClosed()) {
+        try { console.log('        page state: ' + sanitize(JSON.stringify(await capturePageState(page)), secrets)) } catch (s) { console.log('        page state unavailable: ' + formatFailure(s, secrets, { maxLines: 2 })) }
+        try { console.log('        screenshot: ' + path.relative(REPO_ROOT, await captureFailureScreenshot(page, step))) } catch (s) { console.log('        screenshot unavailable: ' + formatFailure(s, secrets, { maxLines: 2 })) }
+      }
+    }
     return 1
   } finally {
     try { if (browser) await withTimeout(browser.close(), 20000, 'browser close') } catch (e) { record('cleanup browser', 'FAIL', e.message) }
@@ -321,7 +411,7 @@ async function main() {
   }
 }
 
-main().then((code) => {
+if (process.argv[1] && fs.realpathSync(process.argv[1]) === fs.realpathSync(fileURLToPath(import.meta.url))) main().then((code) => {
   const final = results.some((x) => x.status === 'FAIL') ? 1 : code
   console.log(final === 0 ? 'PASS' : final === 2 ? 'NOT_RUN' : final === 3 ? 'BLOCKED' : 'FAIL')
   process.exit(final)

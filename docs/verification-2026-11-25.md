@@ -9,7 +9,7 @@ No release, registry publication or production deployment was performed.
 
 | Check | Result | Evidence and limits |
 | --- | --- | --- |
-| Browser harness unit suite | PASS | Final `npm test` in `tests/browser`: 95 tests, zero failures, including offline evidence/cleanup/settings and CI regression checks. |
+| Browser harness unit suite | PASS | Final `npm test` in `tests/browser`: 100 tests, zero failures, including offline evidence/cleanup/settings, CI regression and diagnostic redaction checks. |
 | Four-browser offline conflicts and failsafe | PASS | Chrome, Edge, Brave and Firefox, two disposable profiles per run, eight initial bookmarks, actual server requests and native trees. Last accepted edit won; delete won both tested reconnect orders; mass deletion raised E029 without accepted DELETEs. |
 | Full restore with retained browser caches | PASS | CLI archive create/verify and restore into an absent directory. Both real extension alarms completed sync 148 s and 156 s after restart, with zero harness sync RPCs after restart. Older restored state propagated to clients; untouched bookmarks survived and no duplicates appeared. |
 | Isolated real systemd host watcher | PASS | Actual `.path` → worker → fixed fixture maintainer on authorized LXC. Success, failed-maintenance retention, nonempty/invalid-name/symlink/hardlink rejection. UID 65532 markers and root maintainer verified. Fixture units and directories removed. |
@@ -114,3 +114,19 @@ isolated source copy. With the fix, 50 regression repetitions, 10 repetitions of
 the original failing test, the full CLI race suite and CLI vet passed on Linux.
 The real GeoLite fixture and all 95 harness tests passed. Hosted verification of
 the follow-up is tracked in [PR #1 checks](https://github.com/atikansari-ghr/BookmarksSync/pull/1/checks).
+
+The follow-up `38fa21e` passed hosted Go, race, vulnerability, harness, audit,
+web and Docker checks, but the real UI smoke uncovered a separate Administration
+crash. The catalog cache copied an empty release list into a nil slice, emitting
+`releases: null`; the UI's deferred selection update then called `.some` on null.
+The background response could arrive during uploads or before sign-out, which
+made the visible failure look like an unrelated click timeout.
+
+The server now preserves `releases: []` on fresh and cached reads, and the UI
+normalizes legacy null lists before storing or selecting from them. New Go JSON
+and UI regressions failed before their respective fixes and passed afterward.
+The rebuilt web suite passed 81 tests and typecheck; the Linux update-package
+tests, vet and race checks passed. The complete default real-browser UI smoke
+passed through branding, sign-out and the branded login page without script or
+CSP errors. The harness now retains bounded, sanitized call logs and page-state
+diagnostics for unexpected failures; five redaction/formatting tests cover them.

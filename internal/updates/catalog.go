@@ -195,7 +195,7 @@ func (s *CatalogService) List(ctx context.Context, installedCommit string) (Cata
 }
 
 func catalogFor(releases []Release, installedCommit string) Catalog {
-	catalog := Catalog{InstalledCommit: installedCommit, Releases: append([]Release(nil), releases...)}
+	catalog := Catalog{InstalledCommit: installedCommit, Releases: append([]Release{}, releases...)}
 	if len(catalog.Releases) > 0 {
 		latest := catalog.Releases[0]
 		catalog.Latest = &latest

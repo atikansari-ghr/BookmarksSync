@@ -19,8 +19,9 @@ export function AdminUpdates() {
     setError('')
     try {
       const result = await client.request<Catalog>('GET', '/api/v1/admin/updates')
-      setCatalog(result)
-      setSelectedTag((current) => result.releases.some((release) => release.tag === current) ? current : result.latest?.tag ?? '')
+      const releases = result.releases ?? []
+      setCatalog({ ...result, releases })
+      setSelectedTag((current) => releases.some((release) => release.tag === current) ? current : result.latest?.tag ?? '')
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'Release information could not be loaded.')
     } finally {
