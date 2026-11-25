@@ -74,9 +74,9 @@ func TestServeStartsAnsweringAndStopsOnCancel(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
-	var errb bytes.Buffer
+	errb := newServeLog()
 	go func() {
-		done <- run(ctx, []string{"serve", "--env-file", envFile, "--listen", addr, "--data-dir", dir}, strings.NewReader(""), io.Discard, &errb, func(string) string { return "" })
+		done <- run(ctx, []string{"serve", "--env-file", envFile, "--listen", addr, "--data-dir", dir}, strings.NewReader(""), io.Discard, errb, func(string) string { return "" })
 	}()
 
 	url := fmt.Sprintf("http://%s/readyz", addr)
@@ -123,9 +123,9 @@ func startServeIn(t *testing.T, dir string, env map[string]string) (string, func
 	addr := freePort(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan int, 1)
-	var errb bytes.Buffer
+	errb := newServeLog()
 	go func() {
-		done <- run(ctx, []string{"serve", "--listen", addr, "--data-dir", dir}, strings.NewReader(""), io.Discard, &errb,
+		done <- run(ctx, []string{"serve", "--listen", addr, "--data-dir", dir}, strings.NewReader(""), io.Discard, errb,
 			func(k string) string { return env[k] })
 	}()
 	base := "http://" + addr

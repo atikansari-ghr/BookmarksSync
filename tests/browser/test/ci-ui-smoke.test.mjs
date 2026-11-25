@@ -140,6 +140,37 @@ test('a newer push never cancels a running main publication; pull requests still
   }
 })
 
+test('the UI smoke job installs and launches Chromium from the harness browser cache', () => {
+  // lib/harness.mjs defaults PLAYWRIGHT_BROWSERS_PATH to <repo>/.tools/pw-browsers, so a bare
+  // `npx playwright install` (default ~/.cache/ms-playwright) leaves the launch with no browser.
+  const harness = fs.readFileSync(path.join(REPO_ROOT, 'tests/browser/lib/harness.mjs'), 'utf8')
+  assert.match(harness, /process\.env\.PLAYWRIGHT_BROWSERS_PATH \|\|= path\.join\(TOOLS_DIR, 'pw-browsers'\)/)
+  const env = /^ {4}env:\n((?: {6}.*\n)+)/m.exec(uiJob + '\n')
+  assert.ok(env, 'UI smoke job needs a job-level env block shared by install and smoke steps')
+  assert.match(env[1], /^ {6}PLAYWRIGHT_BROWSERS_PATH: \$\{\{ github\.workspace \}\}\/\.tools\/pw-browsers\s*$/m)
+  assert.equal(topLevelBlock(WORKFLOW, 'env'), null, 'browser cache path must not leak into other jobs via workflow env')
+  for (const [name, block] of Object.entries(JOBS)) {
+    if (name !== uiJobName) assert.doesNotMatch(block, /PLAYWRIGHT_BROWSERS_PATH/, `${name} must not set PLAYWRIGHT_BROWSERS_PATH`)
+  }
+})
+
+test('the Debian GeoLite fixture uses the existing nobody account instead of a host bookmarksync user', () => {
+  const fixture = fs.readFileSync(path.join(REPO_ROOT, 'scripts/debian/test-update-geoip.sh'), 'utf8').replace(/\r\n/g, '\n')
+  // Ubuntu CI runners have no bookmarksync account; the fixture must not depend on one or create one.
+  assert.doesNotMatch(fixture, /BOOKMARKSYNC_SERVICE_USER=bookmarksync\b/)
+  assert.doesNotMatch(fixture, /BOOKMARKSYNC_SERVICE_GROUP=bookmarksync\b/)
+  assert.doesNotMatch(fixture, /\b(?:useradd|adduser|groupadd|addgroup|usermod)\b/)
+  assert.match(fixture, /^export BOOKMARKSYNC_SERVICE_USER=nobody$/m)
+  assert.match(fixture, /^export BOOKMARKSYNC_SERVICE_GROUP="\$\(id -gn nobody\)"$/m)
+  // The installed database must carry the configured fixture ownership.
+  assert.match(fixture, /stat -c '%U:%G' "\$BOOKMARKSYNC_GEOIP_FILE"\)" == "nobody:\$BOOKMARKSYNC_SERVICE_GROUP"/)
+  // Production checks stay intact.
+  const helper = fs.readFileSync(path.join(REPO_ROOT, 'scripts/debian/bookmarksync-update-geoip'), 'utf8')
+  assert.match(helper, /id "\$service_user" >\/dev\/null 2>&1 \|\| fail "configured service user does not exist"/)
+  assert.match(helper, /getent group "\$service_group" >\/dev\/null 2>&1 \|\| fail "configured service group does not exist"/)
+  assert.match(helper, /service_user="\$\{BOOKMARKSYNC_SERVICE_USER:-bookmarksync\}"/)
+})
+
 test('Debian ownership and approval-queue fixtures run as root in Linux CI', () => {
   for (const script of ['test-bookmarksync.sh', 'test-update-queue.sh']) {
     assert.match(JOBS.docker, new RegExp('run: sudo --preserve-env=PATH bash scripts/debian/' + script.replaceAll('.', '\\.') + '(?:\\r?\\n|$)'))

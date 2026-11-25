@@ -45,8 +45,10 @@ export BOOKMARKSYNC_GEOIP_LOADED_HASH="$tmp/db/.loaded-sha256"
 export BOOKMARKSYNC_GEOIP_UPDATER="$tmp/bin/geoipupdate"
 export BOOKMARKSYNC_BINARY="$BOOKMARKSYNC_TEST_BINARY"
 export BOOKMARKSYNC_SERVICE=bookmarksync-test.service
-export BOOKMARKSYNC_SERVICE_USER=bookmarksync
-export BOOKMARKSYNC_SERVICE_GROUP=bookmarksync
+# Isolated fixture account: the existing unprivileged nobody user and its primary group
+# (nogroup on Debian/Ubuntu); no host service account is required or created.
+export BOOKMARKSYNC_SERVICE_USER=nobody
+export BOOKMARKSYNC_SERVICE_GROUP="$(id -gn nobody)"
 export PATH="$tmp/bin:$PATH"
 export SYSTEMCTL_LOG="$tmp/systemctl.log"
 export UPDATE_SOURCE="$fixtures/GeoLite2-Country-Test.mmdb"
@@ -54,6 +56,7 @@ export UPDATE_SOURCE="$fixtures/GeoLite2-Country-Test.mmdb"
 "$helper"
 [[ -s "$BOOKMARKSYNC_GEOIP_FILE" && -s "$BOOKMARKSYNC_GEOIP_LOADED_HASH" ]]
 [[ "$(stat -c '%a' "$BOOKMARKSYNC_GEOIP_FILE")" == 644 ]]
+[[ "$(stat -c '%U:%G' "$BOOKMARKSYNC_GEOIP_FILE")" == "nobody:$BOOKMARKSYNC_SERVICE_GROUP" ]]
 [[ "$(stat -c '%U:%G' "$BOOKMARKSYNC_GEOIP_DIR")" == root:root ]]
 [[ "$(cat "$SYSTEMCTL_LOG")" == 'try-restart bookmarksync-test.service' ]]
 

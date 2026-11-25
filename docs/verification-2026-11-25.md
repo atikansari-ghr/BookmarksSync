@@ -9,7 +9,7 @@ No release, registry publication or production deployment was performed.
 
 | Check | Result | Evidence and limits |
 | --- | --- | --- |
-| Browser harness unit suite | PASS | Final `npm test` in `tests/browser`: 93 tests, zero failures, including offline evidence/cleanup/settings and CI regression checks. |
+| Browser harness unit suite | PASS | Final `npm test` in `tests/browser`: 95 tests, zero failures, including offline evidence/cleanup/settings and CI regression checks. |
 | Four-browser offline conflicts and failsafe | PASS | Chrome, Edge, Brave and Firefox, two disposable profiles per run, eight initial bookmarks, actual server requests and native trees. Last accepted edit won; delete won both tested reconnect orders; mass deletion raised E029 without accepted DELETEs. |
 | Full restore with retained browser caches | PASS | CLI archive create/verify and restore into an absent directory. Both real extension alarms completed sync 148 s and 156 s after restart, with zero harness sync RPCs after restart. Older restored state propagated to clients; untouched bookmarks survived and no duplicates appeared. |
 | Isolated real systemd host watcher | PASS | Actual `.path` → worker → fixed fixture maintainer on authorized LXC. Success, failed-maintenance retention, nonempty/invalid-name/symlink/hardlink rejection. UID 65532 markers and root maintainer verified. Fixture units and directories removed. |
@@ -95,3 +95,22 @@ used containerized curl in the host network namespace, and the guide includes
 the host dependency. Port 18080 was occupied and left untouched. Workstation
 browser/tunnel and manual Floccus checks remain instructions for the operator.
 Local log: `.tools/scratch/lxc-ip-guide-check.log`.
+
+## Hosted CI follow-up
+
+The first pushed revision, `f402926`, exposed three Linux CI issues in
+[run 45603988386](https://github.com/atikansari-ghr/BookmarksSync/actions/runs/45603988386):
+the UI job installed Chromium outside the harness cache, the GeoLite fixture
+assumed a host `bookmarksync` account, and the CLI test fixture read an
+unsynchronized log buffer after an asynchronous purge logged during shutdown.
+
+The UI install and launch steps now share an explicit browser cache. The GeoLite
+fixture uses the existing `nobody` account and its actual primary group, without
+changing production checks or creating a host account. CLI serve tests now
+capture concurrent logs through a synchronized buffer.
+
+The new log regression reproduced the exact race against the old buffer in an
+isolated source copy. With the fix, 50 regression repetitions, 10 repetitions of
+the original failing test, the full CLI race suite and CLI vet passed on Linux.
+The real GeoLite fixture and all 95 harness tests passed. Hosted verification of
+the follow-up is tracked in [PR #1 checks](https://github.com/atikansari-ghr/BookmarksSync/pull/1/checks).

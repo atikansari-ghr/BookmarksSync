@@ -152,6 +152,9 @@ jobs:
     # Real-browser sign-in and account-security flow (tests/browser/ui-smoke.mjs) in
     # Playwright Chromium against a disposable server built from this commit.
     runs-on: ubuntu-latest
+    env:
+      # lib/harness.mjs defaults to <repo>/.tools/pw-browsers; install and launch must agree.
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.tools/pw-browsers
     defaults:
       run:
         working-directory: tests/browser
