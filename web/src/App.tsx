@@ -9,6 +9,7 @@ import { LoginPage } from './pages/LoginPage'
 import { OidcComplete } from './pages/OidcComplete'
 import { OrganizerPage } from './pages/OrganizerPage'
 import { SecurityPage } from './pages/SecurityPage'
+import { ConnectPage } from './pages/ConnectPage'
 
 function currentPath() {
   return window.location.pathname.replace(/\/+$/, '') || '/'
@@ -52,7 +53,7 @@ export function App() {
     if (opts?.replace) window.history.replaceState(null, '', to)
     else window.history.pushState(null, '', to)
     setNotice(opts?.notice ?? '')
-    setPath(to)
+    setPath(currentPath())
   }, [])
 
   const updateSession = useCallback(
@@ -117,6 +118,9 @@ export function App() {
 
   let page
   switch (path) {
+    case '/auth/connect':
+      page = <ConnectPage />
+      break
     case '/dashboard':
       page = <DashboardPage />
       break

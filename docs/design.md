@@ -8,7 +8,7 @@ Milestone designs refine this specification without replacing it:
 
 ## Architecture and delivery
 - Standalone Go server embeds a React/TypeScript UI; local SQLite; approximately 20 users and 10,000 bookmarks/user.
-- Debian systemd, native Proxmox LXC, Docker and native Windows services. Test LXC: 192.168.10.226; credentials/domain not yet supplied.
+- Linux amd64 server deployments: Debian systemd in Proxmox LXC and Linux Docker. Native Windows server support is removed by the [2026-11-24 Linux-only decision](superpowers/specs/2026-11-24-linux-only-design.md). Windows browser clients remain supported. Test LXC: 192.168.10.226; public route and provider credentials remain operator inputs.
 - Public MIT repository https://github.com/atikansari-ghr/BookmarksSync. Sole attribution Atik Ansari; git author atikansari <atikansari@ansariz.biz>. Retain third-party notices. No assistant credits.
 - Use scoped implementation tasks with independent supervision: review actual diffs, run independent checks, fix and retest.
 

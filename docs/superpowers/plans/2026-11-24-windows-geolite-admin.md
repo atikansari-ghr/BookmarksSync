@@ -1,5 +1,7 @@
 ﻿# Windows GeoLite Admin Implementation Plan
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical statements below are preserved and do not create current Windows work.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Configure and run safe Windows GeoLite2 Country updates through Admin Settings without shell-based routine setup.

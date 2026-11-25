@@ -1,5 +1,7 @@
 # Workspace and Dashboard Implementation Plan
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical implementation/test statements below are preserved; they do not create current Windows work.
+
 > **For agentic workers:** Use Claude Code through Herd for scoped implementation; Codex coordinates, reviews each diff, and runs acceptance checks. Do not push, merge, or deploy during implementation.
 
 **Goal:** Deliver the bookmark organizer, configurable user dashboard, admin dashboard and health view described in the approved product design.

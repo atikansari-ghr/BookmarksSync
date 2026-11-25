@@ -1,5 +1,7 @@
 # Email and Telegram Notifications Implementation Plan
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical implementation/test statements below are preserved; they do not create current Windows work.
+
 > Follow the repository TDD and verification workflows. Keep SMTP and Telegram optional and never log secrets or message bodies.
 
 **Goal:** Implement the approved notification design in `docs/superpowers/specs/2026-11-23-notifications.md`.

@@ -19,7 +19,7 @@ Open **Administration → System backups** to set the timezone, weekly/monthly t
 Destinations are host-managed references; the web interface never stores provider credentials:
 
 - **Local folder:** an existing absolute directory writable by the service account.
-- **NFS mount:** an existing directory on an active NFS mount. The Linux server checks the mount type before writing, preventing writes into an unmounted host directory. Windows deployments should use a local or rclone destination.
+- **NFS mount:** an existing directory on an active NFS mount. The Linux server checks the mount type before writing, preventing writes into an unmounted host directory.
 - **rclone remote:** install rclone **v1.76.0** and configure a remote in a host-owned config file. Set `BOOKMARKSYNC_RCLONE_BINARY` to the executable path if it is not on `PATH`, and `BOOKMARKSYNC_RCLONE_CONFIG` to the config file path. Then enter a remote reference such as `nas:bookmarks` in the admin interface. The server rejects unsupported rclone versions and verifies transfers by downloading and comparing bytes before accepting the final archive.
 
 On Debian, configure the host-owned remote as the same OS account that runs BookmarksSync. For example:
@@ -37,7 +37,7 @@ BOOKMARKSYNC_RCLONE_BINARY=/usr/bin/rclone
 BOOKMARKSYNC_RCLONE_CONFIG=/etc/bookmarksync/rclone.conf
 ```
 
-For Windows, set the same variables in the service or process environment and restart the service. Create remotes with `rclone config`; provider-specific setup is documented for [Google Drive](https://rclone.org/drive/), [OneDrive](https://rclone.org/onedrive/), and [SMB](https://rclone.org/smb/). A mounted NAS can instead use a local folder or the NFS destination type.
+For Docker, configure the persistent rclone volume described in [distribution.md](distribution.md). Create remotes with `rclone config`; provider-specific setup is documented for [Google Drive](https://rclone.org/drive/), [OneDrive](https://rclone.org/onedrive/), and [SMB](https://rclone.org/smb/). A mounted NAS can instead use a local folder or the NFS destination type.
 
 Use **Test destination** before enabling a target. It creates a random temporary probe, verifies it, and removes it. Each successful archive has a generated name beginning `bookmarksync-`; retention deletes only archive names recorded by this server. Removing a destination stops future runs but leaves its existing files untouched. Backups contain authentication settings and must be protected as secrets.
 

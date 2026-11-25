@@ -1,5 +1,7 @@
 # Scheduled Backups Design
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical implementation/test statements below are preserved; they do not create current Windows work.
+
 ## Intent
 
 Add reliable, hands-off weekly and monthly full-system backups so an operator can recover the service after host or storage failure. This builds on the manual archive and restore commands in `docs/backup-restore.md`.

@@ -21,17 +21,17 @@ permissions:
 # Node 26 (LTS "Lithium") satisfies selenium-webdriver 4.46.0 and playwright
 # 1.65.1, which declare engines node >=20.
 
+# Pull-request runs for the same ref supersede each other. Main runs are never
+# cancelled once running: an interrupted publish-image/publish-build can leave an
+# unattested image or a draft release that a routine rerun cannot repair. A newer
+# queued main run may still replace an older run that has not started.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -40,7 +40,6 @@ jobs:
         with:
           go-version-file: go.mod
       - name: gofmt
-        if: runner.os == 'Linux'
         run: test -z "$(gofmt -l cmd internal)"
       - name: Vet
         run: go vet ./...
@@ -77,11 +76,7 @@ jobs:
 
   browser-harness:
     # Unit suites only: no browsers, extension assets or network services needed.
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: tests/browser
@@ -179,21 +174,50 @@ jobs:
       - name: Sign-in UI smoke
         # ui-smoke.mjs finds Go only through BH_GO_EXE or a local .tools/go toolchain.
         run: BH_GO_EXE="$(command -v go)" npm run ui
+      - name: Client connection consent smoke
+        run: BH_GO_EXE="$(command -v go)" npm run connect
+
+  docker:
+    # Build both targets without publishing; exercise host/updater failure paths.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: GeoLite updater lifecycle tests
+        run: sh scripts/docker/test-geoip-update.sh
+      - name: Docker maintenance lifecycle tests
+        run: bash scripts/docker/test-maintain.sh
+      - name: Docker offline rollback data retention tests
+        run: sh scripts/docker/test-restore-volume.sh
+      - name: Restricted Docker update worker regression tests
+        run: bash scripts/docker/test-admin-updates.sh
+      - name: Browser-approved Docker image persistence tests
+        run: sudo --preserve-env=PATH bash scripts/docker/test-image-env.sh
+      - name: Debian maintenance regression tests
+        run: bash scripts/debian/test-maintenance.sh
+      - name: Debian installer lifecycle regression tests
+        # Installer fixtures assert root-owned binaries, units and queue state.
+        run: sudo --preserve-env=PATH bash scripts/debian/test-bookmarksync.sh
+      - name: Debian approval queue regression tests
+        run: sudo --preserve-env=PATH bash scripts/debian/test-update-queue.sh
+      - name: Debian GeoLite regression tests
+        run: |
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/bookmarksync-geoip-test" ./cmd/bookmarksync
+          sudo env BOOKMARKSYNC_TEST_BINARY="$RUNNER_TEMP/bookmarksync-geoip-test" bash scripts/debian/test-update-geoip.sh
+      - name: Validate Compose configuration
+        run: docker compose --profile geoip config --quiet
+      - name: Isolated Docker image and runtime regression
+        run: sudo --preserve-env=PATH bash scripts/docker/test-runtime.sh
 
   build:
-    needs: [test, race, govulncheck, browser-harness, npm-audit, web, ui-smoke]
+    needs: [test, race, govulncheck, browser-harness, npm-audit, web, ui-smoke, docker]
     runs-on: ubuntu-latest
     env:
       CGO_ENABLED: "0"
-    strategy:
-      matrix:
-        include:
-          - goos: linux
-            goarch: amd64
-            ext: ""
-          - goos: windows
-            goarch: amd64
-            ext: ".exe"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -204,12 +228,12 @@ jobs:
       - name: Prepare build output directory
         shell: bash
         run: mkdir -p dist
-      - name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+      - name: Build linux/amd64
         env:
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+          GOOS: linux
+          GOARCH: amd64
           COMMIT: ${{ github.sha }}
-          OUT: dist/bookmarksync-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          OUT: dist/bookmarksync-linux-amd64
         run: |
           # Commit-based build date keeps builds reproducible for a given SHA.
           BUILD_DATE="$(git show -s --format=%cI "$COMMIT")"
@@ -220,46 +244,8 @@ jobs:
       - name: Upload build for release assembly
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: bookmarksync-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: dist/bookmarksync-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
-          if-no-files-found: error
-          retention-days: 7
-      - name: Build Windows updater service
-        if: matrix.goos == 'windows'
-        env:
-          GOOS: windows
-          GOARCH: amd64
-        run: go build -trimpath -o dist/bookmarksync-updater-windows-amd64.exe ./cmd/bookmarksync-updater
-      - name: Upload Windows updater for release assembly
-        if: matrix.goos == 'windows'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: bookmarksync-updater-windows-amd64
-          path: dist/bookmarksync-updater-windows-amd64.exe
-          if-no-files-found: error
-          retention-days: 7
-      - name: Fetch pinned geoipupdate release
-        if: matrix.goos == 'windows'
-        shell: pwsh
-        run: |
-          $archive = Join-Path $env:RUNNER_TEMP 'geoipupdate_8.0.0_windows_amd64.zip'
-          $extract = Join-Path $env:RUNNER_TEMP 'geoipupdate-v8'
-          Invoke-WebRequest -Uri 'https://github.com/maxmind/geoipupdate/releases/download/v8.0.0/geoipupdate_8.0.0_windows_amd64.zip' -OutFile $archive
-          $actual = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -cne '1aadec5283389670729b1332ca938e3cf12a1413853c30a2193cfe9d3fc8bbea') { throw 'Pinned geoipupdate archive checksum verification failed.' }
-          Expand-Archive -LiteralPath $archive -DestinationPath $extract
-          $source = Join-Path $extract 'geoipupdate_8.0.0_windows_amd64'
-          Copy-Item (Join-Path $source 'geoipupdate.exe') 'dist/geoipupdate-windows-amd64.exe'
-          $notice = "geoipupdate 8.0.0 by MaxMind`nUpstream project: https://github.com/maxmind/geoipupdate`nArchive: geoipupdate_8.0.0_windows_amd64.zip`nArchive SHA-256: $actual`n`nApache License 2.0`n`n$(Get-Content -Raw (Join-Path $source 'LICENSE-APACHE'))`nMIT License`n`n$(Get-Content -Raw (Join-Path $source 'LICENSE-MIT'))"
-          [IO.File]::WriteAllText((Join-Path (Get-Location) 'dist/GEOIPUPDATE-LICENSES.txt'), $notice, [Text.UTF8Encoding]::new($false))
-      - name: Upload pinned GeoLite updater and license notice
-        if: matrix.goos == 'windows'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: bookmarksync-geolite-windows-amd64
-          path: |
-            dist/geoipupdate-windows-amd64.exe
-            dist/GEOIPUPDATE-LICENSES.txt
+          name: bookmarksync-linux-amd64
+          path: dist/bookmarksync-linux-amd64
           if-no-files-found: error
           retention-days: 7
 
@@ -267,7 +253,8 @@ jobs:
     # A successful push to main becomes a SHA-addressed prerelease. Pull requests
     # and manually dispatched workflows never publish assets.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [build]
+    # Catalog-visible binary releases require an available, attested image too.
+    needs: [build, publish-image]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -279,22 +266,18 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
+          name: bookmarksync-linux-amd64
           path: dist
-          merge-multiple: true
       - name: Prepare release manifest and checksums
         env:
           COMMIT: ${{ github.sha }}
         run: |
           set -euo pipefail
           test -s dist/bookmarksync-linux-amd64
-          test -s dist/bookmarksync-windows-amd64.exe
-          test -s dist/bookmarksync-updater-windows-amd64.exe
-          test -s dist/geoipupdate-windows-amd64.exe
-          test -s dist/GEOIPUPDATE-LICENSES.txt
           BUILD_DATE="$(git show -s --format=%cI "$COMMIT")"
           printf 'commit=%s\nbuild_date=%s\nversion=0.0.0-%s\n' \
             "$COMMIT" "$BUILD_DATE" "${COMMIT:0:12}" > dist/BUILD_INFO.txt
-          (cd dist && sha256sum bookmarksync-linux-amd64 bookmarksync-windows-amd64.exe bookmarksync-updater-windows-amd64.exe geoipupdate-windows-amd64.exe GEOIPUPDATE-LICENSES.txt BUILD_INFO.txt > SHA256SUMS)
+          (cd dist && sha256sum bookmarksync-linux-amd64 BUILD_INFO.txt > SHA256SUMS)
       - name: Attest release files
         uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
         with:
@@ -306,8 +289,56 @@ jobs:
         run: |
           set -euo pipefail
           tag="build-${COMMIT}"
-          gh release create "$tag" dist/bookmarksync-linux-amd64 dist/bookmarksync-windows-amd64.exe dist/bookmarksync-updater-windows-amd64.exe dist/geoipupdate-windows-amd64.exe dist/GEOIPUPDATE-LICENSES.txt dist/BUILD_INFO.txt dist/SHA256SUMS \
+          gh release create "$tag" dist/bookmarksync-linux-amd64 dist/BUILD_INFO.txt dist/SHA256SUMS \
             --draft --prerelease --latest=false --target "$COMMIT" \
             --title "Build ${COMMIT:0:12}" \
             --notes "Successful main-branch build for commit ${COMMIT}. Verify binary provenance with: gh attestation verify <binary> -R atikansari-ghr/BookmarksSync"
           gh release edit "$tag" --draft=false
+
+  publish-image:
+    # No registry credentials or write permissions enter pull-request jobs.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and publish SHA-addressed Linux image
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_ACTOR: ${{ github.actor }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${REPOSITORY,,}"
+          build_date="$(git show -s --format=%cI "$COMMIT")"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GH_ACTOR" --password-stdin
+          docker buildx create --name bookmarksync-release --driver docker-container --use
+          docker buildx build --platform linux/amd64 --pull --push --provenance=mode=max \
+            --build-arg "BOOKMARKSYNC_VERSION=0.0.0-${COMMIT:0:12}" \
+            --build-arg "BOOKMARKSYNC_COMMIT=$COMMIT" --build-arg "BOOKMARKSYNC_DATE=$build_date" \
+            --label "org.opencontainers.image.source=https://github.com/$REPOSITORY" \
+            --label "org.opencontainers.image.revision=$COMMIT" \
+            --label "org.opencontainers.image.created=$build_date" \
+            --tag "$image:build-$COMMIT" --metadata-file "$RUNNER_TEMP/image-metadata.json" .
+          digest="$(jq -er '."containerimage.digest"' "$RUNNER_TEMP/image-metadata.json")"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          printf 'name=%s\ndigest=%s\n' "$image" "$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest published image digest
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Remove registry credentials
+        if: always()
+        run: docker logout ghcr.io

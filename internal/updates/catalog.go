@@ -70,8 +70,6 @@ func RequiredReleaseAssets(goos, goarch string) []string {
 	switch goos {
 	case "linux":
 		return []string{"bookmarksync-linux-amd64", "BUILD_INFO.txt", "SHA256SUMS"}
-	case "windows":
-		return []string{"bookmarksync-windows-amd64.exe", "bookmarksync-updater-windows-amd64.exe", "geoipupdate-windows-amd64.exe", "GEOIPUPDATE-LICENSES.txt", "BUILD_INFO.txt", "SHA256SUMS"}
 	default:
 		return nil
 	}
@@ -168,6 +166,8 @@ func (c CatalogClient) ListForPlatform(ctx context.Context, installedCommit, goo
 // unauthenticated API quota every time an admin opens or refreshes the page.
 type CatalogService struct {
 	client CatalogClient
+	goos   string
+	goarch string
 	ttl    time.Duration
 	now    func() time.Time
 	mu     sync.Mutex
@@ -176,7 +176,7 @@ type CatalogService struct {
 }
 
 func NewCatalogService(client CatalogClient) *CatalogService {
-	return &CatalogService{client: client, ttl: 10 * time.Minute, now: time.Now}
+	return &CatalogService{client: client, goos: runtime.GOOS, goarch: runtime.GOARCH, ttl: 10 * time.Minute, now: time.Now}
 }
 
 func (s *CatalogService) List(ctx context.Context, installedCommit string) (Catalog, error) {
@@ -184,7 +184,7 @@ func (s *CatalogService) List(ctx context.Context, installedCommit string) (Cata
 	defer s.mu.Unlock()
 	now := s.now()
 	if !now.Before(s.until) {
-		fresh, err := s.client.List(ctx, "")
+		fresh, err := s.client.ListForPlatform(ctx, "", s.goos, s.goarch)
 		if err != nil {
 			return Catalog{}, err
 		}

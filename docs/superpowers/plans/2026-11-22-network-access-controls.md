@@ -1,5 +1,7 @@
 # Network Access Controls Implementation Plan
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical implementation/test statements below are preserved; they do not create current Windows work.
+
 > **For agentic workers:** This plan follows the approved Operations milestone in `docs/design.md`. Keep all work on the selected `build/bookmarksync` branch; do not push or change production services.
 
 **Goal:** Restrict public BookmarksSync traffic by country while safely resolving client addresses behind explicitly trusted reverse proxies.

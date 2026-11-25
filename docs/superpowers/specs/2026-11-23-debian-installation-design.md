@@ -1,5 +1,7 @@
 # Debian Installation Design
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical implementation/test statements below are preserved; they do not create current Windows work.
+
 ## Intent
 
 Provide a host administrator one control command for installing and maintaining BookmarksSync on Debian or a Proxmox LXC. The installer consumes only the new SHA-addressed GitHub releases, verifies the downloaded Linux binary, and preserves the complete application data through upgrades.

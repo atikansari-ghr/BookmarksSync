@@ -229,12 +229,12 @@ func TestOpenAPIOperationsDocumentSuccessContracts(t *testing.T) {
 	// These handlers decode a request payload. This explicit list catches an
 	// accidental omission of requestBody while allowing bodyless POST actions.
 	bodyOperations := map[string]bool{
-		"passwordLogin": true, "changePassword": true, "updateSettings": true,
+		"pollLoginFlow": true, "approveLoginFlow": true, "passwordLogin": true, "changePassword": true, "updateSettings": true,
 		"createToken": true, "createConnection": true, "createBookmark": true,
 		"updateBookmark": true, "createFolder": true, "updateFolder": true,
 		"reorderFolderChildren": true, "grantShare": true, "updateShare": true,
 		"adminCreateUser": true, "adminUpdateUser": true, "reauthenticate": true,
-		"adminPatchSettings": true, "adminUpdateNetworkAccess": true, "adminPatchUserSettings": true, "adminConfigureGeoLite": true,
+		"adminPatchSettings": true, "adminUpdateNetworkAccess": true, "adminPatchUserSettings": true,
 		"completeSecondFactorLogin": true, "confirmTotpEnrollment": true,
 		"disableTotp": true, "regenerateRecoveryCodes": true,
 		"finishPasskeyLogin": true, "finishPasskeyRegistration": true,
@@ -296,13 +296,14 @@ func TestOpenAPIOperationsDocumentSuccessContracts(t *testing.T) {
 		"post /admin/users/{id}/factor-reset":        {"204"},
 		"get /admin/users/{id}/connections":          {"200"},
 		"delete /admin/users/{id}/connections/{cid}": {"204"}, "get /admin/system": {"200"}, "get /admin/health": {"200"}, "get /admin/updates": {"200"}, "post /admin/updates/approve": {"202"}, "get /admin/activity": {"200"},
-		"get /admin/settings": {"200"}, "patch /admin/settings": {"200"}, "get /admin/network-access": {"200"}, "patch /admin/network-access": {"200"}, "get /admin/geolite": {"200"}, "put /admin/geolite": {"200"}, "delete /admin/geolite": {"200"}, "post /admin/geolite/run": {"202"}, "post /admin/settings/assets": {"201"},
+		"get /admin/settings": {"200"}, "patch /admin/settings": {"200"}, "get /admin/network-access": {"200"}, "patch /admin/network-access": {"200"}, "post /admin/settings/assets": {"201"},
 		"get /admin/users/{id}/settings": {"200"}, "patch /admin/users/{id}/settings": {"200"},
 		"get /admin/backups": {"200"}, "put /admin/backups/schedule": {"200"},
 		"post /admin/backups/destinations": {"201"}, "put /admin/backups/destinations/{id}": {"200"},
 		"delete /admin/backups/destinations/{id}": {"204"}, "post /admin/backups/destinations/test": {"200"}, "post /admin/backups/run": {"202"},
 		"get /admin/backups/destinations/{id}/recovery-key": {"200"},
 		"get /admin/notifications":                          {"200"}, "put /admin/notifications": {"200"}, "post /admin/notifications/test": {"200"},
+		"post /index.php/login/v2": {"200"}, "post /login/v2/poll": {"200"}, "get /auth/connect": {"200"}, "get /auth/connect/continuation": {"200"}, "post /auth/connect/approve": {"200"},
 		"get /auth/presentation": {"200"}, "get /auth/presentation/assets/{id}": {"200"},
 	}
 	seenBodies := map[string]bool{}

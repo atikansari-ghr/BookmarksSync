@@ -174,17 +174,23 @@ releases the lock they held.
   `javascript:`), titles to 4 KiB. `javascript:` bookmarks are stored and returned
   (`target` carries the code) but never executed or fetched.
 * Deleting is a soft delete: rows keep their placements and structure so a later restore is
-  possible, and trashed items are invisible to the adapter. There is no restore API and no
-  30-day purge job yet.
+  possible, and trashed items are invisible to the adapter. The website and `/api/v1`
+  provide Trash restore and purge; the server purges items after 30 days.
 * Tags exist server-side only; browsers cannot store them, so floccus never sends them.
 * Folder depth is limited to 256 levels. Hashes are computed from current rows on every
   request, so they are never stale.
 
 ## Setting up a floccus profile (initial isolated gate)
 
-Login Flow v2 (the floccus "Connect" wizard) will be wired to real website
-authentication in the next milestone and is **not** faked here, so the wizard cannot
-connect yet. The supported gate path is floccus's profile import:
+[Login Flow v2](login-flow-v2.md) now implements real website sign-in, explicit
+consent and one-time app credential issuance. Contract, real-browser consent,
+the unmodified stock extension's login action and its visible account-type/URL
+wizard through profile creation and bookmark upload passed in Chrome. Connection
+setup in other browsers remains outside that coverage. The offline conflict,
+failsafe and automatic post-restore continuation scenario has separately passed
+in Chrome, Edge, Brave and Firefox; see [offline acceptance](offline-acceptance.md).
+The completed stock-browser matrices used floccus's profile import, which remains
+available:
 
 1. Create a credential with the CLI (see above) and copy the secret.
 2. Save a file `floccus.export.json` (a JSON array) outside any repository, with your
@@ -240,8 +246,20 @@ same-folder duplicate removal. Harness setup and coverage details are documented
 [`tests/browser/README.md`](../tests/browser/README.md).
 
 The original audit's broader A1–A14 acceptance list is not fully covered. Remaining checks
-include offline conflict/failsafe behavior, Login Flow v2 setup, and other scenarios not listed
-in the completed browser matrix. Do not treat the completed matrix as coverage of those flows.
+include other-browser Login Flow v2 setup, wider offline/network/restart scenarios
+and cases not listed in the completed browser matrix. Chrome's visible wizard and
+two-profile offline conflicts, failsafe and automatic post-restore continuation
+were separately exercised on 2026-11-25; see
+[acceptance verification](verification-2026-11-25.md) and
+[offline observations and limits](offline-acceptance.md). These checks do not
+establish those flows in every browser.
+
+The Linux-only change was also checked on 2026-11-24 with stock floccus 5.13.0:
+72/72 real-server checks passed in Chrome 158.0.8127.37, Edge 158.0.4370.33,
+Brave 158.0.8127.42 and Firefox 160.0.1. The disposable server harness explicitly
+configures loopback management access; the application's fail-closed country
+policy is unchanged. See [verification](verification-2026-11-24.md) for the
+separate Linux runtime and connection-flow evidence.
 
 ### Protocol-level edge cases
 

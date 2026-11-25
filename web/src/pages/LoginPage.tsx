@@ -1,3 +1,4 @@
+import { signInDestination } from '../connection'
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { ApiError, describe, tooMany, type Provider, type SessionState } from '../api'
 import { useApp } from '../context'
@@ -43,10 +44,10 @@ export function LoginPage() {
     let live = true
     client
       .request<SessionState>('GET', '/api/v1/auth/session', undefined, { reauth: false })
-      .then((s) => {
+      .then(async (s) => {
         if (!live) return
         setSession(s)
-        navigate('/auth/security', { replace: true })
+        navigate(await signInDestination(), { replace: true })
       })
       .catch(() => {})
     client
@@ -84,7 +85,7 @@ export function LoginPage() {
         setPassword('')
         client.setCSRF(data.csrfToken)
         setSession(data as SessionState)
-        navigate('/auth/security', { replace: true })
+        navigate(await signInDestination(), { replace: true })
         return
       }
       const ra = Number(res.headers.get('Retry-After'))
@@ -108,7 +109,7 @@ export function LoginPage() {
       const cred = await navigator.credentials.get({ publicKey: requestOptions(begin.options.publicKey) })
       const state = await client.request<SessionState>('POST', '/api/v1/auth/passkey/login/finish', { flowId: begin.flowId, credential: assertionJSON(cred) }, { reauth: false })
       setSession(state)
-      navigate('/auth/security', { replace: true })
+      navigate(await signInDestination(), { replace: true })
     } catch (err) {
       if (webauthnCancelled(err)) setError('Passkey sign-in was cancelled.')
       else if (err instanceof ApiError && err.status === 401) setError('That passkey could not sign you in.')

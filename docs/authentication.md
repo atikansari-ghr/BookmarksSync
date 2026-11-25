@@ -66,8 +66,7 @@ GeoIP database setup, and management CIDRs are described in [docs/network-access
 When a public URL is set, the server creates `instance.key` in the data directory: 32 random
 bytes, readable only by the service account. It encrypts TOTP seeds with AES-256-GCM.
 
-- On Unix the file is mode `0600`. On Windows it has a protected DACL that grants access only to
-  the creating user.
+- On supported Linux servers the file is mode `0600`, owned by the service account.
 - Startup fails if the key is malformed, is a symlink, or is readable by others. The server never
   repairs or replaces an existing key.
 - **Include `instance.key` in every full backup, together with the database.** If it is lost, the
@@ -262,6 +261,7 @@ use the website password in floccus.
 
 Create a connection in one of these ways:
 
+- **Client connection flow:** [Login Flow v2](login-flow-v2.md) uses website sign-in and explicit consent to issue one private edit credential. Protocol, real-browser consent, and the stock extension's login action in Chrome are tested; preceding wizard form navigation and other-browser connection flows are outside that coverage.
 - **Security page:** the "Floccus connections" section, which shows the server URL, username and
   app password once.
 - **API:** `POST /api/v1/me/connections` with `{"label": "laptop", "mode": "edit"|"view",
@@ -375,7 +375,7 @@ Other protections:
 
 **Tested:**
 
-- Go unit and integration tests. The CI workflow runs them on Ubuntu and Windows.
+- Go unit and integration tests. The CI workflow runs them on Ubuntu Linux.
 - A real Chromium browser (Playwright) with a virtual authenticator, covering:
   - password and TOTP sign-in;
   - passkey registration and sign-in;

@@ -546,41 +546,6 @@ components:
       properties:
         mode: {type: string, enum: [allow, block]}
         countries: {type: array, items: {type: string, pattern: '^[A-Za-z]{2}$'}}
-    GeoLiteConfig:
-      type: object
-      additionalProperties: false
-      required: [enabled, days, startTime]
-      properties:
-        accountId: {type: string, pattern: '^[0-9]{1,64}$', writeOnly: true}
-        licenseKey: {type: string, pattern: '^[A-Za-z0-9_]{1,64}$', writeOnly: true}
-        enabled: {type: boolean}
-        days: {type: array, minItems: 2, maxItems: 7, uniqueItems: true, items: {type: string, enum: [MON, TUE, WED, THU, FRI, SAT, SUN]}}
-        startTime: {type: string, pattern: '^(?:[01][0-9]|2[0-3]):[0-5][0-9]$'}
-    GeoLiteStatus:
-      type: object
-      required: [configured, enabled, days, startTime, databaseAvailable, lastResult, running, recoveryRequired]
-      properties:
-        configured: {type: boolean}
-        enabled: {type: boolean}
-        days: {type: array, items: {type: string, enum: [MON, TUE, WED, THU, FRI, SAT, SUN]}}
-        startTime: {type: string}
-        databaseAvailable: {type: boolean}
-        databaseBuildTime: {type: [string, 'null'], format: date-time}
-        lastAttempt: {type: [string, 'null'], format: date-time}
-        lastResult: {type: string}
-        lastErrorCode: {type: string}
-        running: {type: boolean}
-        recoveryRequired: {type: boolean}
-    GeoLiteStatusResponse:
-      type: object
-      required: [status]
-      properties:
-        status: {$ref: '#/components/schemas/GeoLiteStatus'}
-    GeoLiteRunAccepted:
-      type: object
-      required: [job]
-      properties:
-        job: {type: string, pattern: '^bookmarksync-geolite-[a-z0-9-]{1,80}$'}
     PublicPresentation:
       type: object
       required: [appTitle, signinTitle, tagline, supportingLine, loginLayout, primaryColor, accentColor, backgroundColor, version, copyright]
@@ -1196,12 +1161,6 @@ paths:
   /admin/network-access:
     get: {operationId: adminGetNetworkAccess, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/NetworkAccessPolicy'}}}, description: Network access policy and sanitized database status.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Network Access Policy}
     patch: {operationId: adminUpdateNetworkAccess, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/NetworkAccessPolicyPatch'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/NetworkAccessPolicy'}}}, description: Updated policy.}, default: {$ref: '#/components/responses/Error'}}, summary: Update Network Access Policy}
-  /admin/geolite:
-    get: {operationId: adminGetGeoLiteStatus, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/GeoLiteStatusResponse'}}}, description: Sanitized GeoLite status; credentials are never returned.}, default: {$ref: '#/components/responses/Error'}}, summary: Get GeoLite Status}
-    put: {operationId: adminConfigureGeoLite, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/GeoLiteConfig'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/GeoLiteStatusResponse'}}}, description: Configuration saved without returning credentials.}, default: {$ref: '#/components/responses/Error'}}, summary: Configure GeoLite Updates}
-    delete: {operationId: adminClearGeoLite, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/GeoLiteStatusResponse'}}}, description: Credentials and task removed; active database retained.}, default: {$ref: '#/components/responses/Error'}}, summary: Clear GeoLite Credentials}
-  /admin/geolite/run:
-    post: {operationId: adminRunGeoLiteUpdate, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, responses: {"202": {content: {application/json: {schema: {$ref: '#/components/schemas/GeoLiteRunAccepted'}}}, description: GeoLite update queued.}, default: {$ref: '#/components/responses/Error'}}, summary: Run GeoLite Update Now}
   /admin/settings/assets:
     post: {operationId: adminUploadBrandingAsset, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {multipart/form-data: {schema: {type: object, required: [kind, asset], properties: {kind: {type: string, enum: [logo, background]}, asset: {type: string, format: binary}}}}}, required: true}, responses: {"201": {content: {application/json: {schema: {$ref: '#/components/schemas/BrandingAssetUpload'}}}, description: Image stored as a private, randomly named file.}, default: {$ref: '#/components/responses/Error'}}, summary: Upload Login Branding Asset}
   /admin/users/{id}/settings:
@@ -1231,3 +1190,103 @@ paths:
     post: {operationId: adminStartBackup, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, responses: {"202": {content: {application/json: {schema: {$ref: '#/components/schemas/BackupBatchAccepted'}}}, description: Backup accepted.}, "409": {description: Another backup is running.}, default: {$ref: '#/components/responses/Error'}}, summary: Start Backup Now}
   /auth/presentation: {get: {operationId: getAuthPresentation, x-public: true, security: [], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/PublicPresentation'}}}, description: Public login appearance and safe version information.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Public Login Presentation}}
   /auth/presentation/assets/{id}: {get: {operationId: getAuthPresentationAsset, x-public: true, security: [], parameters: [{name: id, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}], responses: {"200": {content: {image/png: {schema: {type: string, format: binary}}, image/jpeg: {schema: {type: string, format: binary}}, image/webp: {schema: {type: string, format: binary}}}, description: Login image asset.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Public Login Image}}
+
+  /index.php/login/v2:
+    post:
+      servers: [{url: /}]
+      operationId: beginLoginFlow
+      summary: Begin an app connection
+      description: Anonymous Nextcloud Login Flow v2 initiation. Returns independent browser and poll handles valid for 20 minutes. State and per-peer requests are bounded.
+      security: []
+      x-public: true
+      responses:
+        "200":
+          description: Open the login URL and poll the returned endpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [poll, login]
+                properties:
+                  login: {type: string, format: uri}
+                  poll:
+                    type: object
+                    required: [token, endpoint]
+                    properties:
+                      token: {type: string}
+                      endpoint: {type: string, format: uri}
+        default: {$ref: '#/components/responses/Error'}
+  /login/v2/poll:
+    post:
+      servers: [{url: /}]
+      operationId: pollLoginFlow
+      summary: Redeem an approved app connection once
+      description: Returns 404 while pending, expired or consumed. A successful response is returned once and contains a revocable private edit app credential. Responses are never cached.
+      security: []
+      x-public: true
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: {type: string}
+      responses:
+        "200":
+          description: One-time application credentials.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [server, loginName, appPassword]
+                properties:
+                  server: {type: string, format: uri}
+                  loginName: {type: string}
+                  appPassword: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /auth/connect:
+    get:
+      operationId: inspectLoginFlow
+      summary: Check a browser connection request
+      security: [{sessionCookie: []}]
+      parameters:
+        - {name: flow, in: query, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: Request awaits explicit consent.
+          content:
+            application/json:
+              schema: {type: object, required: [status], properties: {status: {type: string, const: pending}}}
+        default: {$ref: '#/components/responses/Error'}
+  /auth/connect/continuation:
+    get:
+      operationId: continueLoginFlow
+      summary: Resume an app connection after provider sign-in
+      security: [{sessionCookie: []}]
+      responses:
+        "200":
+          description: Allowlisted local destination; clears the HttpOnly continuation cookie.
+          content:
+            application/json:
+              schema: {type: object, required: [destination], properties: {destination: {type: string}}}
+        default: {$ref: '#/components/responses/Error'}
+  /auth/connect/approve:
+    post:
+      operationId: approveLoginFlow
+      summary: Approve a private edit app connection
+      security: [{sessionCookie: []}]
+      x-recent-auth: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [flow, sessionId], additionalProperties: false, properties: {flow: {type: string}, sessionId: {type: integer, format: int64}}}
+      responses:
+        "200":
+          description: Approved for the requesting client to redeem; no credentials returned to this browser.
+          content:
+            application/json:
+              schema: {type: object, required: [status], properties: {status: {type: string, const: approved}}}
+        default: {$ref: '#/components/responses/Error'}

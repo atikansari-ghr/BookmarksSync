@@ -1,14 +1,14 @@
 # Third-Party Notices
 
-## rclone v1.76.0 (Docker image and Windows installer)
+## rclone v1.76.0 (Docker image)
 
 Source: https://github.com/rclone/rclone/tree/v1.76.0
-Copyright (C) 2012 by Nick Craig-Wood. Licensed under the MIT License; the full notice is preserved in the Docker image at `/usr/share/doc/rclone/COPYING`, installed beside the Windows binary as `rclone-COPYING`, and in `third_party/rclone-COPYING` in this repository. The image downloads only the official amd64/arm64 release archives after SHA-256 verification. The Windows installer downloads the pinned official v1.76.0 amd64 archive and verifies SHA-256 `8b4fd2737ade4e70c057ef4a49deb7cffe94b0fb9d7587c189d149823f21a1dc` before extraction.
+Copyright (C) 2012 by Nick Craig-Wood. Licensed under the MIT License; the full notice is preserved in the Docker image at `/usr/share/doc/rclone/COPYING`, and in `third_party/rclone-COPYING` in this repository. The image downloads only the official amd64/arm64 release archives after SHA-256 verification.
 
-## MaxMind GeoIP Update v8.0.0 (optional Debian setup download)
+## MaxMind GeoIP Update v8.0.0 (optional Debian setup and Docker updater)
 
 Source: https://github.com/maxmind/geoipupdate
-Copyright (c) 2018-2026 MaxMind, Inc. Licensed under Apache-2.0 or MIT. The optional setup script downloads the official release and verifies its pinned SHA-256; the binary is not bundled in BookmarksSync distributions.
+Copyright (c) 2018-2026 MaxMind, Inc. Licensed under Apache-2.0 or MIT. The optional Debian setup and Docker updater target download the official release and verify its pinned SHA-256. The optional `geoip-updater` image preserves both upstream license files under `/usr/share/doc/geoipupdate/`; the application image and standalone BookmarksSync binary do not include this executable.
 
 ## geoip2-golang/v2 v2.5.0
 

@@ -12,6 +12,7 @@ import (
 	"mime"
 	"net/http"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/atikansari-ghr/BookmarksSync/internal/server"
@@ -31,11 +32,14 @@ func Files() fs.FS {
 
 // pages are the client-side routes served with the app shell.
 var pages = map[string]bool{
+	"/auth/connect":       true,
 	"/auth":               true,
 	"/auth/login":         true,
 	"/auth/security":      true,
 	"/auth/oidc/complete": true,
 }
+
+var connectionHandlePattern = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 
 // contentTypes pins the types of files the build emits, independent of the host's
 // MIME registry (Windows may override Go's built-in table).
@@ -102,6 +106,10 @@ func (u *UI) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if pages[p] {
 		pageHeaders(w.Header())
+		if p == "/auth/connect" && connectionHandlePattern.MatchString(r.URL.Query().Get("flow")) {
+			// Carry only the independent browser handle across provider redirects.
+			http.SetCookie(w, &http.Cookie{Name: "__Host-bookmarksync_connect", Value: r.URL.Query().Get("flow"), Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 20 * 60})
+		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		if r.Method != http.MethodHead {

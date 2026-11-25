@@ -1,5 +1,7 @@
 # Identity and API Implementation Plan
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical implementation/test statements below are preserved; they do not create current Windows work.
+
 > **For agentic workers:** Use Claude Code through Herd for the scoped implementation tasks; Codex coordinates, independently reviews each task, runs acceptance checks, and integrates. Do not push or deploy during implementation.
 
 **Goal:** Deliver administrator-provisioned browser accounts, password/passkey/TOTP authentication, linked Google/Authentik login, revocable sessions and scoped API tokens, the versioned user/admin API with OpenAPI, and a minimal usable login/security interface.

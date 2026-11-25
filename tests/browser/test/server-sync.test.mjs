@@ -16,6 +16,20 @@ import {
 const SECRET = 'bms1.7.' + 'A'.repeat(43)
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), 'bh-ss-'))
 
+test('disposable servers explicitly allow only loopback management unless a test overrides the policy', async () => {
+  for (const [env, expected] of [[{}, '127.0.0.0/8,::1/128'], [{ BOOKMARKSYNC_MANAGEMENT_CIDRS: '' }, '']]) {
+    const port = await pickLoopbackPort()
+    const script = `require('node:http').createServer((req,res)=>{res.writeHead(process.env.BOOKMARKSYNC_MANAGEMENT_CIDRS===process.argv[1]?200:403);res.end()}).listen(${port},'127.0.0.1')`
+    let server
+    try {
+      server = await startProcessServer({ command: process.execPath, args: ['-e', script, expected], env, readyUrl: `http://127.0.0.1:${port}/readyz`, startupTimeoutMs: 2500 })
+      assert.ok(server.pid)
+    } finally {
+      if (server) await server.stop()
+    }
+  }
+})
+
 test('wire folder IDs convert to positive CLI IDs without accepting virtual or invalid IDs', () => {
   const convert = serverSync.wireFolderIdToInternal
   assert.equal(typeof convert, 'function')

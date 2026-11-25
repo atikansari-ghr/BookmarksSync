@@ -1,6 +1,6 @@
 # BookmarksSync
 
-A self-hosted bookmarks server, written in Go.
+A self-hosted bookmarks server for Linux, written in Go. Supported deployments are Debian/Proxmox LXC and Linux Docker (amd64). Browser clients on Windows remain supported.
 
 **Early development.**
 - The floccus-compatible sync API has passed real-browser checks with stock floccus 5.13.0 in Chrome, Edge, Brave, and Firefox; organizer and collision cases are still under acceptance review.
@@ -42,10 +42,10 @@ Implemented:
 **Floccus compatibility is verified for the tested sync flows.** Two repeated real-server browser matrices passed in Chrome, Edge, Brave, and Firefox with stock floccus 5.13.0. The compatibility guide and browser report list the covered cases and remaining untested flows.
 
 Still planned or awaiting acceptance:
-- Login Flow v2 (the floccus "Connect" wizard; use profile import for now);
-- Debian amd64 and Windows amd64 install/upgrade/repair scripts and local Docker Compose deployment files are available at [docs/distribution.md](docs/distribution.md); Docker runtime acceptance and first published-build validation remain;
-- automated GeoLite provisioning on Debian/LXC and Admin Settings scheduling on native Windows are implemented; Docker GeoLite scheduling and final public country/proxy acceptance remain;
-- main-branch CI release assets and attestations are implemented; live release validation and elevated Windows service lifecycle acceptance remain. Debian and Windows admins can review and explicitly queue eligible updates in Settings. Docker Compose files support local builds and operator-run upgrades; runtime acceptance is pending. See [docs/distribution.md](docs/distribution.md).
+- [Login Flow v2](docs/login-flow-v2.md) is implemented with website sign-in, explicit consent and one-time credential issuance. Contract, real-browser consent/polling, and stock floccus 5.13.0 login-action checks in Chrome pass. Complete wizard form navigation and other-browser connection flows remain outside that coverage. Profile import remains available;
+- Debian amd64 install/upgrade/repair and local Linux Docker Compose deployments are available at [docs/distribution.md](docs/distribution.md). The local Compose runtime has passed isolated LXC checks.
+- Debian/LXC GeoLite provisioning is implemented; real MaxMind credentials and external country/proxy acceptance remain operator gates.
+- Successful-main Linux binary releases and GHCR image publication are prepared with provenance and SHA identity; their first live publication and verified installation remain pending. Debian admins can explicitly queue eligible updates in Settings. Docker supports operator maintenance and an opt-in restricted host worker for updates approved in Administration; see [Docker operations](docs/docker-operations.md).
 
 See `docs/design.md` and `docs/implementation-plan.md`.
 
@@ -64,7 +64,7 @@ Node.js is only needed to:
 BOOKMARKSYNC_MANAGEMENT_CIDRS=127.0.0.0/8,::1/128 go run ./cmd/bookmarksync serve --listen 127.0.0.1:8080 --data-dir ./data
 ```
 
-Defaults: listen on `127.0.0.1:8080` (loopback only) and store data in `./data`. `BOOKMARKSYNC_LISTEN` and `BOOKMARKSYNC_DATA_DIR` set the defaults; flags override them. The data directory is created with mode `0700` and the database file `0600` on POSIX systems (Windows ignores these bits). The database must live on local disk.
+Defaults: listen on `127.0.0.1:8080` (loopback only) and store data in `./data`. `BOOKMARKSYNC_LISTEN` and `BOOKMARKSYNC_DATA_DIR` set the defaults; flags override them. The data directory is created with mode `0700` and the database file `0600` on Linux. The database must live on local disk.
 
 **Upgrade note:** country gating is active immediately. Before upgrading, provision `BOOKMARKSYNC_GEOIP_DB` or set `BOOKMARKSYNC_MANAGEMENT_CIDRS` to the exact local/proxy client ranges that must remain reachable. An absent database with no management range blocks every request; private and loopback clients are not exempt automatically.
 
@@ -133,7 +133,6 @@ Cross-builds with build information injected:
 ```sh
 V=github.com/atikansari-ghr/BookmarksSync/internal/version
 CGO_ENABLED=0 GOOS=linux   GOARCH=amd64 go build -trimpath -ldflags "-s -w -X $V.Version=0.0.0-dev -X $V.Commit=$(git rev-parse --short HEAD)" -o dist/bookmarksync-linux-amd64 ./cmd/bookmarksync
-CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X $V.Version=0.0.0-dev -X $V.Commit=$(git rev-parse --short HEAD)" -o dist/bookmarksync-windows-amd64.exe ./cmd/bookmarksync
 ```
 
 ## Layout
@@ -157,7 +156,8 @@ CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags "-s -w -X $V
 
 ## Limitations
 
-- POSIX file-permission tests run only on Linux/macOS (CI Linux job); on Windows they are skipped.
+- Server deployment and release validation target Linux amd64. Portable development adapters do not provide native Windows server support.
+- To test on the LXC at `192.168.10.226`, follow the [isolated IP testing guide](docs/lxc-ip-testing.md), including Docker setup, SSH access, admin creation and browser checks.
 - The server speaks plain HTTP and is intended to sit behind a TLS-terminating proxy.
 - Trusted proxies are supported when their CIDRs are explicitly configured; only their `X-Forwarded-For` chain is used. See [docs/network-access.md](docs/network-access.md).
 - Floccus authentication is per request (HTTP Basic with a per-device app secret) and is independent of website sessions and API tokens.

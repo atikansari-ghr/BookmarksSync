@@ -8,7 +8,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "test": "node --test test/cleanup.test.mjs test/server-sync.test.mjs test/fix-round1.test.mjs test/fix-round2.test.mjs test/ci-ui-smoke.test.mjs",
+    "test": "node --test test/cleanup.test.mjs test/server-sync.test.mjs test/fix-round1.test.mjs test/fix-round2.test.mjs test/ci-ui-smoke.test.mjs test/offline-evidence.test.mjs",
     "smoke": "node smoke.mjs",
     "smoke:chromium": "node smoke.mjs --browser=chromium",
     "smoke:brave": "node smoke.mjs --browser=brave",
@@ -17,6 +17,8 @@
     "server-sync": "node server-sync.mjs",
     "factors": "node factors-smoke.mjs",
     "ui": "node ui-smoke.mjs",
+    "connect": "node loginflow-smoke.mjs",
+    "offline": "node offline-sync.mjs",
     "test:firefox": "node --test test/firefox-cleanup.test.mjs test/firefox-startup.test.mjs test/profile-containment.test.mjs",
     "smoke:firefox": "node firefox-smoke.mjs"
   },

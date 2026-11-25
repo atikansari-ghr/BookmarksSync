@@ -4,6 +4,10 @@ This guide describes the signed-in BookmarksSync pages. Browser sign-in must be 
 `--public-url`; see [Authentication and account security](authentication.md). Accounts are
 created by an administrator. Sign in with your username, then use the workspace navigation.
 
+To connect a bookmarks app, use [Login Flow v2](login-flow-v2.md) or create a
+separate Floccus connection in Account security. Approve only connection requests
+you started yourself; the app receives its own revocable credential.
+
 ## Dashboard
 
 Open **Dashboard** to see the total bookmark count, recent changes, latest browser sync, and

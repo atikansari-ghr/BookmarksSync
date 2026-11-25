@@ -2,16 +2,17 @@
 
 ## Project Structure & Module Organization
 
-BookmarksSync is a Go service with local SQLite storage. The CLI lives in `cmd/bookmarksync/`; focused backend packages and embedded SQL migrations live in `internal/`. Go tests sit beside implementation files as `*_test.go`.
+BookmarksSync is a Linux amd64 server for Debian/Proxmox LXC and Linux Docker, with local SQLite storage. Windows browser clients remain supported; native Windows server deployments and releases are unsupported. The CLI lives in `cmd/bookmarksync/`; focused backend packages and embedded SQL migrations live in `internal/`. Go tests sit beside implementation files as `*_test.go`.
 
 `tests/browser/` contains isolated stock-floccus extension tests. `docs/design.md` defines the approved behavior; `docs/implementation-plan.md` tracks milestones. `mocscreenshots/` contains UI references, not screenshots of a completed application. Keep local tools, databases, and worker scratch files in ignored directories.
 
 ## Build, Test, and Development Commands
 
-- `go run ./cmd/bookmarksync serve --listen 127.0.0.1:8080 --data-dir ./data`: start locally.
+- `BOOKMARKSYNC_MANAGEMENT_CIDRS=127.0.0.0/8,::1/128 go run ./cmd/bookmarksync serve --listen 127.0.0.1:8080 --data-dir ./data`: start locally.
 - `go test ./...`: run backend tests against temporary databases.
 - `go vet ./...`: check Go code; `gofmt -l cmd internal` should print nothing.
-- `go build ./cmd/bookmarksync`: build the CLI/server.
+- `CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build ./cmd/bookmarksync`: build the supported server.
+- `sudo bash scripts/debian/test-bookmarksync.sh` and `sudo bash scripts/debian/test-update-queue.sh`: exercise isolated Debian lifecycle and approval-queue cases, including root ownership.
 - In `tests/browser/`, run `npm ci`, then `npm test` for harness unit tests. Follow its README for extension assets and real-browser smoke commands.
 
 Use the Go version in `go.mod`. Current health endpoints are `/healthz`, `/readyz`, and `/api/v1/version`. Check the README for implemented features before assuming a planned feature works.

@@ -187,9 +187,26 @@ func (h *Handler) discover(ctx context.Context, p *oidcRP) (*oidc.Provider, *oid
 	if err != nil {
 		return nil, nil, err
 	}
-	// JWKS requests use the bounded client; Verify callers add their own deadline.
-	p.verifier = prov.VerifierContext(oidc.ClientContext(context.Background(), h.oidcClient),
-		&oidc.Config{ClientID: p.cfg.ClientID, Now: h.now})
+	// go-oidc formats signature failures without preserving their error chain.
+	// Capture key-set failures per verification so a client timeout that wins
+	// before the context deadline is still classified as provider unavailable.
+	var metadata struct {
+		Keys       string   `json:"jwks_uri"`
+		Algorithms []string `json:"id_token_signing_alg_values_supported"`
+	}
+	if err := prov.Claims(&metadata); err != nil || metadata.Keys == "" {
+		return nil, nil, errors.New("oidc: missing key metadata")
+	}
+	var algorithms []string
+	for _, algorithm := range metadata.Algorithms {
+		switch algorithm {
+		case oidc.RS256, oidc.RS384, oidc.RS512, oidc.ES256, oidc.ES384, oidc.ES512, oidc.PS256, oidc.PS384, oidc.PS512, oidc.EdDSA:
+			algorithms = append(algorithms, algorithm)
+		}
+	}
+	keys := oidc.NewRemoteKeySet(oidc.ClientContext(context.Background(), h.oidcClient), metadata.Keys)
+	p.verifier = oidc.NewVerifier(p.cfg.Issuer, preservingKeySet{KeySet: keys},
+		&oidc.Config{ClientID: p.cfg.ClientID, Now: h.now, SupportedSigningAlgs: algorithms})
 	p.provider = prov
 	return prov, p.verifier, nil
 }
@@ -384,12 +401,13 @@ func (h *Handler) oidcCallback(w http.ResponseWriter, r *http.Request) {
 		h.oidcFail(w, r, p, "invalid_request", "no_id_token")
 		return
 	}
-	vCtx, vCancel := context.WithTimeout(r.Context(), h.oidcTimeout)
+	failure := &signatureFailure{}
+	vCtx, vCancel := context.WithTimeout(context.WithValue(r.Context(), signatureFailureKey{}, failure), h.oidcTimeout)
 	idt, err := verifier.Verify(vCtx, rawIDToken)
 	vErr := vCtx.Err()
 	vCancel()
 	if err != nil {
-		if vErr != nil {
+		if vErr != nil || unavailable(context.Background(), failure.err) {
 			h.oidcFail(w, r, p, "unavailable", "jwks")
 		} else {
 			h.oidcFail(w, r, p, "invalid_request", "id_token")

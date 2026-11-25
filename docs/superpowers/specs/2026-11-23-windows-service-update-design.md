@@ -1,5 +1,7 @@
 # Windows Service and Approved Updates Design
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical implementation/test statements below are preserved; they do not create current Windows work.
+
 ## Intent
 
 Provide a supported native Windows install for BookmarksSync and let an administrator approve signed SHA-addressed upgrades from the existing Admin page. The server process must not gain system-wide privileges to replace its own executable.

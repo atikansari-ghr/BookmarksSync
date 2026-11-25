@@ -1,5 +1,7 @@
 # Windows Service and Approved Updates Implementation Plan
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical implementation/test statements below are preserved; they do not create current Windows work.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** Install BookmarksSync as a protected Windows service and allow recent-authenticated admins to approve verified Windows releases from the Admin page.

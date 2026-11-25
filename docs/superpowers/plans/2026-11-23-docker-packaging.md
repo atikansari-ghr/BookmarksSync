@@ -1,5 +1,7 @@
 # Docker Packaging Implementation Plan
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical implementation/test statements below are preserved; they do not create current Windows work.
+
 > **For agentic workers:** Execute with `superpowers:executing-plans`; complete each checkbox before moving on.
 
 **Goal:** Let an operator build and run BookmarksSync in Docker Compose with persistent, protected local data.

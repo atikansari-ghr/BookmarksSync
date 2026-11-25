@@ -1,5 +1,7 @@
 # Bookmark Favorites Implementation Plan
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical implementation/test statements below are preserved; they do not create current Windows work.
+
 > **For agentic workers:** Use test-first implementation, then independently review and verify. Do not push, merge, deploy, or commit until the controller accepts the work.
 
 **Goal:** Add per-user favorites to the Identity/API milestone, with one favorite per bookmark across all of its folder placements.

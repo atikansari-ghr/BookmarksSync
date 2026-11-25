@@ -116,13 +116,15 @@ type LinkChecks interface {
 }
 
 type SystemInfo struct {
-	Version           string
-	Commit            string
-	PublicOrigin      string
-	PasskeysEnabled   bool
-	OIDCProviders     []string
-	GeoIPAvailable    bool
-	GeoIPBuildTime    time.Time
+	Version         string
+	Commit          string
+	PublicOrigin    string
+	PasskeysEnabled bool
+	OIDCProviders   []string
+	GeoIPAvailable  bool
+	GeoIPBuildTime  time.Time
+	// GeoIPStatus reports the currently loaded reader after an automatic refresh.
+	GeoIPStatus       func() (bool, time.Time)
 	TrustedProxyCount int
 }
 
@@ -231,7 +233,6 @@ type Options struct {
 	NotificationUsers NotificationUsers
 	UpdateCatalog     func(context.Context, string) (updates.Catalog, error)
 	UpdateApply       func(context.Context, string) (string, error)
-	GeoLite           updates.GeoLiteRunner
 }
 
 type RouteInfo struct {
@@ -261,7 +262,6 @@ type API struct {
 	notificationUsers NotificationUsers
 	updateCatalog     func(context.Context, string) (updates.Catalog, error)
 	updateApply       func(context.Context, string) (string, error)
-	geoLite           updates.GeoLiteRunner
 	routes            []RouteInfo
 	assetMu           *sync.Mutex
 }
@@ -340,10 +340,6 @@ var routePolicies = []RouteInfo{
 	{Method: "PATCH", Path: "/api/v1/admin/settings", Admin: true, Recent: true},
 	{Method: "GET", Path: "/api/v1/admin/network-access", Admin: true},
 	{Method: "PATCH", Path: "/api/v1/admin/network-access", Admin: true, Recent: true},
-	{Method: "GET", Path: "/api/v1/admin/geolite", Admin: true},
-	{Method: "PUT", Path: "/api/v1/admin/geolite", Admin: true, Recent: true},
-	{Method: "DELETE", Path: "/api/v1/admin/geolite", Admin: true, Recent: true},
-	{Method: "POST", Path: "/api/v1/admin/geolite/run", Admin: true, Recent: true},
 	{Method: "POST", Path: "/api/v1/admin/settings/assets", Admin: true, Recent: true},
 	{Method: "GET", Path: "/api/v1/admin/users/{id}/settings", Admin: true},
 	{Method: "PATCH", Path: "/api/v1/admin/users/{id}/settings", Admin: true, Recent: true},
@@ -367,7 +363,7 @@ func New(opts Options) (*API, error) {
 	if opts.AssetMu == nil {
 		opts.AssetMu = &sync.Mutex{}
 	}
-	return &API{auth: opts.Auth, ids: opts.Identity, bm: opts.Bookmarks, lc: opts.LinkChecks, now: opts.Now, log: opts.Logger, system: opts.System, health: opts.Health, readiness: opts.Readiness, syncErrors: opts.SyncErrors, assetDir: opts.AssetDir, backups: opts.Backups, notifications: opts.Notifications, notificationUsers: opts.NotificationUsers, updateCatalog: opts.UpdateCatalog, updateApply: opts.UpdateApply, geoLite: opts.GeoLite, assetMu: opts.AssetMu, routes: append([]RouteInfo(nil), routePolicies...)}, nil
+	return &API{auth: opts.Auth, ids: opts.Identity, bm: opts.Bookmarks, lc: opts.LinkChecks, now: opts.Now, log: opts.Logger, system: opts.System, health: opts.Health, readiness: opts.Readiness, syncErrors: opts.SyncErrors, assetDir: opts.AssetDir, backups: opts.Backups, notifications: opts.Notifications, notificationUsers: opts.NotificationUsers, updateCatalog: opts.UpdateCatalog, updateApply: opts.UpdateApply, assetMu: opts.AssetMu, routes: append([]RouteInfo(nil), routePolicies...)}, nil
 }
 
 func (a *API) Routes() []RouteInfo { return append([]RouteInfo(nil), a.routes...) }

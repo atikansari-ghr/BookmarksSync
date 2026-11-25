@@ -1,3 +1,4 @@
+import { signInDestination } from '../connection'
 import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { ApiError, describe, type SessionState } from '../api'
 import { useApp } from '../context'
@@ -26,7 +27,7 @@ export function SecondFactorForm({ flowId, onBack }: { flowId: string; onBack?: 
       const body = recovery ? { flowId, recoveryCode: value.trim() } : { flowId, code: value.trim() }
       const state = await client.request<SessionState>('POST', '/api/v1/auth/login/second-factor', body, { reauth: false })
       setSession(state)
-      navigate('/auth/security', { replace: true })
+      navigate(await signInDestination(), { replace: true })
     } catch (err) {
       setValue('')
       if (err instanceof ApiError && err.status === 401) {

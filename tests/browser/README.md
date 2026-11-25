@@ -134,6 +134,26 @@ Resolved ordering issue: floccus 5.13.0 could reorder a downloaded folder when s
 collided. The server now uses a negative wire namespace for concrete folder ids, and two repeated full
 browser matrices passed. Historical failures and trace evidence remain in `.superpowers/sdd/bookmarksync/server-sync-report.md`.
 
+## Connection wizard
+
+`npm run connect` checks website consent and one-time credential issuance without
+extension assets. `npm run connect -- --wizard` additionally drives the stock
+Chrome extension's visible setup forms, consent tab, absolute-root selection and
+profile completion, then checks a native bookmark upload. It requires the stock
+extension/browser assets described above. `--screenshots` enables optional wizard
+captures; stock extension capture can time out on the sync-options screen.
+See [Login Flow v2](../../docs/login-flow-v2.md) for mapping guidance and limits.
+
+## Offline and restore acceptance
+
+`npm run offline -- --browser=chrome` runs two disposable stock-Floccus profiles
+against a temporary server. It checks offline edits, reconnect order, deletion
+failsafe refusal, and automatic interval sync after a verified full-server restore
+with browser caches retained. Allow several minutes for the real extension alarm.
+The evidence helpers run with `npm test`; the browser scenario runs separately.
+See [coverage and limits](../../docs/offline-acceptance.md), including the observed
+propagation of older restored state to clients.
+
 ## Authentication factors (`factors-smoke.mjs`)
 
 `npm run factors` builds the server (CGO-free) into a marked run directory under

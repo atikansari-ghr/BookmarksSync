@@ -79,6 +79,9 @@ type Options struct {
 
 // Handler serves the auth API and provides session middleware for other routes.
 type Handler struct {
+	loginFlows       LoginFlowStore
+	loginFlowBegin   *Limiter
+	loginFlowPoll    *Limiter
 	ids              Identity
 	origin           string
 	now              func() time.Time
@@ -151,6 +154,7 @@ func New(opts Options) (*Handler, error) {
 	}
 	h := &Handler{ids: opts.Identity, origin: o, now: opts.Now, log: opts.Logger, onSecurityChange: opts.OnSecurityChange,
 		limiter: NewLimiter(opts.Limits, opts.Now), factors: opts.Factors}
+	h.configureLoginFlow()
 	if err := h.configureOIDC(opts); err != nil {
 		return nil, err
 	}
@@ -164,6 +168,7 @@ func New(opts Options) (*Handler, error) {
 // Register adds the /api/v1/auth routes. Every response, including errors and empty
 // mutations, is marked Cache-Control: no-store by the handler itself.
 func (h *Handler) Register(r server.Registrar) {
+	h.registerLoginFlow(r)
 	r.Handle("POST /api/v1/auth/login", noStore(http.HandlerFunc(h.login)))
 	r.Handle("POST /api/v1/auth/logout", h.RequireSession(http.HandlerFunc(h.logout)))
 	r.Handle("GET /api/v1/auth/session", h.RequireSession(http.HandlerFunc(h.current)))

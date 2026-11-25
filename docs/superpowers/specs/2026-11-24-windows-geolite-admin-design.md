@@ -1,5 +1,7 @@
 ﻿# Windows GeoLite Admin Design
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical statements below are preserved and do not create current Windows work.
+
 ## Intent
 
 Let an administrator configure and operate GeoLite2 Country from the BookmarksSync Admin Settings GUI on native Windows. Updates must preserve the active database and fail-closed country policy whenever download, validation, or installation fails.

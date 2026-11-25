@@ -1,5 +1,7 @@
 # User Recovery Implementation Plan
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical implementation/test statements below are preserved; they do not create current Windows work.
+
 > **For agentic workers:** Use the TDD workflow task-by-task. Steps use checkbox syntax.
 
 **Goal:** Restore one user's private bookmarks and saved settings from a verified full-system archive without replacing their current account or affecting other users.

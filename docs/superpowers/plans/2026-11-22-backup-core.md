@@ -1,5 +1,7 @@
 # Operations Backup Core Plan
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical implementation/test statements below are preserved; they do not create current Windows work.
+
 ## Goal
 
 Deliver a portable, compressed full-system backup archive and a safe restore path into a new data directory. This is the first Operations slice; scheduling, network/cloud destinations, optional encryption, user-only recovery, geo restrictions, notifications, and installers follow in separate tasks.

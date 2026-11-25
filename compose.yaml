@@ -1,5 +1,6 @@
 services:
   bookmarksync:
+    platform: linux/amd64
     build:
       context: .
       dockerfile: Dockerfile
@@ -7,7 +8,7 @@ services:
         BOOKMARKSYNC_VERSION: ${BOOKMARKSYNC_VERSION:-dev}
         BOOKMARKSYNC_COMMIT: ${BOOKMARKSYNC_COMMIT:-unknown}
         BOOKMARKSYNC_DATE: ${BOOKMARKSYNC_DATE:-unknown}
-    image: bookmarksync:local
+    image: ${BOOKMARKSYNC_IMAGE:-bookmarksync:local}
     restart: unless-stopped
     ports:
       - "${BOOKMARKSYNC_HTTP_BIND:-127.0.0.1}:${BOOKMARKSYNC_HTTP_PORT:-8080}:8080"
@@ -36,6 +37,41 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+  geoip-updater:
+    profiles: [geoip]
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: geoip-updater
+      args:
+        BOOKMARKSYNC_VERSION: ${BOOKMARKSYNC_VERSION:-dev}
+        BOOKMARKSYNC_COMMIT: ${BOOKMARKSYNC_COMMIT:-unknown}
+        BOOKMARKSYNC_DATE: ${BOOKMARKSYNC_DATE:-unknown}
+    image: bookmarksync-geoip:local
+    restart: unless-stopped
+    environment:
+      BOOKMARKSYNC_GEOIP_INTERVAL: ${BOOKMARKSYNC_GEOIP_INTERVAL:-86400}
+    secrets:
+      - source: maxmind_config
+        target: maxmind_config
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+    volumes:
+      - ${BOOKMARKSYNC_GEOIP_DIR:-./geoip}:/geo
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+secrets:
+  maxmind_config:
+    file: ${BOOKMARKSYNC_MAXMIND_CONFIG:-./secrets/GeoIP.conf}
 
 volumes:
   bookmarksync-data:

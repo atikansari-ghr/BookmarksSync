@@ -193,7 +193,10 @@ const LOG_CAP = 1 << 20
  * On any startup failure the child is killed and awaited before the rejection.
  */
 export async function startProcessServer({ command, args = [], env = {}, cwd, readyUrl, startupTimeoutMs = 30000, secrets = [], onSpawn, terminate = killTree, stopTimeoutMs = 8000 }) {
-  const child = spawn(command, args, { cwd, env: { ...baseEnv(), ...env }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
+  // Disposable servers are bound to loopback and must opt into its management
+  // range now that the real country gate denies every unconfigured client.
+  // Callers testing the gate can explicitly override this with an empty value.
+  const child = spawn(command, args, { cwd, env: { ...baseEnv(), BOOKMARKSYNC_MANAGEMENT_CIDRS: '127.0.0.0/8,::1/128', ...env }, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
   let buf = ''
   const take = d => { buf += d.toString(); if (buf.length > LOG_CAP) buf = buf.slice(-LOG_CAP) }
   child.stdout.on('data', take); child.stderr.on('data', take)

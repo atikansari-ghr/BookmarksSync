@@ -78,3 +78,70 @@ test('the Go build requires the UI smoke job', () => {
   assert.ok(needs, 'build job has no needs list')
   assert.ok(needs[1].split(',').map(s => s.trim()).includes(uiJobName), `build does not need ${uiJobName}`)
 })
+
+test('the same Linux browser gate runs the real connection consent smoke', () => {
+  assert.match(uiJob, /BH_GO_EXE=.*npm run connect/)
+  assert.ok(uiJob.indexOf('npm run connect') > uiJob.indexOf('npm run ui'))
+  const manifest = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'tests/browser/package.json'), 'utf8'))
+  assert.equal(manifest.scripts.connect, 'node loginflow-smoke.mjs')
+})
+
+test('catalog-visible releases wait for the attested Docker image without a dependency cycle', () => {
+  const dependencies = name => {
+    const list = /^ {4}needs: \[([^\]]*)\]/m.exec(JOBS[name] ?? '')
+    return list ? list[1].split(',').map(value => value.trim()).filter(Boolean) : []
+  }
+  assert.deepEqual(dependencies('publish-image'), ['build'])
+  assert.deepEqual(dependencies('publish-build'), ['build', 'publish-image'])
+  assert.match(JOBS['publish-image'], /uses: actions\/attest@[0-9a-f]{40}/)
+  assert.match(JOBS['publish-image'], /push-to-registry: true/)
+  for (const name of ['publish-image', 'publish-build']) {
+    assert.match(JOBS[name], /if: github\.event_name == 'push' && github\.ref == 'refs\/heads\/main'/)
+  }
+  const visiting = new Set(), complete = new Set()
+  const visit = name => {
+    assert.ok(JOBS[name], `unknown dependency ${name}`)
+    assert.ok(!visiting.has(name), `dependency cycle through ${name}`)
+    if (complete.has(name)) return
+    visiting.add(name)
+    for (const dependency of dependencies(name)) visit(dependency)
+    visiting.delete(name)
+    complete.add(name)
+  }
+  for (const name of Object.keys(JOBS)) visit(name)
+})
+
+/** Returns the indented body of a top-level `key:` map, or null when absent. */
+function topLevelBlock(text, key) {
+  const lines = text.split('\n')
+  const start = lines.indexOf(`${key}:`)
+  if (start === -1) return null
+  const body = []
+  for (const line of lines.slice(start + 1)) {
+    if (/^\S/.test(line)) break
+    body.push(line)
+  }
+  return body.join('\n')
+}
+
+test('a newer push never cancels a running main publication; pull requests still cancel superseded runs', () => {
+  const concurrency = topLevelBlock(WORKFLOW, 'concurrency')
+  assert.ok(concurrency, 'workflow has a top-level concurrency block')
+  // Grouping by ref keeps one PR's runs together so a new PR push supersedes the old run.
+  assert.match(concurrency, /^ {2}group: ci-\$\{\{ github\.ref \}\}\s*$/m)
+  const cancel = /^ {2}cancel-in-progress:\s*(.+?)\s*$/m.exec(concurrency)
+  assert.ok(cancel, 'concurrency block sets cancel-in-progress')
+  // Cancelling a running main run can strand a draft release or an unattested image
+  // that a routine rerun cannot repair, so only pull-request runs may be cancelled.
+  assert.equal(cancel[1], "${{ github.event_name == 'pull_request' }}")
+  for (const [name, block] of Object.entries(JOBS)) {
+    assert.doesNotMatch(block, /^\s+concurrency:/m, `${name} must not override workflow concurrency`)
+    assert.doesNotMatch(block, /cancel-in-progress:/, `${name} must not set cancel-in-progress`)
+  }
+})
+
+test('Debian ownership and approval-queue fixtures run as root in Linux CI', () => {
+  for (const script of ['test-bookmarksync.sh', 'test-update-queue.sh']) {
+    assert.match(JOBS.docker, new RegExp('run: sudo --preserve-env=PATH bash scripts/debian/' + script.replaceAll('.', '\\.') + '(?:\\r?\\n|$)'))
+  }
+})

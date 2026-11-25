@@ -5,7 +5,6 @@ import { Workspace } from '../components/Workspace'
 import { AdminBackups } from '../components/AdminBackups'
 import { AdminNotifications } from '../components/AdminNotifications'
 import { AdminUpdates } from '../components/AdminUpdates'
-import { AdminGeoLite } from '../components/AdminGeoLite'
 import { useApp } from '../context'
 
 type AdminUser = { id: number; username: string; active: boolean; isAdmin: boolean; bookmarkCount: number; folderCount: number; storageBytes: number; connectionCount: number; themeDefault?: string | null }
@@ -156,7 +155,6 @@ function Admin() {
       <AdminUpdates />
       <AdminBackups />
       <AdminNotifications />
-      <AdminGeoLite />
 
       <section className="ws-card glass admin-section" aria-labelledby="network-access-title">
         <form className="stack" onSubmit={saveNetworkAccess}>

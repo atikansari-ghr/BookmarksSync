@@ -21,6 +21,9 @@
 !internal/webui/static/assets/index-*.css
 !third_party/
 !third_party/rclone-COPYING
+!scripts/
+!scripts/docker/
+!scripts/docker/geoip-update.sh
 **/.env
 **/.env.*
 **/*.conf

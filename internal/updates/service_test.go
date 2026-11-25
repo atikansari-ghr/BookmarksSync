@@ -15,10 +15,11 @@ func TestCatalogServiceCachesUpstreamAndRecomputesInstalledState(t *testing.T) {
 		if r.URL.Query().Get("per_page") != "100" {
 			t.Errorf("unexpected query: %s", r.URL.RawQuery)
 		}
-		_, _ = w.Write([]byte(`[{"tag_name":"build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","draft":false,"prerelease":true,"published_at":"2026-11-23T14:00:00Z","assets":[{"name":"bookmarksync-linux-amd64"},{"name":"bookmarksync-windows-amd64.exe"},{"name":"bookmarksync-updater-windows-amd64.exe"},{"name":"geoipupdate-windows-amd64.exe"},{"name":"GEOIPUPDATE-LICENSES.txt"},{"name":"BUILD_INFO.txt"},{"name":"SHA256SUMS"}]}]`))
+		_, _ = w.Write([]byte(`[{"tag_name":"build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","draft":false,"prerelease":true,"published_at":"2026-11-23T14:00:00Z","assets":[{"name":"bookmarksync-linux-amd64"},{"name":"BUILD_INFO.txt"},{"name":"SHA256SUMS"}]}]`))
 	}))
 	defer server.Close()
 	service := NewCatalogService(CatalogClient{BaseURL: server.URL + "/releases?per_page=100", HTTPClient: server.Client()})
+	service.goos, service.goarch = "linux", "amd64"
 
 	first, err := service.List(context.Background(), "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 	if err != nil {

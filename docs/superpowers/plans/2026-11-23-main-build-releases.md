@@ -1,5 +1,7 @@
 # Main Build Releases Implementation Plan
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical implementation/test statements below are preserved; they do not create current Windows work.
+
 > **For agentic workers:** This plan is executed by Codex in the current session.
 
 **Goal:** Publish every fully verified `main` build as a SHA-addressed immutable-ready prerelease with binary provenance.

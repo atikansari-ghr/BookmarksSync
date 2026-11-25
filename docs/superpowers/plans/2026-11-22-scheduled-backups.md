@@ -1,5 +1,7 @@
 # Scheduled Backups Implementation Plan
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical implementation/test statements below are preserved; they do not create current Windows work.
+
 > **For agentic workers:** Use `superpowers:executing-plans` task by task. Keep implementation and review commits authored only by Atik Ansari.
 
 **Goal:** Run verified weekly and monthly full-system backups to operator-prepared filesystem and rclone destinations, with admin controls and safe retention.

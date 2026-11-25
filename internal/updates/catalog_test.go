@@ -78,7 +78,7 @@ func TestCatalogClientUsesBoundedTimeoutByDefault(t *testing.T) {
 }
 
 func TestRequiredReleaseAssetsAndCatalogPlatformFiltering(t *testing.T) {
-	if got := RequiredReleaseAssets("windows", "amd64"); !sameStrings(got, []string{"bookmarksync-windows-amd64.exe", "bookmarksync-updater-windows-amd64.exe", "geoipupdate-windows-amd64.exe", "GEOIPUPDATE-LICENSES.txt", "BUILD_INFO.txt", "SHA256SUMS"}) {
+	if got := RequiredReleaseAssets("windows", "amd64"); len(got) != 0 {
 		t.Fatalf("Windows assets = %v", got)
 	}
 	if got := RequiredReleaseAssets("linux", "amd64"); !sameStrings(got, []string{"bookmarksync-linux-amd64", "BUILD_INFO.txt", "SHA256SUMS"}) {
@@ -97,7 +97,7 @@ func TestRequiredReleaseAssetsAndCatalogPlatformFiltering(t *testing.T) {
 	}
 	body = `[{"tag_name":"build-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","draft":false,"prerelease":true,"published_at":"2026-11-23T12:00:00Z","assets":[{"name":"bookmarksync-windows-amd64.exe"},{"name":"bookmarksync-updater-windows-amd64.exe"},{"name":"geoipupdate-windows-amd64.exe"},{"name":"GEOIPUPDATE-LICENSES.txt"},{"name":"BUILD_INFO.txt"},{"name":"SHA256SUMS"}]}]`
 	got, err = client.ListForPlatform(context.Background(), "", "windows", "amd64")
-	if err != nil || len(got.Releases) != 1 {
+	if err != nil || len(got.Releases) != 0 || got.Latest != nil || got.UpdateAvailable {
 		t.Fatalf("complete Windows catalog = %+v, %v", got, err)
 	}
 	got, err = client.ListForPlatform(context.Background(), "", "windows", "arm64")

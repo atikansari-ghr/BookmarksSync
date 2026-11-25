@@ -1,5 +1,7 @@
 # GeoLite Provisioning Design
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical implementation/test statements below are preserved; they do not create current Windows work.
+
 ## Intent
 
 Automate GeoLite2 Country installation and updates for Debian and the dedicated Proxmox LXC, so the server's default Saudi Arabia/India access policy works without manually downloading MMDB files. Failed or invalid updates must not replace a working database or weaken the country gate.

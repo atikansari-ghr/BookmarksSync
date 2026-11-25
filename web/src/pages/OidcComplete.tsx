@@ -1,3 +1,4 @@
+import { signInDestination } from '../connection'
 import { useEffect, useState } from 'react'
 import { useApp } from '../context'
 import { AuthLayout } from './LoginPage'
@@ -33,7 +34,7 @@ export function OidcComplete() {
   const [outcome] = useState(takeResult)
 
   useEffect(() => {
-    if (outcome.result === 'signed_in') navigate('/auth/security', { replace: true })
+    if (outcome.result === 'signed_in') void signInDestination().then(to => navigate(to, { replace: true }))
     else if (outcome.result === 'linked') navigate('/auth/security', { replace: true, notice: 'Account linked.' })
   }, [outcome, navigate])
 

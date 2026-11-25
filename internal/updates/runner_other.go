@@ -1,6 +1,6 @@
-//go:build !linux && !windows
+//go:build !linux
 
 package updates
 
-// Non-Linux deployments require a platform-specific updater.
+// Host updates are supported only on Linux.
 func InstalledHostRunner(string) UpdateRunner { return nil }

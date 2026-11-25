@@ -20,13 +20,13 @@ sudo systemctl start bookmarksync-geoip-update.service
 journalctl -u bookmarksync-geoip-update.service --since today
 ```
 
-Validate a local database explicitly with `bookmarksync network validate-geo --file /path/to/GeoLite2-Country.mmdb`. The setup script supports Debian amd64 and arm64. **Windows admins configure GeoLite in Administration → GeoLite**; do not edit the service environment or use a separate setup command for routine GeoLite settings. Windows releases include a pinned updater. The admin page stores credentials in the protected updater service area, schedules the task, and reports its sanitized status. Clearing credentials keeps the last valid database. The fixed Windows database path is `%ProgramData%\BookmarksSync\geolite\database\GeoLite2-Country.mmdb`.
+Validate a local database explicitly with `bookmarksync network validate-geo --file /path/to/GeoLite2-Country.mmdb`. The setup script supports Debian amd64 and arm64.
 
-Docker does not yet have automatic GeoLite scheduling; provide a validated MMDB path through `BOOKMARKSYNC_GEOIP_DB` and manage its refresh with the container host.
+For Docker, use a validated MMDB through `BOOKMARKSYNC_GEOIP_DB`; the application mounts its database directory read-only. See [Docker operations](docker-operations.md) for the opt-in updater profile, protected MaxMind secret, scheduling and manual refresh commands. MaxMind credentials are never mounted in the application container.
 
 This product includes GeoLite Data created by MaxMind, available from https://www.maxmind.com. The Country code is used only to apply the configured access policy; BookmarksSync does not expose visitor locations in its UI or API.
 
-The server validates the database type at startup and logs its build date. The Debian updater restarts the service after installing a valid replacement. If managing a database manually, set `BOOKMARKSYNC_GEOIP_DB=/path/to/GeoLite2-Country.mmdb` and restart the service after replacing the file.
+The server validates the database type and logs its build date. With `BOOKMARKSYNC_GEOIP_DB` configured, request-time lookups check for file changes at most once every 30 seconds. A missing or invalid database at startup keeps country lookups unavailable until a valid file appears; management CIDRs remain the recovery path. A valid atomic replacement refreshes the reader without a restart. A missing or invalid replacement preserves the last valid reader. The Debian updater also restarts its configured service after publishing a changed database. When managing a database manually, stage and validate it first, then atomically replace the file in the mounted directory.
 
 If the database is missing or invalid, health checks and all other traffic are denied outside configured management CIDRs. Keep a local management path or configured management network available.
 
@@ -58,4 +58,4 @@ BOOKMARKSYNC_TRUSTED_PROXIES=127.0.0.1/32,192.168.10.20/32
 BOOKMARKSYNC_MANAGEMENT_CIDRS=192.168.10.0/24
 ```
 
-Debian/LXC provisioning and scheduled updates are automated by the setup script. Windows scheduling is managed through Administration → GeoLite. Docker scheduling and final public proxy/country acceptance remain pending.
+Debian/LXC provisioning and scheduled updates are automated by the setup script. Final live MaxMind and public proxy/country acceptance require operator credentials and a public route.

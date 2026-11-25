@@ -153,7 +153,8 @@ func CountryAllowed(ip netip.Addr, policy Policy, management []netip.Prefix, loo
 }
 
 // OpenCountryDatabase loads an offline GeoLite2-Country or GeoIP2-Country database.
-// The selected file is read at startup; replacing it on disk requires a restart.
+// This fixed reader stays on the opened file. Servers use ReloadingCountryDatabase
+// to observe validated replacements without restarting.
 func OpenCountryDatabase(path string) (*CountryDatabase, error) {
 	return openCountryDatabase(path, "")
 }

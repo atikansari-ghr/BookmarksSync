@@ -38,6 +38,7 @@ const usage = `usage:
   bookmarksync --version
   bookmarksync --help
   bookmarksync serve [--listen host:port] [--data-dir dir] [--public-url URL]
+  bookmarksync healthcheck [--url http://127.0.0.1:8080/readyz]
   bookmarksync backup create --data-dir dir --output archive.zip
   bookmarksync backup verify --file archive.zip
   bookmarksync backup restore --file archive.zip --target-dir new-data-dir
@@ -101,9 +102,6 @@ func main() {
 }
 
 func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, getenv func(string) string) int {
-	if handled, code := runServiceCommand(ctx, args, stderr, getenv); handled {
-		return code
-	}
 	if len(args) == 0 {
 		fmt.Fprint(stderr, usage)
 		return 2
@@ -129,6 +127,8 @@ func run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.
 		return admin(ctx, args, stdin, stdout, stderr, getenv)
 	case "backup":
 		return backupCommand(ctx, args[1:], stdout, stderr)
+	case "healthcheck":
+		return healthcheckCommand(ctx, args[1:], stderr)
 	default:
 		fmt.Fprintf(stderr, "bookmarksync: unknown command %q\n%s", args[0], usage)
 		return 2
@@ -210,17 +210,20 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 		}
 	}
 	ids := identity.New(db.SQL(), idOpts...)
-	var geoDB *network.CountryDatabase
+	var geoDB *network.ReloadingCountryDatabase
 	var countryLookup network.CountryLookup
 	if cfg.GeoIPDBPath == "" {
 		log.Warn("GeoIP country database is not configured; all clients outside configured management CIDRs will be denied")
-	} else if opened, err := network.OpenCountryDatabase(cfg.GeoIPDBPath); err != nil {
-		log.Warn("GeoIP country database unavailable; all clients outside configured management CIDRs will be denied", "error", err.Error())
 	} else {
-		geoDB = opened
+		var err error
+		geoDB, err = network.NewReloadingCountryDatabase(cfg.GeoIPDBPath)
 		countryLookup = geoDB
 		defer geoDB.Close()
-		log.Info("GeoIP country database loaded", "build_time", geoDB.BuildTime().UTC().Format(time.RFC3339))
+		if err != nil {
+			log.Warn("GeoIP country database unavailable; public traffic denied until a valid database is published", "error", err.Error())
+		} else {
+			log.Info("GeoIP country database loaded", "build_time", geoDB.BuildTime().UTC().Format(time.RFC3339))
+		}
 	}
 	networkGate := &network.Gate{
 		TrustedProxies: cfg.TrustedProxies, ManagementCIDRs: cfg.ManagementCIDRs, Lookup: countryLookup, Logger: log,
@@ -261,11 +264,12 @@ func serve(ctx context.Context, args []string, stderr io.Writer, getenv func(str
 		var updateApply func(context.Context, string) (string, error)
 		if hostUpdater := updates.InstalledHostRunner(os.Getenv("BOOKMARKSYNC_UPDATE_SERVICE_USER")); hostUpdater != nil {
 			updateApply = hostUpdater.Start
+			log.Info("host update approvals enabled")
 		}
-		apiH, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupAPI{manager: backupManager}, Notifications: notificationService, NotificationUsers: userNotificationService, UpdateCatalog: updateCatalog.List, UpdateApply: updateApply, GeoLite: updates.InstalledGeoLiteRunner(), AssetMu: assetMu, Logger: log, Health: health.New(cfg.DataDir), Readiness: db, SyncErrors: adapter.SyncErrors, AssetDir: filepath.Join(cfg.DataDir, "branding"),
+		apiH, err := api.New(api.Options{Auth: authH, Identity: ids, Bookmarks: bm, LinkChecks: lc, Backups: backupAPI{manager: backupManager}, Notifications: notificationService, NotificationUsers: userNotificationService, UpdateCatalog: updateCatalog.List, UpdateApply: updateApply, AssetMu: assetMu, Logger: log, Health: health.New(cfg.DataDir), Readiness: db, SyncErrors: adapter.SyncErrors, AssetDir: filepath.Join(cfg.DataDir, "branding"),
 			System: api.SystemInfo{Version: version.Current().Version, Commit: version.Current().Commit, PublicOrigin: cfg.PublicOrigin,
 				PasskeysEnabled: passkeysEnabled, OIDCProviders: configuredOIDCNames(cfg.OIDCProviders),
-				GeoIPAvailable: geoDB != nil, GeoIPBuildTime: geoBuildTime(geoDB), TrustedProxyCount: len(cfg.TrustedProxies)}})
+				GeoIPAvailable: geoDB.Available(), GeoIPBuildTime: geoBuildTime(geoDB), GeoIPStatus: func() (bool, time.Time) { return geoDB.Available(), geoDB.BuildTime() }, TrustedProxyCount: len(cfg.TrustedProxies)}})
 		if err != nil {
 			_ = ln.Close()
 			return err
@@ -326,7 +330,7 @@ func configuredOIDCNames(providers []config.OIDCProvider) []string {
 	return names
 }
 
-func geoBuildTime(db *network.CountryDatabase) time.Time {
+func geoBuildTime(db *network.ReloadingCountryDatabase) time.Time {
 	if db == nil {
 		return time.Time{}
 	}

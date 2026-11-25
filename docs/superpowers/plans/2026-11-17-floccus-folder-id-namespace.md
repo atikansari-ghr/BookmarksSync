@@ -1,5 +1,7 @@
 # Floccus Folder ID Namespace Implementation Plan
 
+> Historical record: native Windows server scope and Windows acceptance gates are superseded by the [2026-11-24 Linux-only decision](../specs/2026-11-24-linux-only-design.md). Historical implementation/test statements below are preserved; they do not create current Windows work.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. Work test-first in the shared feature branch; do not edit the Floccus extension.
 
 **Goal:** Prevent stock floccus 5.13.0 from confusing local browser folder IDs with server folder IDs during reorder reconciliation.
