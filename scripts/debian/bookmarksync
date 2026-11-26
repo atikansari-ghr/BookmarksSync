@@ -1,0 +1,1081 @@
+#!/usr/bin/env bash
+# Managed by BookmarksSync installer
+set -Eeuo pipefail
+umask 077
+
+readonly repository="atikansari-ghr/BookmarksSync"
+readonly api_releases="https://api.github.com/repos/${repository}/releases?per_page=100"
+readonly signer_workflow="${repository}/.github/workflows/ci.yml"
+readonly service_user="${BOOKMARKSYNC_SERVICE_USER:-bookmarksync}"
+readonly service_group="${BOOKMARKSYNC_SERVICE_GROUP:-bookmarksync}"
+readonly service_name="${BOOKMARKSYNC_SERVICE:-bookmarksync.service}"
+readonly binary_path="${BOOKMARKSYNC_BINARY_PATH:-/usr/local/bin/bookmarksync}"
+readonly data_path="${BOOKMARKSYNC_DATA_PATH:-/var/lib/bookmarksync}"
+readonly env_path="${BOOKMARKSYNC_ENV_PATH:-/etc/bookmarksync/bookmarksync.env}"
+readonly unit_dir="${BOOKMARKSYNC_SYSTEMD_DIR:-/etc/systemd/system}"
+readonly updates_path="${BOOKMARKSYNC_UPDATES_PATH:-/var/lib/bookmarksync-updates}"
+readonly installer_copy_path="/usr/local/sbin/bookmarksync-installer"
+readonly managed_marker="# Managed by BookmarksSync installer"
+# Browser-approved Debian updates: the app writes an empty SHA-named marker into
+# its inbox; a root .path unit runs the fixed worker, which claims the marker and
+# invokes the installer copy. No sudo or setuid handoff crosses this boundary.
+readonly update_queue_root_path="/var/lib/bookmarksync-update-queue"
+readonly update_queue_inbox_path="${update_queue_root_path}/inbox"
+readonly update_queue_owner_text="BookmarksSync Debian update queue"
+readonly update_queue_worker_path="/usr/local/libexec/bookmarksync-update-queue-worker"
+readonly update_queue_service="bookmarksync-update-queue.service"
+readonly update_queue_path_unit="bookmarksync-update-queue.path"
+# Sudo-era artifacts, removed only when they carry the managed marker.
+readonly legacy_update_helper_path="/usr/local/sbin/bookmarksync-update"
+readonly legacy_update_worker_path="/usr/local/libexec/bookmarksync-update-worker"
+readonly legacy_sudoers_update_path="/etc/sudoers.d/bookmarksync-update"
+cleanup_directory=""
+
+cleanup_temporary_directory() {
+  [[ -z "$cleanup_directory" ]] || rm -rf -- "$cleanup_directory"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: bookmarksync <command> [options]
+
+Commands:
+  install                 Install the latest published verified build
+  upgrade --tag TAG       Upgrade to an explicit SHA-addressed release
+  repair --tag TAG         Reinstall a verified release and managed service files
+  diagnostics              Print sanitized state, version and local readiness
+  backup --output PATH     Create and verify an independent full backup ZIP
+  restore --file PATH --target-dir PATH
+                           Verify and restore to a new offline directory
+  uninstall                Remove managed runtime artifacts; retain all data
+  help                     Show this help
+
+Run as root on Debian amd64 with systemd. Upgrades preserve data and create a
+full-system rollback snapshot before changing the installed binary.
+EOF
+}
+
+fail() {
+  printf 'bookmarksync: %s\n' "$1" >&2
+  exit 1
+}
+
+check_platform() {
+  local os_id arch
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]]; then
+    os_id="${BOOKMARKSYNC_TEST_OS:-debian}"
+    arch="${BOOKMARKSYNC_TEST_ARCH:-amd64}"
+  else
+    [[ -r /etc/os-release ]] || fail "cannot identify operating system"
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    os_id="${ID:-}"
+    arch="$(dpkg --print-architecture 2>/dev/null || true)"
+  fi
+  [[ "$os_id" == debian ]] || fail "this command supports Debian only"
+  [[ "$arch" == amd64 ]] || fail "this command supports Debian amd64 only"
+  command -v systemctl >/dev/null 2>&1 || [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]] || fail "systemd is required"
+}
+
+require_user_root() {
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]]; then
+    [[ -n "${BOOKMARKSYNC_INSTALL_ROOT:-}" && "${BOOKMARKSYNC_INSTALL_ROOT}" != / ]] || fail "tests must use an isolated install root"
+    local test_root="$BOOKMARKSYNC_INSTALL_ROOT"
+    [[ -d "$test_root" && ! -L "$test_root" && "$(realpath -e -- "$test_root")" = "$test_root" ]] || fail "test root must be an existing canonical directory without symlinks"
+    [[ "$test_root" = /tmp/* || "$test_root" = /var/tmp/* ]] || fail "test root must be isolated beneath /tmp or /var/tmp"
+    return
+  fi
+  [[ "$(id -u)" -eq 0 ]] || fail "run as root (for example: sudo scripts/debian/bookmarksync install)"
+}
+
+resolve_release_tag() {
+  local requested="$1" payload selected
+  command -v curl >/dev/null 2>&1 || fail "curl is required"
+  command -v python3 >/dev/null 2>&1 || fail "Python 3 is required"
+  payload="$(curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
+    -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2026-03-10' "$api_releases")" || fail "cannot query the public BookmarksSync releases"
+  selected="$(python3 -c '
+import json, re, sys
+requested = sys.argv[1]
+try:
+    releases = json.load(sys.stdin)
+except Exception:
+    raise SystemExit(2)
+base = [r for r in releases if isinstance(r, dict) and
+        re.fullmatch(r"build-[0-9a-f]{40}", str(r.get("tag_name", ""))) and
+        r.get("draft") is False and r.get("prerelease") is True and
+        isinstance(r.get("published_at"), str)]
+required = {"bookmarksync-linux-amd64", "BUILD_INFO.txt", "SHA256SUMS"}
+def complete(r):
+    assets = r.get("assets", [])
+    names = {a.get("name") for a in assets if isinstance(a, dict)}
+    return required.issubset(names)
+valid = [r for r in base if complete(r)]
+if requested:
+    candidates = [r for r in base if r["tag_name"] == requested]
+    matches = [r for r in candidates if complete(r)]
+    if not matches:
+        raise SystemExit(5 if candidates else 3)
+    print(matches[0]["tag_name"])
+else:
+    valid.sort(key=lambda r: r["published_at"], reverse=True)
+    if not valid:
+        raise SystemExit(4)
+    print(valid[0]["tag_name"])
+' "$requested" <<<"$payload")" || {
+    case "$?" in
+      3) fail "requested release tag was not found among published SHA builds" ;;
+      4) fail "no published SHA build is available" ;;
+      5) fail "requested release is missing required assets" ;;
+      *) fail "release API response is invalid" ;;
+    esac
+  }
+  [[ "$selected" =~ ^build-[0-9a-f]{40}$ ]] || fail "release API returned an invalid tag"
+  printf '%s\n' "$selected"
+}
+
+download_and_verify_release() {
+  local tag="$1" directory="$2" commit asset_url
+  mkdir -p -- "$directory"
+  chmod 0700 "$directory"
+  commit="${tag#build-}"
+  for asset in bookmarksync-linux-amd64 BUILD_INFO.txt SHA256SUMS; do
+    asset_url="https://github.com/${repository}/releases/download/${tag}/${asset}"
+    curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
+      "$asset_url" --output "${directory}/${asset}" || fail "cannot download release asset ${asset}"
+  done
+  (cd -- "$directory" && sha256sum --check SHA256SUMS) || fail "release checksum verification failed"
+  grep -Fxq "commit=${commit}" "${directory}/BUILD_INFO.txt" || fail "build metadata does not match the release tag"
+  grep -Fxq "version=0.0.0-${commit:0:12}" "${directory}/BUILD_INFO.txt" || fail "release version does not match its commit"
+  command -v gh >/dev/null 2>&1 || fail "GitHub CLI is required for release provenance verification"
+  gh release verify "$tag" --repo "$repository" >/dev/null || fail "GitHub release attestation verification failed"
+  gh attestation verify "${directory}/bookmarksync-linux-amd64" --repo "$repository" \
+    --signer-workflow "$signer_workflow" --source-ref refs/heads/main --source-digest "$commit" >/dev/null || fail "binary provenance verification failed"
+}
+
+managed_path() {
+  local path="$1"
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]]; then
+    printf '%s%s\n' "${BOOKMARKSYNC_INSTALL_ROOT%/}" "$path"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
+check_managed_path() {
+  local path="$1"
+  [[ ! -L "$path" ]] || fail "refusing to follow managed path symlink: $path"
+}
+
+lock_maintenance() {
+  command -v flock >/dev/null 2>&1 || fail 'flock (util-linux) is required for maintenance'
+  local lock parent
+  lock=$(managed_path /run/bookmarksync-maintenance/maintenance.lock)
+  parent=$(dirname -- "$lock")
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" = 1 ]]; then mkdir -p -- "$parent"; fi
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" != 1 && ! -e "$parent" && ! -L "$parent" ]]; then install -d -o root -g root -m 0700 "$parent"; fi
+  [[ -d "$parent" && ! -L "$parent" && "$(realpath -e -- "$parent")" = "$parent" ]] || fail 'unsafe maintenance lock directory'
+  [[ ! -L "$lock" ]] || fail 'unsafe maintenance lock file'
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" != 1 ]]; then
+    [[ "$(stat -c '%u:%a' "$parent")" = 0:700 ]] || fail 'maintenance lock directory must belong to root with mode 0700'
+    if [[ -e "$lock" ]]; then [[ -f "$lock" && "$(stat -c '%u:%a' "$lock")" = 0:600 ]] || fail 'unsafe maintenance lock ownership'; fi
+  fi
+  exec 9> "$lock"
+  chmod 0600 "$lock"
+  flock -n 9 || fail 'another BookmarksSync maintenance command is running'
+}
+
+validate_backup_keys() {
+  local keys=$1 key mode
+  [[ ! -L "$keys" ]] || fail 'backup recovery key directory cannot be a symlink'
+  [[ -e "$keys" ]] || return 0
+  [[ -d "$keys" && "$(realpath -e -- "$keys")" = "$keys" ]] || fail 'unsafe backup recovery key directory'
+  [[ "$(stat -c '%a' "$keys")" = 700 ]] || fail 'backup recovery key directory must have mode 0700'
+  for key in "$keys"/* "$keys"/.[!.]* "$keys"/..?*; do
+    [[ -e "$key" || -L "$key" ]] || continue
+    [[ -f "$key" && ! -L "$key" && "$(stat -c '%a' "$key")" = 600 ]] || fail 'backup recovery keys must be regular mode 0600 files'
+  done
+}
+
+ensure_github_cli() {
+  command -v gh >/dev/null 2>&1 && return
+  [[ "${BOOKMARKSYNC_TESTING:-0}" != 1 ]] || fail "test harness must provide a fake gh command"
+  command -v apt-get >/dev/null 2>&1 || fail "install GitHub CLI (gh) from its official Debian repository, then retry"
+  local keyring=/etc/apt/keyrings/githubcli-archive-keyring.gpg source=/etc/apt/sources.list.d/github-cli.list temp
+  temp="$(mktemp)"
+  curl --fail --location --silent --show-error --proto '=https' --proto-redir '=https' \
+    https://cli.github.com/packages/githubcli-archive-keyring.gpg --output "$temp" || fail "cannot download GitHub CLI signing keyring"
+  printf '%s  %s\n' 6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b "$temp" | sha256sum --check --status || fail "GitHub CLI keyring checksum changed; review the official key and update this installer"
+  install -d -m 0755 /etc/apt/keyrings /etc/apt/sources.list.d
+  if [[ -e "$keyring" ]]; then
+    check_managed_path "$keyring"
+    printf '%s  %s\n' 6084d5d7bd8e288441e0e94fc6275570895da18e6751f70f057485dc2d1a811b "$keyring" | sha256sum --check --status || fail "existing GitHub CLI keyring is not the pinned official keyring"
+  else
+    install -m 0644 "$temp" "$keyring"
+  fi
+  local source_text="deb [arch=amd64 signed-by=${keyring}] https://cli.github.com/packages stable main"
+  if [[ -e "$source" ]]; then
+    check_managed_path "$source"
+    [[ "$(cat -- "$source")" == "$source_text" ]] || fail "existing GitHub CLI APT source differs; review it before retrying"
+  else
+    printf '%s\n' "$source_text" > "${source}.next"
+    chmod 0644 "${source}.next"
+    mv -- "${source}.next" "$source"
+  fi
+  rm -f -- "$temp"
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install --yes gh
+  command -v gh >/dev/null 2>&1 || fail "GitHub CLI installation did not provide gh"
+}
+
+validate_initial_settings() {
+  local public_url="$1" listen="$2" cidrs="$3"
+  python3 - "$public_url" "$listen" "$cidrs" <<'PY' || fail "public URL, listen address, or management CIDRs are invalid"
+import ipaddress, re, sys
+from urllib.parse import urlsplit
+
+public_url, listen, cidrs = sys.argv[1:]
+try:
+    public = urlsplit(public_url)
+    host = public.hostname
+    loopback = host == "localhost"
+    if host:
+        try:
+            loopback = loopback or ipaddress.ip_address(host).is_loopback
+        except ValueError:
+            pass
+    if (public.scheme != "https" and not (public.scheme == "http" and loopback)) or not host or "?" in public_url or "#" in public_url or public.username or public.password or public.path not in ("", "/") or public.query or public.fragment:
+        raise ValueError("invalid public origin")
+    _ = public.port
+    if not re.fullmatch(r"[A-Za-z0-9.\[\]:-]+", host):
+        raise ValueError("invalid public host")
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        if not re.fullmatch(r"(?=.{1,253}$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?", host):
+            raise ValueError("invalid public hostname")
+    if not re.fullmatch(r"[A-Za-z0-9.\[\]:_-]+", listen):
+        raise ValueError("invalid listen address")
+    parsed_listen = urlsplit("//" + listen)
+    if not parsed_listen.hostname or parsed_listen.port is None or parsed_listen.path:
+        raise ValueError("invalid listen address")
+    for part in filter(None, cidrs.split(',')):
+        ipaddress.ip_network(part, strict=False)
+except ValueError:
+    raise SystemExit(1)
+PY
+}
+
+initial_env_file() {
+  local path public_url listen cidrs
+  path="$(managed_path "$env_path")"
+  if [[ -e "$path" ]]; then
+    check_managed_path "$path"
+    [[ -f "$path" ]] || fail "environment path is not a regular file"
+    if [[ "${BOOKMARKSYNC_TESTING:-0}" != 1 ]]; then
+      [[ "$(stat -c '%u' -- "$path")" == 0 ]] || fail "existing environment file must be owned by root"
+    fi
+    chmod 0600 -- "$path"
+    return
+  fi
+  public_url="${BOOKMARKSYNC_PUBLIC_URL:-}"
+  listen="${BOOKMARKSYNC_LISTEN:-0.0.0.0:8080}"
+  cidrs="${BOOKMARKSYNC_MANAGEMENT_CIDRS:-}"
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" != 1 ]]; then
+    [[ -n "$public_url" ]] || { [[ -t 0 ]] && read -r -p 'Public HTTPS origin (for example https://bookmarks.example.com): ' public_url; }
+    [[ -n "$cidrs" ]] || { [[ -t 0 ]] && read -r -p 'Management CIDRs allowed when GeoIP is unavailable (LAN CIDR or blank): ' cidrs; }
+  fi
+  [[ -n "$public_url" ]] || fail "set BOOKMARKSYNC_PUBLIC_URL or run interactively to provide the public HTTPS origin"
+  validate_initial_settings "$public_url" "$listen" "$cidrs"
+  [[ ",$cidrs," == *,127.0.0.1/32,* ]] || cidrs="${cidrs:+${cidrs},}127.0.0.1/32"
+  [[ ",$cidrs," == *,::1/128,* ]] || cidrs="${cidrs:+${cidrs},}::1/128"
+  install -d -m 0750 "$(dirname -- "$path")"
+  local next="${path}.next"
+  check_managed_path "$next"
+  printf 'BOOKMARKSYNC_PUBLIC_URL=%s\nBOOKMARKSYNC_LISTEN=%s\nBOOKMARKSYNC_DATA_DIR=%s\nBOOKMARKSYNC_MANAGEMENT_CIDRS=%s\nBOOKMARKSYNC_GEOIP_DB=/var/lib/bookmarksync-geoip/GeoLite2-Country.mmdb\n' \
+    "$public_url" "$listen" "$data_path" "$cidrs" > "$next"
+  chmod 0600 "$next"
+  mv -- "$next" "$path"
+}
+
+write_managed_unit() {
+  local unit
+  unit="$(managed_path "${unit_dir%/}/${service_name}")"
+  check_managed_path "$unit"
+  check_managed_path "${unit}.next"
+  if [[ -e "$unit" ]] && ! grep -Fq '# Managed by BookmarksSync installer' "$unit"; then
+    fail "refusing to overwrite an unmanaged systemd unit: $unit"
+  fi
+  install -d -m 0755 -o root -g root "$(dirname -- "$unit")"
+  cat > "${unit}.next" <<EOF
+# Managed by BookmarksSync installer
+[Unit]
+Description=BookmarksSync self-hosted bookmark server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=${service_user}
+Group=${service_group}
+EnvironmentFile=${env_path}
+Environment=BOOKMARKSYNC_UPDATE_SERVICE_USER=${service_user}
+Environment=BOOKMARKSYNC_DEBIAN_UPDATE_QUEUE=${update_queue_inbox_path}
+ExecStart=${binary_path} serve
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=${data_path} -${update_queue_inbox_path}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "${unit}.next"
+  mv -f -- "${unit}.next" "$unit"
+}
+
+save_managed_state() {
+  local env_file="$1" unit_file="$2" env_snapshot="$3" unit_snapshot="$4"
+  install -m 0600 "$env_file" "$env_snapshot" || return 1
+  install -m 0644 "$unit_file" "$unit_snapshot" || return 1
+}
+
+ensure_service_account() {
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]]; then return 0; fi
+  if ! getent passwd "$service_user" >/dev/null; then
+    useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin --user-group "$service_user"
+  fi
+  getent group "$service_group" >/dev/null || fail "service group $service_group does not exist"
+}
+
+protected_ancestors() {
+  local part="$1" mode
+  while :; do
+    [[ -d "$part" && ! -L "$part" ]] || return 1
+    mode="$(stat -c '%a' -- "$part")"
+    [[ "$(stat -c '%u' -- "$part")" == 0 ]] && (( (8#$mode & 0022) == 0 )) || return 1
+    [[ "$part" != / ]] || return 0
+    part="$(dirname -- "$part")"
+  done
+}
+
+managed_queue_artifact() {
+  local path="$1"
+  [[ -e "$path" ]] || return 0
+  [[ -f "$path" ]] && grep -Fxq "$managed_marker" "$path" || fail "refusing to overwrite unmanaged update queue artifact: $path"
+}
+
+write_update_queue_worker() {
+  local target="$1" testing="$2" service_uid="$3" queue="$4" installer_copy="$5"
+  {
+    printf '#!/bin/bash\n%s\n' "$managed_marker"
+    printf '# Generated by the BookmarksSync installer. Rerun installer repair to change it.\n'
+    printf 'readonly testing=%q\n' "$testing"
+    printf 'readonly service_user=%q\n' "$service_user"
+    printf 'readonly service_uid=%q\n' "$service_uid"
+    printf 'readonly queue=%q\n' "$queue"
+    printf 'readonly installer=%q\n' "$installer_copy"
+    cat <<'WORKER'
+set -Eeuo pipefail
+umask 077
+fail() { printf 'BookmarksSync update queue worker: %s\n' "$1" >&2; exit 1; }
+if [[ "$testing" != 1 ]]; then
+  [[ "$(id -u)" == 0 ]] || fail 'root required'
+  export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+else
+  [[ "$queue" == /tmp/* || "$queue" == /var/tmp/* ]] || fail 'test queue must stay in an isolated root'
+fi
+[[ $# == 0 ]] || fail 'invalid arguments'
+command -v flock >/dev/null 2>&1 || fail 'flock (util-linux) is required'
+protected_chain() {
+  local part=$1 mode
+  while :; do
+    [[ -e "$part" && ! -L "$part" ]] || return 1
+    mode=$(stat -c '%a' -- "$part")
+    [[ "$(stat -c '%u' -- "$part")" == 0 ]] && (( (8#$mode & 0022) == 0 )) || return 1
+    [[ "$part" != / ]] || return 0
+    part=$(dirname -- "$part")
+  done
+}
+canonical_dir() { [[ -d "$1" && ! -L "$1" && "$(realpath -e -- "$1")" == "$1" ]]; }
+canonical_dir "$queue" || fail 'unsafe queue root'
+[[ -f "$queue/OWNER" && ! -L "$queue/OWNER" ]] && grep -Fxq 'BookmarksSync Debian update queue' "$queue/OWNER" || fail 'unmanaged queue root'
+for dir in inbox processing rejected; do canonical_dir "$queue/$dir" || fail "unsafe queue $dir directory"; done
+[[ "$(stat -c '%a' -- "$queue")" == 755 ]] || fail 'queue root must have mode 0755'
+[[ "$(stat -c '%u:%a' -- "$queue/inbox")" == "${service_uid}:700" ]] || fail 'inbox must belong to the service account with mode 0700'
+for dir in processing rejected; do [[ "$(stat -c '%a' -- "$queue/$dir")" == 700 ]] || fail 'private queue directories must have mode 0700'; done
+[[ -f "$installer" && ! -L "$installer" && -x "$installer" ]] && grep -Fxq '# Managed by BookmarksSync installer' "$installer" || fail 'installer copy unavailable'
+if [[ "$testing" != 1 ]]; then
+  protected_chain "$queue" || fail 'queue root and its ancestors must be root owned and protected'
+  for dir in processing rejected; do [[ "$(stat -c '%u' -- "$queue/$dir")" == 0 ]] || fail 'private queue directories must be root owned'; done
+  [[ "$(id -u -- "$service_user" 2>/dev/null)" == "$service_uid" ]] || fail 'service account UID changed; rerun installer repair'
+  protected_chain "$installer" || fail 'installer copy and its ancestors must be root owned and protected'
+fi
+lock="$queue/worker.lock"
+[[ ! -L "$lock" && ( ! -e "$lock" || -f "$lock" ) ]] || fail 'unsafe worker lock'
+# This lock is distinct from the installer maintenance lock, which the invoked
+# upgrade acquires itself; the descriptor is closed for that child.
+exec 8> "$lock"
+chmod 0600 "$lock"
+flock -n 8 || { printf 'Another update queue worker is running.\n'; exit 0; }
+run_installer() {
+  if [[ "$testing" == 1 ]]; then
+    "$installer" upgrade --tag "$1" 8>&-
+  else
+    env -i PATH="$PATH" HOME=/root LANG=C.UTF-8 "$installer" upgrade --tag "$1" 8>&-
+  fi
+}
+while IFS= read -r -d '' request; do
+  name=${request##*/}
+  # Claim by rename into root-private storage before inspecting the inode.
+  claimed=$(mktemp -u "$queue/processing/request.XXXXXXXXXX")
+  mv -T -- "$request" "$claimed" 2>/dev/null || continue
+  valid=1
+  [[ "$name" =~ ^build-[0-9a-f]{40}$ ]] || valid=0
+  if [[ "$valid" == 1 ]]; then
+    [[ -f "$claimed" && ! -L "$claimed" && ! -s "$claimed" && "$(stat -c '%h:%a:%u' -- "$claimed")" == "1:600:${service_uid}" ]] || valid=0
+  fi
+  if [[ "$valid" != 1 ]]; then
+    mv -T -- "$claimed" "$queue/rejected/${claimed##*/}.invalid"
+    printf 'Rejected unsafe update request.\n' >&2
+    continue
+  fi
+  printf 'Applying approved update %s.\n' "$name"
+  if run_installer "$name"; then
+    rm -f -- "$claimed"
+    printf 'Approved update %s completed.\n' "$name"
+  else
+    mv -T -- "$claimed" "$queue/rejected/${name}.failed-$(date -u +%Y%m%dT%H%M%SZ)-${claimed##*.}"
+    printf 'Approved update %s failed; inspect the journal and retained snapshots.\n' "$name" >&2
+  fi
+done < <(find "$queue/inbox" -mindepth 1 -maxdepth 1 -print0 | head -z -n 64)
+exit 0
+WORKER
+  } > "$target"
+}
+
+write_update_queue() {
+  local installer_copy queue inbox processing rejected worker units service_unit path_unit service_uid testing=0 path
+  installer_copy="$(managed_path "$installer_copy_path")"
+  queue="$(managed_path "$update_queue_root_path")"
+  inbox="${queue}/inbox"
+  processing="${queue}/processing"
+  rejected="${queue}/rejected"
+  worker="$(managed_path "$update_queue_worker_path")"
+  units="$(managed_path "${unit_dir%/}")"
+  service_unit="${units}/${update_queue_service}"
+  path_unit="${units}/${update_queue_path_unit}"
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]]; then
+    testing=1
+    service_uid="$(id -u)"
+  else
+    service_uid="$(id -u -- "$service_user" 2>/dev/null)" || fail "cannot resolve the service account UID"
+    [[ "$service_uid" != 0 ]] || fail "the service account must not be root"
+  fi
+  [[ "$service_uid" =~ ^[0-9]+$ ]] || fail "service account UID is invalid"
+  # Preflight every target before changing anything.
+  for path in "$installer_copy" "${installer_copy}.next" "$queue" "$inbox" "$processing" "$rejected" "${queue}/OWNER" "${queue}/OWNER.next" "${queue}/worker.lock" "$worker" "${worker}.next" "$service_unit" "${service_unit}.next" "$path_unit" "${path_unit}.next" \
+    "$(managed_path "$legacy_update_helper_path")" "$(managed_path "$legacy_update_worker_path")" "$(managed_path "$legacy_sudoers_update_path")"; do
+    check_managed_path "$path"
+  done
+  if [[ -e "$installer_copy" ]]; then
+    [[ -f "$installer_copy" ]] && { grep -Fxq "$managed_marker" "$installer_copy" || grep -Fxq 'readonly repository="atikansari-ghr/BookmarksSync"' "$installer_copy"; } || fail "refusing unmanaged installer copy: $installer_copy"
+  fi
+  managed_queue_artifact "$worker"
+  managed_queue_artifact "$service_unit"
+  managed_queue_artifact "$path_unit"
+  if [[ -e "$queue" ]]; then
+    [[ -d "$queue" && -f "${queue}/OWNER" ]] && grep -Fxq "$update_queue_owner_text" "${queue}/OWNER" || fail "refusing unmanaged update queue directory: $queue"
+  fi
+  for path in "$inbox" "$processing" "$rejected"; do
+    [[ ! -e "$path" || -d "$path" ]] || fail "unsafe update queue directory: $path"
+  done
+  if [[ "$testing" != 1 ]]; then
+    protected_ancestors "$(dirname -- "$queue")" || fail "update queue ancestors must be root owned and not group/other writable"
+  fi
+  # Retire the sudo-era handoff: remove only files that carry the managed marker.
+  for path in "$legacy_sudoers_update_path" "$legacy_update_helper_path" "$legacy_update_worker_path"; do
+    path="$(managed_path "$path")"
+    [[ -e "$path" ]] || continue
+    if [[ -f "$path" ]] && grep -Fxq "$managed_marker" "$path"; then
+      rm -f -- "$path"
+    else
+      printf 'bookmarksync: warning: left unmanaged legacy file in place: %s\n' "$path" >&2
+    fi
+  done
+  install -d -m 0755 -o root -g root "$(dirname -- "$installer_copy")" "$(dirname -- "$worker")" "$units" "$queue"
+  install -d -m 0700 -o root -g root "$processing" "$rejected"
+  if [[ "$testing" == 1 ]]; then
+    install -d -m 0700 "$inbox"
+  else
+    install -d -m 0700 -o "$service_user" -g "$service_group" "$inbox"
+    chown root:root "$queue" "$processing" "$rejected"
+    chown "${service_user}:${service_group}" "$inbox"
+  fi
+  chmod 0755 "$queue"
+  chmod 0700 "$inbox" "$processing" "$rejected"
+  printf '%s\n' "$update_queue_owner_text" > "${queue}/OWNER.next"
+  chmod 0644 "${queue}/OWNER.next"
+  mv -f -- "${queue}/OWNER.next" "${queue}/OWNER"
+  install -m 0755 -o root -g root "${BASH_SOURCE[0]}" "${installer_copy}.next"
+  mv -f -- "${installer_copy}.next" "$installer_copy"
+  write_update_queue_worker "${worker}.next" "$testing" "$service_uid" "$queue" "$installer_copy"
+  chmod 0755 "${worker}.next"
+  chown root:root "${worker}.next"
+  mv -f -- "${worker}.next" "$worker"
+  cat > "${service_unit}.next" <<EOF
+${managed_marker}
+[Unit]
+Description=Apply an explicitly approved BookmarksSync Debian build
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=${update_queue_worker_path}
+UMask=0077
+PrivateTmp=true
+NoNewPrivileges=true
+TimeoutStartSec=2h
+EOF
+  cat > "${path_unit}.next" <<EOF
+${managed_marker}
+[Unit]
+Description=Watch explicit BookmarksSync Debian update approvals
+
+[Path]
+DirectoryNotEmpty=${update_queue_inbox_path}
+Unit=${update_queue_service}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  chmod 0644 "${service_unit}.next" "${path_unit}.next"
+  chown root:root "${service_unit}.next" "${path_unit}.next"
+  mv -f -- "${service_unit}.next" "$service_unit"
+  mv -f -- "${path_unit}.next" "$path_unit"
+  systemctl daemon-reload
+  systemctl enable --now "$update_queue_path_unit"
+}
+
+root_binary_chown() {
+  [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]] && return 0
+  chown root:root "$@"
+}
+
+bootstrap_admin() {
+  local username password confirm binary
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]]; then return 0; fi
+  [[ -t 0 ]] || fail "first install requires an interactive terminal to create the administrator"
+  binary="$(managed_path "$binary_path")"
+  read -r -p 'Initial administrator username: ' username
+  [[ "$username" =~ ^[A-Za-z0-9._-]{1,80}$ ]] || fail "administrator username has unsupported characters"
+  while :; do
+    IFS= read -r -s -p 'Initial administrator password (minimum 12 bytes): ' password
+    printf '\n'
+    IFS= read -r -s -p 'Confirm password: ' confirm
+    printf '\n'
+    [[ "$password" == "$confirm" ]] || { printf 'Passwords do not match.\n' >&2; continue; }
+    (( ${#password} >= 12 )) || { printf 'Password must be at least 12 bytes.\n' >&2; continue; }
+    break
+  done
+  printf '%s\n' "$password" | runuser -u "$service_user" -- "$binary" user create --username "$username" --admin --password-stdin --data-dir "$data_path"
+  unset password confirm
+}
+
+service_systemctl() {
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]]; then
+    systemctl "$@" "$service_name"
+  else
+    systemctl "$@" "$service_name"
+  fi
+}
+
+readiness_url() {
+  local env_file listen
+  env_file="$(managed_path "$env_path")"
+  [[ "$(grep -c '^BOOKMARKSYNC_LISTEN=' "$env_file")" == 1 ]] || return 1
+  listen="$(sed -n 's/^BOOKMARKSYNC_LISTEN=//p' "$env_file" | head -n 1)"
+  python3 - "$listen" <<'PY'
+import ipaddress, re, sys
+from urllib.parse import urlsplit
+try:
+    value = sys.argv[1]
+    if not re.fullmatch(r"[A-Za-z0-9.\[\]:_-]+", value):
+        raise ValueError()
+    parsed = urlsplit("//" + value)
+    host, port = parsed.hostname, parsed.port
+    if not host or not port or parsed.path or parsed.query or parsed.fragment or parsed.username or parsed.password:
+        raise ValueError()
+    try:
+        addr = ipaddress.ip_address(host)
+        if addr.is_unspecified:
+            host = "::1" if addr.version == 6 else "127.0.0.1"
+    except ValueError:
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]*", host):
+            raise ValueError()
+    if ":" in host:
+        host = "[" + host + "]"
+    print(f"http://{host}:{port}/readyz")
+except ValueError:
+    sys.exit(1)
+PY
+}
+
+readiness_check() {
+  local url attempt
+  url=$(readiness_url) || return 1
+  for attempt in {1..30}; do
+    curl --noproxy '*' --fail --silent --show-error --max-time 3 "$url" >/dev/null 2>&1 && return 0
+    sleep 1
+  done
+  return 1
+}
+
+prepare_verified_binary() {
+  local tag="$1" temporary="$2"
+  download_and_verify_release "$tag" "${temporary}/release"
+  chmod 0755 "${temporary}/release/bookmarksync-linux-amd64"
+}
+
+install_release() {
+  local command="$1" tag="$2" temporary binary data env_file unit updates timestamp snapshot_base snapshot old_binary env_snapshot unit_snapshot had_service=0
+  binary="$(managed_path "$binary_path")"
+  data="$(managed_path "$data_path")"
+  env_file="$(managed_path "$env_path")"
+  unit="$(managed_path "${unit_dir%/}/${service_name}")"
+  updates="$(managed_path "$updates_path")"
+  [[ "$binary_path" == /* && "$data_path" == /* && "$env_path" == /* && "$updates_path" == /* ]] || fail "managed paths must be absolute"
+  [[ "$service_user" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$service_group" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] || fail "service user and group names are invalid"
+  check_managed_path "$binary"
+  check_managed_path "$data"
+  check_managed_path "$env_file"
+  check_managed_path "$unit"
+  check_managed_path "$updates"
+  check_managed_path "${updates}/snapshots"
+  check_managed_path "${binary}.next"
+  check_managed_path "${binary}.rollback"
+  if [[ -e "$unit" ]] && ! grep -Fq '# Managed by BookmarksSync installer' "$unit"; then
+    fail "refusing to overwrite an unmanaged systemd unit: $unit"
+  fi
+  if [[ "$command" == install ]]; then
+    [[ ! -e "$binary" ]] || fail "BookmarksSync is already installed; use upgrade or repair"
+  else
+    [[ -x "$binary" && -d "$data" && -f "$env_file" ]] || fail "existing binary, data, or configuration is missing; use install only on a fresh host"
+    if [[ "${BOOKMARKSYNC_TESTING:-0}" != 1 ]]; then
+      [[ "$(stat -c '%u:%a' "$binary")" = 0:755 && "$(stat -c '%u:%a' "$env_file")" = 0:600 ]] || fail 'existing executable/configuration ownership is unsafe; verify binary provenance and repair root ownership before maintenance'
+    fi
+    service_systemctl is-active --quiet && had_service=1 || true
+  fi
+  ensure_github_cli
+  temporary="$(mktemp -d)"
+  chmod 0700 "$temporary"
+  cleanup_directory="$temporary"
+  trap cleanup_temporary_directory EXIT
+  prepare_verified_binary "$tag" "$temporary"
+  if [[ "$command" == install ]]; then
+    initial_env_file
+    ensure_service_account
+    write_update_queue
+    install -d -m 0755 -o root -g root "$(dirname -- "$binary")"
+    if [[ "${BOOKMARKSYNC_TESTING:-0}" == 1 ]]; then
+      install -d -m 0700 "$data"
+    else
+      install -d -m 0700 -o "$service_user" -g "$service_group" "$data"
+    fi
+    install -d -m 0700 -o root -g root "$updates/snapshots"
+    install -m 0755 "${temporary}/release/bookmarksync-linux-amd64" "${binary}.next"
+    mv -- "${binary}.next" "$binary"
+    root_binary_chown "$binary"
+    write_managed_unit
+    systemctl daemon-reload
+    service_systemctl enable
+    bootstrap_admin
+    if ! service_systemctl start; then fail "new service failed to start; data and configuration are preserved for repair"; fi
+    if ! readiness_check; then
+      service_systemctl stop || true
+      fail "new service did not become ready; it was stopped. Inspect journalctl -u ${service_name}"
+    fi
+    printf 'Installed BookmarksSync %s. Local readiness check passed.\n' "$tag"
+    return
+  fi
+
+  initial_env_file
+  readiness_url >/dev/null || fail 'BOOKMARKSYNC_LISTEN is not a recognized listen address'
+  write_update_queue
+  install -d -m 0700 -o root -g root "$updates/snapshots"
+  timestamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  snapshot_base="${updates}/snapshots/preupdate-${timestamp}"
+  snapshot="${snapshot_base}.zip"
+  old_binary="${snapshot_base}.previous"
+  env_snapshot="${snapshot_base}.env"
+  unit_snapshot="${snapshot_base}.service"
+  if [[ "$command" == upgrade ]]; then
+    service_systemctl stop
+    if ! "$binary" backup create --data-dir "$data" --output "$snapshot"; then
+      service_systemctl start || fail "pre-upgrade backup failed and the old service could not be restarted"
+      fail "pre-upgrade backup failed; the old binary and data were left unchanged and the service was restarted"
+    fi
+    if ! "$binary" backup verify --file "$snapshot"; then
+      service_systemctl start || fail "pre-upgrade backup verification failed and the old service could not be restarted"
+      fail "pre-upgrade backup verification failed; the old binary and data were left unchanged and the service was restarted"
+    fi
+    if ! save_managed_state "$env_file" "$unit" "$env_snapshot" "$unit_snapshot"; then
+      service_systemctl start || fail "could not save managed config and the old service could not be restarted"
+      fail "could not save managed config; the old service was restarted"
+    fi
+    if ! install -m 0755 "$binary" "$old_binary"; then
+      service_systemctl start || fail "could not save the old binary and the old service could not be restarted"
+      fail "could not save the old binary; the service was restarted"
+    fi
+    if ! install -m 0755 "${temporary}/release/bookmarksync-linux-amd64" "${binary}.next"; then
+      service_systemctl start || fail "could not stage new binary and the old service could not be restarted"
+      fail "could not stage new binary; the old service was restarted"
+    fi
+    if ! mv -f -- "${binary}.next" "$binary"; then
+      rm -f -- "${binary}.next"
+      service_systemctl start || fail "could not activate new binary and the old service could not be restarted"
+      fail "could not activate new binary; the old service was restarted"
+    fi
+    root_binary_chown "$binary"
+    if ! write_managed_unit || ! systemctl daemon-reload; then
+      fail_upgrade_and_rollback "$binary" "$old_binary" "$snapshot" "$data" "$updates" "$tag"
+    fi
+    if ! service_systemctl start; then
+      fail_upgrade_and_rollback "$binary" "$old_binary" "$snapshot" "$data" "$updates" "$tag"
+    fi
+    if readiness_check; then
+      prune_snapshots "$updates/snapshots"
+      printf 'Upgraded BookmarksSync to %s; snapshot saved at %s.\n' "$tag" "$snapshot"
+      return
+    fi
+    fail_upgrade_and_rollback "$binary" "$old_binary" "$snapshot" "$data" "$updates" "$tag"
+  fi
+
+  # Repair uses the same snapshot and rollback protections as an upgrade.
+  command=upgrade
+  service_systemctl stop
+  if ! "$binary" backup create --data-dir "$data" --output "$snapshot"; then
+    service_systemctl start || fail "pre-repair backup failed and the old service could not be restarted"
+    fail "pre-repair backup failed; the old binary and data were left unchanged and the service was restarted"
+  fi
+  if ! "$binary" backup verify --file "$snapshot"; then
+    service_systemctl start || fail "pre-repair backup verification failed and the old service could not be restarted"
+    fail "pre-repair backup verification failed; the old binary and data were left unchanged and the service was restarted"
+  fi
+  if ! save_managed_state "$env_file" "$unit" "$env_snapshot" "$unit_snapshot"; then
+    service_systemctl start || fail "could not save managed config and the old service could not be restarted"
+    fail "could not save managed config; the old service was restarted"
+  fi
+  if ! install -m 0755 "$binary" "$old_binary" || ! install -m 0755 "${temporary}/release/bookmarksync-linux-amd64" "${binary}.next"; then
+    service_systemctl start || fail "could not stage repair binary and the old service could not be restarted"
+    fail "could not stage repair binary; the old service was restarted"
+  fi
+  if ! mv -f -- "${binary}.next" "$binary"; then
+    rm -f -- "${binary}.next"
+    service_systemctl start || fail "could not activate repair binary and the old service could not be restarted"
+    fail "could not activate repair binary; the old service was restarted"
+  fi
+  root_binary_chown "$binary"
+  if ! write_managed_unit || ! systemctl daemon-reload; then
+    fail_upgrade_and_rollback "$binary" "$old_binary" "$snapshot" "$data" "$updates" "$tag"
+  fi
+  if ! service_systemctl start; then
+    fail_upgrade_and_rollback "$binary" "$old_binary" "$snapshot" "$data" "$updates" "$tag"
+  fi
+  if readiness_check; then
+    prune_snapshots "$updates/snapshots"
+    printf 'Repaired BookmarksSync with %s; snapshot saved at %s.\n' "$tag" "$snapshot"
+    return
+  fi
+  fail_upgrade_and_rollback "$binary" "$old_binary" "$snapshot" "$data" "$updates" "$tag"
+}
+
+prune_snapshots() {
+  local dir="$1"; mapfile -t entries < <(find "$dir" -maxdepth 1 -type f -name 'preupdate-*.zip' -printf '%T@ %p\n' | sort -rn | cut -d' ' -f2-)
+  local index
+  for ((index=3; index<${#entries[@]}; index++)); do
+    local base="${entries[index]%.zip}"
+    rm -f -- "${base}.zip" "${base}.previous" "${base}.env" "${base}.service"
+  done
+}
+
+fail_upgrade_and_rollback() {
+  local binary="$1" old_binary="$2" snapshot="$3" data="$4" updates="$5" tag="$6" failed_dir env_snapshot unit_snapshot env_file unit_file
+  env_snapshot="${snapshot%.zip}.env"
+  unit_snapshot="${snapshot%.zip}.service"
+  env_file="$(managed_path "$env_path")"
+  unit_file="$(managed_path "${unit_dir%/}/${service_name}")"
+  failed_dir="${data}.failed-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  service_systemctl stop || true
+  validate_backup_keys "$data/backup-keys"
+  mv -- "$data" "$failed_dir" || fail "upgrade to ${tag} failed; data was not moved. Old binary: ${old_binary}; backup: ${snapshot}"
+  install -m 0755 "$old_binary" "${binary}.rollback"
+  mv -f -- "${binary}.rollback" "$binary"
+  if ! "$binary" backup restore --file "$snapshot" --target-dir "$data"; then
+    fail "upgrade to ${tag} failed; rollback restore failed. Data retained at ${failed_dir}; backup: ${snapshot}; service remains stopped"
+  fi
+  [[ ! -e "$data/backup-keys" && ! -L "$data/backup-keys" ]] || fail "rollback archive unexpectedly contains recovery keys; failed data retained at ${failed_dir}; service remains stopped"
+  if [[ -d "$failed_dir/backup-keys" ]]; then
+    cp -a -- "$failed_dir/backup-keys" "$data/backup-keys" || fail "could not preserve recovery keys; failed data retained at ${failed_dir}; service remains stopped"
+  fi
+  install -m 0600 "$env_snapshot" "${env_file}.rollback"
+  mv -f -- "${env_file}.rollback" "$env_file"
+  install -m 0644 "$unit_snapshot" "${unit_file}.rollback"
+  mv -f -- "${unit_file}.rollback" "$unit_file"
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" != 1 ]]; then
+    chown -R "$service_user:$service_group" "$data"
+  fi
+  write_managed_unit
+  systemctl daemon-reload
+  service_systemctl start || fail "old binary and data restored, but service did not start; data retained at ${failed_dir}"
+  readiness_check || fail "old binary and data restored, but readiness still fails; data retained at ${failed_dir}"
+  fail "upgrade to ${tag} failed readiness; old binary and data were restored. Failed data retained at ${failed_dir}"
+}
+
+maintenance_defaults() {
+  [[ "$service_name" = bookmarksync.service && "$service_user" = bookmarksync && "$service_group" = bookmarksync && "$binary_path" = /usr/local/bin/bookmarksync && "$data_path" = /var/lib/bookmarksync && "$env_path" = /etc/bookmarksync/bookmarksync.env && "$unit_dir" = /etc/systemd/system && "$updates_path" = /var/lib/bookmarksync-updates ]] || fail 'maintenance requires the standard managed paths, service and account'
+}
+
+safe_existing_path() {
+  local path=$1
+  [[ "$path" = /* && "$path" != / && "$path" != *$'\n'* && -e "$path" && ! -L "$path" && "$(realpath -e -- "$path")" = "$path" ]] || fail 'maintenance path must be canonical and have no symlinks'
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" = 1 ]]; then
+    [[ "$path" = "$BOOKMARKSYNC_INSTALL_ROOT" || "$path" = "$BOOKMARKSYNC_INSTALL_ROOT"/* ]] || fail 'test maintenance path escaped the isolated root'
+  fi
+}
+
+managed_file() {
+  local path=$1 marker=$2
+  safe_existing_path "$path"
+  [[ -f "$path" ]] || fail 'managed artifact must be a regular file'
+  grep -Fxq "$marker" "$path" || fail 'refusing unmanaged maintenance artifact'
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" != 1 ]]; then
+    [[ "$(stat -c '%u' "$path")" = 0 ]] || fail 'managed artifacts must be root owned'
+    local mode; mode=$(stat -c '%a' "$path")
+    (( (8#$mode & 0022) == 0 )) || fail 'managed artifact is writable by other users'
+  fi
+}
+
+validate_maintenance_install() {
+  maintenance_defaults
+  local unit binary env key path
+  unit=$(managed_path /etc/systemd/system/bookmarksync.service)
+  managed_file "$unit" '# Managed by BookmarksSync installer'
+  for key in 'ExecStart=/usr/local/bin/bookmarksync serve' 'EnvironmentFile=/etc/bookmarksync/bookmarksync.env' 'User=bookmarksync' 'Group=bookmarksync'; do
+    grep -Fxq "$key" "$unit" || fail 'managed unit does not match standard installation'
+  done
+  if grep -Fxq 'ReadWritePaths=/var/lib/bookmarksync -/var/lib/bookmarksync-update-queue/inbox' "$unit"; then
+    grep -Fxq 'Environment=BOOKMARKSYNC_DEBIAN_UPDATE_QUEUE=/var/lib/bookmarksync-update-queue/inbox' "$unit" || fail 'managed queue environment does not match standard installation'
+  else
+    grep -Fxq 'ReadWritePaths=/var/lib/bookmarksync /var/lib/bookmarksync-updates' "$unit" || fail 'managed unit writable paths do not match standard installation'
+  fi
+  if grep -q '^Environment=BOOKMARKSYNC_DEBIAN_UPDATE_QUEUE=' "$unit"; then
+    [[ $(grep -c '^Environment=BOOKMARKSYNC_DEBIAN_UPDATE_QUEUE=' "$unit") = 1 ]] && grep -Fxq 'Environment=BOOKMARKSYNC_DEBIAN_UPDATE_QUEUE=/var/lib/bookmarksync-update-queue/inbox' "$unit" || fail 'managed queue environment does not match standard installation'
+  fi
+  [[ $(grep -Ec '^Exec[A-Za-z]+=' "$unit") = 1 && $(grep -c '^EnvironmentFile=' "$unit") = 1 && $(grep -c '^User=' "$unit") = 1 && $(grep -c '^Group=' "$unit") = 1 && $(grep -c '^ReadWritePaths=' "$unit") = 1 ]] || fail 'managed unit contains conflicting settings'
+  local dropin_dir dropin
+  dropin_dir=$(managed_path /etc/systemd/system/bookmarksync.service.d)
+  if [[ -e "$dropin_dir" || -L "$dropin_dir" ]]; then
+    safe_existing_path "$dropin_dir"
+    while IFS= read -r -d '' dropin; do
+      managed_file "$dropin" '# Managed by BookmarksSync GeoLite setup.'
+      [[ "$(basename -- "$dropin")" = 90-bookmarksync-geoip.conf ]] || fail 'unrecognized service override'
+      [[ $(grep -c '^Environment=BOOKMARKSYNC_GEOIP_DB=' "$dropin") = 1 && $(grep -Ec '^(Exec|EnvironmentFile|User|Group|ReadWritePaths)' "$dropin") = 0 ]] || fail 'service override changes managed runtime settings'
+    done < <(find "$dropin_dir" -mindepth 1 -maxdepth 1 -print0)
+  fi
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" != 1 ]]; then
+    [[ "$(systemctl show --value -p FragmentPath bookmarksync.service)" = /etc/systemd/system/bookmarksync.service ]] || fail 'loaded unit does not match managed unit'
+    local effective_dropins
+    effective_dropins=$(systemctl show --value -p DropInPaths bookmarksync.service)
+    [[ -z "$effective_dropins" || "$effective_dropins" = /etc/systemd/system/bookmarksync.service.d/90-bookmarksync-geoip.conf ]] || fail 'loaded service has unmanaged overrides'
+  fi
+  for path in "$binary_path" "$data_path" "$env_path" "$updates_path"; do
+    path=$(managed_path "$path")
+    [[ ! -e "$path" && ! -L "$path" ]] || safe_existing_path "$path"
+  done
+  binary=$(managed_path "$binary_path")
+  [[ -f "$binary" && -x "$binary" ]] || fail 'installed binary unavailable'
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" != 1 ]]; then
+    [[ "$(stat -c '%u' "$binary")" = 0 && "$(stat -c '%a' "$binary")" = 755 ]] || fail 'installed binary must be root owned mode 0755; verify provenance before repairing ownership'
+  fi
+  env=$(managed_path "$env_path")
+  safe_existing_path "$env"
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" != 1 ]]; then
+    [[ "$(stat -c '%u' "$env")" = 0 && "$(stat -c '%a' "$env")" = 600 ]] || fail 'environment must be root owned mode 0600'
+  fi
+  [[ -f "$env" && $(grep -c '^BOOKMARKSYNC_DATA_DIR=' "$env") = 1 ]] && grep -Fxq 'BOOKMARKSYNC_DATA_DIR=/var/lib/bookmarksync' "$env" || fail 'environment data directory does not match managed installation'
+}
+
+maintenance_resume=false
+resume_maintenance_service() {
+  if [[ "$maintenance_resume" = true ]]; then
+    systemctl start bookmarksync.service || printf 'bookmarksync: service restart failed; inspect service state\n' >&2
+  fi
+}
+
+maintenance_backup() {
+  local output=$1 binary data
+  safe_existing_path "$(dirname -- "$output")"
+  safe_offline_target "$output"
+  [[ "$output" = /* && ! -e "$output" && ! -L "$output" && "$(basename -- "$output")" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.zip$ ]] || fail 'backup requires a new absolute ZIP path'
+  binary=$(managed_path "$binary_path"); data=$(managed_path "$data_path")
+  [[ "$output" != "$data"/* && "$output" != "$(managed_path "$updates_path")"/* ]] || fail 'independent backup must be outside application data and update snapshots'
+  maintenance_resume=false
+  trap resume_maintenance_service EXIT
+  if systemctl is-active --quiet bookmarksync.service; then
+    systemctl stop bookmarksync.service
+    maintenance_resume=true
+  fi
+  "$binary" backup create --data-dir "$data" --output "$output"
+  "$binary" backup verify --file "$output"
+  printf 'Verified backup: %s\n' "$output"
+}
+
+maintenance_restore() {
+  local archive=$1 target=$2 binary
+  safe_existing_path "$archive"
+  [[ -f "$archive" ]] || fail 'archive must be a regular file'
+  safe_existing_path "$(dirname -- "$target")"
+  safe_offline_target "$target"
+  [[ "$target" = /* && ! -e "$target" && ! -L "$target" && "$(basename -- "$target")" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || fail 'restore target must be a new absolute directory'
+  case "$target" in "$(managed_path "$data_path")"|"$(managed_path "$data_path")"/*|"$(managed_path "$updates_path")"|"$(managed_path "$updates_path")"/*) fail 'restore cannot target live data or update storage';; esac
+  binary=$(managed_path "$binary_path")
+  "$binary" backup verify --file "$archive"
+  "$binary" backup restore --file "$archive" --target-dir "$target"
+  printf 'Restored offline data to %s; live data was not replaced.\n' "$target"
+}
+
+safe_offline_target() {
+  local path=$1
+  # Test roots are already restricted to private temporary trees.
+  if [[ "${BOOKMARKSYNC_TESTING:-0}" = 1 ]]; then return; fi
+  case "$path" in /etc/*|/usr/*|/bin/*|/sbin/*|/lib/*|/lib64/*|/proc/*|/sys/*|/dev/*|/run/*|/var/lib/docker/*) fail 'system paths are not offline backup/restore targets';; esac
+  [[ "$(dirname -- "$path")" != / ]] || fail 'filesystem root is not an offline backup/restore parent'
+}
+
+maintenance_diagnostics() {
+  local state version url
+  state=$(systemctl show --value -p ActiveState bookmarksync.service)
+  case "$state" in active|inactive|failed|activating|deactivating|reloading) ;; *) state=unknown;; esac
+  printf 'Service: %s\n' "$state"
+  version=$("$(managed_path "$binary_path")" --version 2>/dev/null)
+  if [[ "$version" =~ ^bookmarksync\ [A-Za-z0-9.()+:_\ -]+$ && ${#version} -lt 200 ]]; then printf '%s\n' "$version"; else printf 'Version: unavailable\n'; fi
+  state=$(systemctl show --value -p ActiveState "$update_queue_path_unit")
+  case "$state" in active|inactive|failed|activating|deactivating) ;; *) state=unknown;; esac
+  printf 'Update queue watcher: %s\n' "$state"
+  url=$(readiness_url) || { printf 'Readiness: unavailable (listen address not recognized)\n'; return; }
+  if curl --noproxy '*' --fail --silent --max-time 5 "$url" >/dev/null 2>&1; then printf 'Readiness: ready\n'; else printf 'Readiness: unavailable\n'; fi
+}
+
+maintenance_uninstall() {
+  local path geo_service geo_timer dropin dir
+  local -a artifacts=()
+  for path in "$legacy_update_helper_path" "$legacy_update_worker_path" "$legacy_sudoers_update_path" "$update_queue_worker_path" "${unit_dir%/}/${update_queue_service}" "${unit_dir%/}/${update_queue_path_unit}"; do
+    path=$(managed_path "$path")
+    if [[ -e "$path" || -L "$path" ]]; then managed_file "$path" '# Managed by BookmarksSync installer'; artifacts+=("$path"); fi
+  done
+  path=$(managed_path "$installer_copy_path")
+  if [[ -e "$path" || -L "$path" ]]; then
+    # Older installed copies predate the explicit managed marker.
+    managed_file "$path" 'readonly repository="atikansari-ghr/BookmarksSync"'
+    artifacts+=("$path")
+  fi
+  geo_service=$(managed_path /etc/systemd/system/bookmarksync-geoip-update.service)
+  geo_timer=$(managed_path /etc/systemd/system/bookmarksync-geoip-update.timer)
+  for path in "$geo_service" "$geo_timer"; do
+    if [[ -e "$path" || -L "$path" ]]; then managed_file "$path" '# Managed by BookmarksSync GeoLite setup.'; artifacts+=("$path"); fi
+  done
+  if [[ -e "$geo_service" ]]; then
+    grep -Fxq 'ExecStart=/usr/local/libexec/bookmarksync-update-geoip' "$geo_service" && [[ $(grep -Ec '^Exec[A-Za-z]+=' "$geo_service") = 1 ]] || fail 'GeoLite unit does not match managed helper'
+  fi
+  if [[ -e "$geo_timer" ]]; then grep -Fxq 'Unit=bookmarksync-geoip-update.service' "$geo_timer" || fail 'GeoLite timer does not match managed service'; fi
+  path=$(managed_path /usr/local/libexec/bookmarksync-update-geoip)
+  if [[ -e "$path" || -L "$path" ]]; then managed_file "$path" '# BookmarksSync-managed GeoLite updater helper.'; artifacts+=("$path"); fi
+  for dir in bookmarksync.service.d bookmarksync-geoip-update.service.d; do
+    dir=$(managed_path "/etc/systemd/system/$dir")
+    if [[ -e "$dir" || -L "$dir" ]]; then
+      safe_existing_path "$dir"
+      while IFS= read -r -d '' dropin; do managed_file "$dropin" '# Managed by BookmarksSync GeoLite setup.'; artifacts+=("$dropin"); done < <(find "$dir" -mindepth 1 -maxdepth 1 -print0)
+    fi
+  done
+  # Complete preflight before stopping services or deleting any artifact.
+  path=$(managed_path "${unit_dir%/}/${update_queue_path_unit}")
+  [[ ! -e "$path" ]] || systemctl disable --now "$update_queue_path_unit"
+  path=$(managed_path "${unit_dir%/}/${update_queue_service}")
+  [[ ! -e "$path" ]] || systemctl stop "$update_queue_service"
+  [[ ! -e "$geo_timer" ]] || systemctl disable --now bookmarksync-geoip-update.timer
+  [[ ! -e "$geo_service" ]] || systemctl stop bookmarksync-geoip-update.service
+  systemctl disable --now bookmarksync.service
+  rm -f -- "${artifacts[@]}" "$(managed_path "$binary_path")" "$(managed_path /etc/systemd/system/bookmarksync.service)"
+  systemctl daemon-reload
+  printf 'Removed managed runtime artifacts. All data, configuration, credentials, GeoLite databases, snapshots and backups retained. No purge is supported.\n'
+}
+
+main() {
+  local command="${1:-help}" tag=""
+  shift || true
+  case "$command" in
+    help|-h|--help)
+      usage
+      ;;
+    diagnostics|uninstall|backup|restore)
+      local output='' archive='' target=''
+      while (($#)); do
+        case "$1" in
+          --output) [[ "$command" = backup && $# -ge 2 && -z "$output" ]] || fail 'unexpected --output'; output=$2; shift 2;;
+          --file) [[ "$command" = restore && $# -ge 2 && -z "$archive" ]] || fail 'unexpected --file'; archive=$2; shift 2;;
+          --target-dir) [[ "$command" = restore && $# -ge 2 && -z "$target" ]] || fail 'unexpected --target-dir'; target=$2; shift 2;;
+          *) fail 'unknown maintenance option';;
+        esac
+      done
+      check_platform
+      require_user_root
+      [[ "$command" = diagnostics ]] || lock_maintenance
+      validate_maintenance_install
+      case "$command" in
+        diagnostics) maintenance_diagnostics;;
+        uninstall) maintenance_uninstall;;
+        backup) [[ -n "$output" ]] || fail 'backup requires --output'; maintenance_backup "$output";;
+        restore) [[ -n "$archive" && -n "$target" ]] || fail 'restore requires --file and --target-dir'; maintenance_restore "$archive" "$target";;
+      esac
+      ;;
+    install|upgrade|repair)
+      while (($# > 0)); do
+        case "$1" in
+          --tag)
+            (($# >= 2)) || fail "--tag requires a value"
+            tag="$2"
+            shift 2
+            ;;
+          *) fail "unknown option: $1" ;;
+        esac
+      done
+      if [[ "$command" != install ]]; then
+        [[ -n "$tag" ]] || fail "${command} requires --tag"
+        [[ "$tag" =~ ^build-[0-9a-f]{40}$ ]] || fail "tag must match build- followed by the full 40-character lowercase commit SHA"
+      elif [[ -n "$tag" && ! "$tag" =~ ^build-[0-9a-f]{40}$ ]]; then
+        fail "tag must match build- followed by the full 40-character lowercase commit SHA"
+      fi
+      check_platform
+      require_user_root
+      lock_maintenance
+      local selected_tag
+      selected_tag="$(resolve_release_tag "$tag")"
+      install_release "$command" "$selected_tag"
+      ;;
+    *)
+      usage >&2
+      fail "unknown command: ${command}"
+      ;;
+  esac
+}
+
+main "$@"

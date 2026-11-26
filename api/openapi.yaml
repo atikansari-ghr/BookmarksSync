@@ -1,0 +1,1303 @@
+openapi: 3.1.0
+info:
+  title: BookmarksSync API
+  version: 1.0.0
+  license:
+    name: MIT
+    identifier: MIT
+  description: |
+    Authenticated bookmark, account and administrator API. Cookie requests to unsafe
+    methods require the exact configured Origin and X-CSRF-Token. Personal tokens are
+    accepted only on operations declaring their exact x-token-scope.
+    x-recent-auth marks session operations that return 403 reauthentication_required
+    unless the session (re)authenticated within the last five minutes.
+    Route availability depends on server configuration: every route except /version
+    requires BOOKMARKSYNC_PUBLIC_URL; passkey routes require a configured WebAuthn
+    relying party (reported by passkeysEnabled in /admin/system); /auth/oidc/* routes exist only when at least one provider is
+    configured, and {provider} must name a configured provider. Unavailable routes
+    answer 404.
+servers:
+  - url: /api/v1
+components:
+  securitySchemes:
+    sessionCookie:
+      type: apiKey
+      in: cookie
+      name: __Host-bookmarksync_session
+    personalToken:
+      type: http
+      scheme: bearer
+      bearerFormat: bmt1
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: {type: string}
+            message: {type: string}
+    OpenObject:
+      type: object
+      description: Extensible JSON object used for WebAuthn ceremony options.
+      additionalProperties: true
+    VersionResponse:
+      type: object
+      required: [version, commit, build_date]
+      properties:
+        version: {type: string}
+        commit: {type: string}
+        build_date: {type: string}
+    AuthUser:
+      type: object
+      required: [id, username, isAdmin]
+      properties:
+        id: {type: integer, format: int64}
+        username: {type: string}
+        isAdmin: {type: boolean}
+    Session:
+      type: object
+      required: [id, label, createdAt, lastSeenAt, authenticatedAt, idleExpiresAt, expiresAt, current]
+      properties:
+        id: {type: integer, format: int64}
+        label: {type: string}
+        createdAt: {type: string, format: date-time}
+        lastSeenAt: {type: string, format: date-time}
+        authenticatedAt: {type: string, format: date-time}
+        idleExpiresAt: {type: string, format: date-time}
+        expiresAt: {type: string, format: date-time}
+        current: {type: boolean}
+    AuthState:
+      type: object
+      required: [user, session, recentAuthUntil, csrfToken]
+      properties:
+        user: {$ref: '#/components/schemas/AuthUser'}
+        session: {$ref: '#/components/schemas/Session'}
+        recentAuthUntil: {type: string, format: date-time}
+        csrfToken: {type: string}
+    CSRFResponse:
+      type: object
+      required: [csrfToken]
+      properties:
+        csrfToken: {type: string}
+    SessionList:
+      type: object
+      required: [sessions]
+      properties:
+        sessions: {type: array, items: {$ref: '#/components/schemas/Session'}}
+    SecondFactorRequired:
+      type: object
+      required: [status, flowId, methods, expiresAt]
+      properties:
+        status: {type: string, const: second_factor_required}
+        flowId: {type: string}
+        methods: {type: array, items: {type: string, enum: [totp, recoveryCode]}}
+        expiresAt: {type: string, format: date-time}
+    TOTPStatus:
+      type: object
+      required: [enabled, recoveryCodesRemaining]
+      properties:
+        enabled: {type: boolean}
+        recoveryCodesRemaining: {type: integer, minimum: 0}
+    TOTPEnrollment:
+      type: object
+      required: [secret, provisioningUri, algorithm, digits, period]
+      properties:
+        secret: {type: string}
+        provisioningUri: {type: string, format: uri}
+        algorithm: {type: string, const: SHA1}
+        digits: {type: integer}
+        period: {type: integer}
+    RecoveryCodesResponse:
+      type: object
+      required: [recoveryCodes, csrfToken]
+      properties:
+        recoveryCodes: {type: array, items: {type: string}}
+        csrfToken: {type: string}
+    Ceremony:
+      type: object
+      required: [flowId, options, expiresAt]
+      properties:
+        flowId: {type: string}
+        options: {$ref: '#/components/schemas/OpenObject'}
+        expiresAt: {type: string, format: date-time}
+    Passkey:
+      type: object
+      required: [id, name, createdAt, lastUsedAt, backupEligible, backupState, cloneWarning, transports]
+      properties:
+        id: {type: integer, format: int64}
+        name: {type: string}
+        createdAt: {type: string, format: date-time}
+        lastUsedAt: {type: [string, 'null'], format: date-time}
+        backupEligible: {type: boolean}
+        backupState: {type: boolean}
+        cloneWarning: {type: boolean}
+        transports: {type: array, items: {type: string}}
+    PasskeyList:
+      type: object
+      required: [passkeys]
+      properties:
+        passkeys: {type: array, items: {$ref: '#/components/schemas/Passkey'}}
+    PasskeyCreated:
+      type: object
+      required: [passkey, csrfToken]
+      properties:
+        passkey: {$ref: '#/components/schemas/Passkey'}
+        csrfToken: {type: string}
+    OIDCProvider:
+      type: object
+      required: [id, name]
+      properties:
+        id: {type: string}
+        name: {type: string}
+    OIDCProviderList:
+      type: object
+      required: [providers]
+      properties:
+        providers: {type: array, items: {$ref: '#/components/schemas/OIDCProvider'}}
+    OIDCStart:
+      type: object
+      required: [authorizationUrl, expiresAt]
+      properties:
+        authorizationUrl: {type: string, format: uri}
+        expiresAt: {type: string, format: date-time}
+    OIDCIdentity:
+      type: object
+      required: [id, provider, displayName, createdAt, lastLoginAt]
+      properties:
+        id: {type: integer, format: int64}
+        provider: {type: string}
+        displayName: {type: string}
+        createdAt: {type: string, format: date-time}
+        lastLoginAt: {type: [string, 'null'], format: date-time}
+    OIDCIdentityList:
+      type: object
+      required: [identities]
+      properties:
+        identities: {type: array, items: {$ref: '#/components/schemas/OIDCIdentity'}}
+    User:
+      type: object
+      required: [id, username, isAdmin, active, createdAt, lastContactAt]
+      properties:
+        id: {type: integer, format: int64}
+        username: {type: string}
+        isAdmin: {type: boolean}
+        active: {type: boolean}
+        createdAt: {type: string, format: date-time}
+        lastContactAt: {type: [string, 'null'], format: date-time}
+    BasicUser:
+      type: object
+      required: [id, username, isAdmin, createdAt]
+      properties:
+        id: {type: integer, format: int64}
+        username: {type: string}
+        isAdmin: {type: boolean}
+        createdAt: {type: string, format: date-time}
+    SettingsResponse:
+      type: object
+      required: [settings]
+      properties:
+        settings: {type: object, additionalProperties: {type: string}}
+    Token:
+      type: object
+      required: [id, label, scopes, createdAt, expiresAt, lastUsedAt, revoked, expired]
+      properties:
+        id: {type: integer, format: int64}
+        label: {type: string}
+        scopes: {type: array, items: {type: string, enum: ['bookmarks:read', 'bookmarks:write', 'shares:read', 'shares:manage']}}
+        createdAt: {type: string, format: date-time}
+        expiresAt: {type: [string, 'null'], format: date-time}
+        lastUsedAt: {type: [string, 'null'], format: date-time}
+        revoked: {type: boolean}
+        expired: {type: boolean}
+    TokenList:
+      type: object
+      required: [tokens]
+      properties:
+        tokens: {type: array, items: {$ref: '#/components/schemas/Token'}}
+    TokenCreated:
+      type: object
+      required: [token, secret]
+      properties:
+        token: {$ref: '#/components/schemas/Token'}
+        secret: {type: string, description: Displayed only once.}
+    Connection:
+      type: object
+      required: [id, label, kind, shareId, mode, createdAt, lastUsedAt, revoked]
+      properties:
+        id: {type: integer, format: int64}
+        label: {type: string}
+        kind: {type: string, enum: [private, share]}
+        shareId: {type: integer, format: int64}
+        mode: {type: string, enum: [view, edit]}
+        createdAt: {type: string, format: date-time}
+        lastUsedAt: {type: [string, 'null'], format: date-time}
+        revoked: {type: boolean}
+    ConnectionResponse:
+      type: object
+      required: [connection]
+      properties:
+        connection: {$ref: '#/components/schemas/Connection'}
+    ConnectionRenameRequest:
+      type: object
+      required: [label]
+      additionalProperties: false
+      properties:
+        label: {type: string, minLength: 1, maxLength: 200, description: 'Connection name; surrounding white space is trimmed and the result must be 1-200 characters without control characters.'}
+    ConnectionList:
+      type: object
+      required: [connections]
+      properties:
+        connections: {type: array, items: {$ref: '#/components/schemas/Connection'}}
+    ConnectionCreated:
+      type: object
+      required: [connection, secret]
+      properties:
+        connection:
+          type: object
+          required: [id, label, kind, shareId, mode]
+          properties:
+            id: {type: integer, format: int64}
+            label: {type: string}
+            kind: {type: string, enum: [private, share]}
+            shareId: {type: integer, format: int64}
+            mode: {type: string, enum: [view, edit]}
+        secret: {type: string, description: Displayed only once.}
+    Bookmark:
+      type: object
+      required: [id, url, title, tags, folders, favorite]
+      properties:
+        id: {type: integer, format: int64}
+        url: {type: string}
+        title: {type: string}
+        tags: {type: array, items: {type: string}}
+        folders: {type: array, items: {type: integer, format: int64}}
+        favorite: {type: boolean, description: "The caller's own favorite state for this bookmark. Favorites are per user and per bookmark record, so the value is the same in every folder placement; they are not part of Floccus sync."}
+    BookmarkPage:
+      type: object
+      required: [items, page, limit, hasMore]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Bookmark'}}
+        page: {type: integer, minimum: 0}
+        limit: {type: integer, minimum: 1, maximum: 200}
+        hasMore: {type: boolean}
+    Folder:
+      type: object
+      required: [id, parentId, title, position, canonical]
+      properties:
+        id: {type: integer, format: int64}
+        parentId: {type: integer, format: int64}
+        title: {type: string}
+        position: {type: integer}
+        canonical: {type: boolean}
+    FolderNode:
+      type: object
+      required: [id, type, title]
+      properties:
+        id: {type: integer, format: int64}
+        type: {type: string, enum: [folder, bookmark]}
+        title: {type: string}
+        url: {type: string}
+        loaded: {type: boolean}
+        children: {type: array, items: {$ref: '#/components/schemas/FolderNode'}}
+    FolderTree:
+      type: object
+      required: [folders]
+      properties:
+        folders: {type: array, items: {$ref: '#/components/schemas/FolderNode'}}
+    Tag:
+      type: object
+      required: [name, count]
+      properties:
+        name: {type: string}
+        count: {type: integer, minimum: 0}
+    TagList:
+      type: object
+      required: [tags]
+      properties:
+        tags: {type: array, items: {$ref: '#/components/schemas/Tag'}}
+    DuplicateGroup:
+      type: object
+      required: [url, bookmarks]
+      properties:
+        url: {type: string, description: The exact URL shared by every record in the group.}
+        bookmarks:
+          type: array
+          minItems: 2
+          description: Distinct bookmark records visible to the caller that hold this URL, ordered by id. Folder placements of one record are never listed as separate records.
+          items: {$ref: '#/components/schemas/Bookmark'}
+    DuplicateList:
+      type: object
+      required: [count, groups, page, limit, hasMore]
+      properties:
+        count: {type: integer, minimum: 0, description: "Excess distinct records over all groups visible to the caller (a URL held by three records adds two), independent of the page returned."}
+        groups: {type: array, items: {$ref: '#/components/schemas/DuplicateGroup'}}
+        page: {type: integer, minimum: 0}
+        limit: {type: integer, minimum: 1, maximum: 1000}
+        hasMore: {type: boolean}
+    LinkCheckRequest:
+      type: object
+      required: [bookmarkIds]
+      additionalProperties: false
+      properties:
+        bookmarkIds: {type: array, minItems: 1, maxItems: 50, uniqueItems: true, items: {type: integer, format: int64, minimum: 1}}
+    LinkCheckResult:
+      type: object
+      required: [bookmarkId, url, status, httpStatus, detail, redirects, checkedAt]
+      properties:
+        bookmarkId: {type: integer, format: int64}
+        url: {type: string, description: The URL as stored when the job was submitted.}
+        status:
+          type: string
+          enum: [pending, ok, broken, skipped, excluded, blocked, error]
+          description: "pending until checked; ok = final response below 400; broken = 400 or above; skipped = not an http(s) URL; excluded = matched the user's linkcheck.exclusions (not contacted); blocked = destination refused by the public-only rules; error = DNS, connection, TLS, timeout or redirect-limit failure."
+        httpStatus: {type: [integer, 'null'], description: Final HTTP status when a response was received.}
+        detail: {type: string, description: Short machine-readable reason (for example timeout, too_many_redirects, non_public_address). Never contains a URL.}
+        redirects: {type: integer, minimum: 0, maximum: 5}
+        checkedAt: {type: [string, 'null'], format: date-time}
+    LinkCheckJob:
+      type: object
+      required: [id, status, total, done, createdAt, startedAt, finishedAt, results]
+      properties:
+        id: {type: integer, format: int64}
+        status: {type: string, enum: [queued, running, completed]}
+        total: {type: integer, minimum: 1, maximum: 50}
+        done: {type: integer, minimum: 0, description: Results that are no longer pending.}
+        createdAt: {type: string, format: date-time}
+        startedAt: {type: [string, 'null'], format: date-time}
+        finishedAt: {type: [string, 'null'], format: date-time}
+        results: {type: array, items: {$ref: '#/components/schemas/LinkCheckResult'}}
+    RecentChange:
+      type: object
+      required: [type, id, title, url, at]
+      properties:
+        type: {type: string, enum: [created, updated, deleted], description: "Current state of the record: deleted (in the Trash, deleted inside the window), else created (created inside the window), else updated (edited inside the window). Each record appears once."}
+        id: {type: integer, format: int64}
+        title: {type: string}
+        url: {type: string}
+        at: {type: string, format: date-time, description: The timestamp that decided the type.}
+    RecentChanges:
+      type: object
+      required: [since, windowDays, counts, items, page, limit, hasMore]
+      properties:
+        since: {type: string, format: date-time, description: Start of the window (inclusive).}
+        windowDays: {type: integer, const: 7}
+        counts:
+          type: object
+          required: [created, updated, deleted]
+          description: Counts over the whole window, independent of the page returned.
+          properties:
+            created: {type: integer, minimum: 0}
+            updated: {type: integer, minimum: 0}
+            deleted: {type: integer, minimum: 0}
+        items: {type: array, items: {$ref: '#/components/schemas/RecentChange'}, description: "One page, newest first. Reports current item state, not a full event history; placement-only edits are not changes."}
+        page: {type: integer, minimum: 0}
+        limit: {type: integer, minimum: 1, maximum: 200}
+        hasMore: {type: boolean}
+    DashboardSummary:
+      type: object
+      required: [totalBookmarks, duplicateCount, lastContactAt, recentChanges]
+      properties:
+        totalBookmarks: {type: integer, minimum: 0, description: Distinct live bookmark records in the caller's own collection; a record in several folders counts once.}
+        duplicateCount: {type: integer, minimum: 0, description: "Excess distinct records sharing an exact URL (see GET /duplicates)."}
+        lastContactAt: {type: [string, "null"], format: date-time, description: Most recent use of any of the caller's Floccus connections; null if none was ever used.}
+        recentChanges: {$ref: '#/components/schemas/RecentChanges'}
+    TrashItem:
+      type: object
+      required: [type, id, title, url, deletedAt, purgeAt]
+      properties:
+        type: {type: string, enum: [bookmark, folder]}
+        id: {type: integer, format: int64}
+        title: {type: string}
+        url: {type: string}
+        deletedAt: {type: string, format: date-time}
+        purgeAt: {type: string, format: date-time}
+    TrashPage:
+      type: object
+      required: [items, page, limit, hasMore]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/TrashItem'}}
+        page: {type: integer, minimum: 0}
+        limit: {type: integer, minimum: 1, maximum: 1000}
+        hasMore: {type: boolean}
+    RestoredItem:
+      type: object
+      required: [item]
+      properties:
+        item: {$ref: '#/components/schemas/FolderNode'}
+    ImportResult:
+      type: object
+      required: [imported, folders]
+      properties:
+        imported: {type: integer, minimum: 0}
+        folders: {type: array, items: {$ref: '#/components/schemas/FolderNode'}}
+    Share:
+      type: object
+      required: [id, ownerId, folderId, recipientId, mode, folderTitle]
+      properties:
+        id: {type: integer, format: int64}
+        ownerId: {type: integer, format: int64}
+        folderId: {type: integer, format: int64}
+        recipientId: {type: integer, format: int64}
+        mode: {type: string, enum: [view, edit]}
+        folderTitle: {type: string}
+    ShareList:
+      type: object
+      required: [shares]
+      properties:
+        shares: {type: array, items: {$ref: '#/components/schemas/Share'}}
+    AdminUser:
+      allOf:
+        - {$ref: '#/components/schemas/User'}
+        - type: object
+          required: [bookmarkCount, folderCount, storageBytes, connectionCount, themeDefault]
+          properties:
+            bookmarkCount: {type: integer, minimum: 0}
+            folderCount: {type: integer, minimum: 0}
+            storageBytes: {type: integer, format: int64, minimum: 0}
+            connectionCount: {type: integer, minimum: 0}
+            themeDefault: {type: [string, 'null'], enum: [classic, ocean-glass, midnight-glass, warm-glass, null]}
+    AdminUserPage:
+      type: object
+      required: [users, page, limit, hasMore]
+      properties:
+        users: {type: array, items: {$ref: '#/components/schemas/AdminUser'}}
+        page: {type: integer, minimum: 0}
+        limit: {type: integer, minimum: 1, maximum: 200}
+        hasMore: {type: boolean}
+    AdminSystem:
+      type: object
+      required: [version, publicOrigin, passkeysEnabled, oidcProviders, users, bookmarks, storageBytes]
+      properties:
+        version: {type: string}
+        publicOrigin: {type: string}
+        passkeysEnabled: {type: boolean}
+        oidcProviders: {type: array, items: {type: string}}
+        users:
+          type: object
+          required: [total, active, admins]
+          properties:
+            total: {type: integer}
+            active: {type: integer}
+            admins: {type: integer}
+        bookmarks:
+          type: object
+          required: [total]
+          properties:
+            total: {type: integer}
+        storageBytes: {type: integer, format: int64, minimum: 0}
+    HealthUsage:
+      type: object
+      required: [totalBytes, usedBytes, percent]
+      properties:
+        totalBytes: {type: integer, format: uint64, minimum: 0}
+        usedBytes: {type: integer, format: uint64, minimum: 0}
+        percent: {type: number, minimum: 0, maximum: 100}
+    AdminHealth:
+      type: object
+      required: [cpuPercent, memory, disk, uptimeSeconds, unavailable, dbReady, syncErrors]
+      properties:
+        cpuPercent: {type: [number, 'null'], minimum: 0, maximum: 100}
+        memory: {anyOf: [{$ref: '#/components/schemas/HealthUsage'}, {type: 'null'}]}
+        disk: {anyOf: [{$ref: '#/components/schemas/HealthUsage'}, {type: 'null'}]}
+        uptimeSeconds: {type: [integer, 'null'], format: uint64, minimum: 0}
+        unavailable: {type: array, items: {type: string, enum: [cpu, memory, disk, uptime]}}
+        dbReady: {type: boolean}
+        syncErrors: {type: integer, format: uint64, minimum: 0, description: Process-lifetime failed Floccus requests returning a server error.}
+    UpdateRelease:
+      required: [tag, commit, publishedAt, url]
+      properties:
+        tag: {type: string, pattern: '^build-[0-9a-f]{40}$'}
+        commit: {type: string, pattern: '^[0-9a-f]{40}$'}
+        publishedAt: {type: string, format: date-time}
+        url: {type: string, format: uri}
+      type: object
+    UpdateCatalog:
+      required: [releases, updateAvailable, applyAvailable]
+      properties:
+        installedCommit: {type: string, pattern: '^[0-9a-f]{40}$'}
+        releases: {type: array, items: {$ref: '#/components/schemas/UpdateRelease'}}
+        latest: {$ref: '#/components/schemas/UpdateRelease'}
+        updateAvailable: {type: boolean}
+        applyAvailable: {type: boolean}
+      type: object
+    UpdateApproval:
+      required: [status, tag, job]
+      properties:
+        status: {type: string, enum: [accepted]}
+        tag: {type: string, pattern: '^build-[0-9a-f]{40}$'}
+        job: {type: string, pattern: '^bookmarksync-update-[0-9a-f]{40}$'}
+      type: object
+    UpdateApprovalRequest:
+      additionalProperties: false
+      required: [tag]
+      properties:
+        tag: {type: string, pattern: '^build-[0-9a-f]{40}$'}
+      type: object
+    SystemSettingsResponse:
+      type: object
+      required: [settings]
+      properties:
+        settings: {type: object, additionalProperties: {type: string}}
+    NetworkAccessPolicy:
+      type: object
+      required: [mode, countries, geoDatabaseAvailable, geoDatabaseBuildTime, trustedProxyCount]
+      properties:
+        mode: {type: string, enum: [allow, block]}
+        countries: {type: array, items: {type: string, pattern: '^[A-Z]{2}$'}}
+        geoDatabaseAvailable: {type: boolean}
+        geoDatabaseBuildTime: {type: [string, 'null'], format: date-time}
+        trustedProxyCount: {type: integer, minimum: 0}
+    NetworkAccessPolicyPatch:
+      type: object
+      required: [mode, countries]
+      additionalProperties: false
+      properties:
+        mode: {type: string, enum: [allow, block]}
+        countries: {type: array, items: {type: string, pattern: '^[A-Za-z]{2}$'}}
+    PublicPresentation:
+      type: object
+      required: [appTitle, signinTitle, tagline, supportingLine, loginLayout, primaryColor, accentColor, backgroundColor, version, copyright]
+      properties:
+        appTitle: {type: string}
+        signinTitle: {type: string}
+        tagline: {type: string}
+        supportingLine: {type: string}
+        loginLayout: {type: string, enum: [split, centered, plain]}
+        primaryColor: {type: string, pattern: '^#[0-9a-fA-F]{6}$'}
+        accentColor: {type: string, pattern: '^#[0-9a-fA-F]{6}$'}
+        backgroundColor: {type: string, pattern: '^#[0-9a-fA-F]{6}$'}
+        version: {type: string}
+        copyright: {type: string}
+        logoUrl: {type: string, format: uri-reference}
+        backgroundUrl: {type: string, format: uri-reference}
+    BrandingAssetUpload:
+      type: object
+      required: [url, settings]
+      properties:
+        url: {type: string, format: uri-reference}
+        settings: {type: object, additionalProperties: {type: string}}
+    AdminActivityItem:
+      type: object
+      required: [id, actorId, action, targetType, targetId, createdAt]
+      properties:
+        id: {type: integer, format: int64}
+        actorId: {type: integer, format: int64, minimum: 0}
+        action: {type: string, enum: [user_created, user_updated, user_settings_updated, system_settings_updated, branding_asset_uploaded, connection_revoked, password_reset, factor_reset, backup_schedule_updated, backup_run_started, backup_destination_created, backup_destination_updated, backup_destination_deleted, software_update_approved]}
+        targetType: {type: string, enum: [user, system, asset, backup, backup_destination]}
+        targetId: {type: [integer, 'null'], format: int64, minimum: 1}
+        createdAt: {type: string, format: date-time}
+    AdminActivity:
+      type: object
+      required: [items]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/AdminActivityItem'}}
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username: {type: string}
+        password: {type: string, format: password}
+    SecondFactorRequest:
+      type: object
+      required: [flowId]
+      oneOf:
+        - required: [code]
+        - required: [recoveryCode]
+      properties:
+        flowId: {type: string}
+        code: {type: string}
+        recoveryCode: {type: string}
+    ReauthenticateRequest:
+      type: object
+      required: [password]
+      properties:
+        password: {type: string, format: password}
+    PasswordChangeRequest:
+      type: object
+      required: [currentPassword, newPassword]
+      additionalProperties: false
+      properties:
+        currentPassword: {type: string, format: password}
+        newPassword: {type: string, format: password}
+    SettingsPatchRequest:
+      type: object
+      additionalProperties: {type: [string, 'null']}
+      description: "Whitelisted settings with string values; unknown keys are rejected. dashboard.layout is a validated JSON array (stored as a string) describing the total, recent, sync and duplicates widgets. ui.theme accepts classic, ocean-glass, midnight-glass or warm-glass; ui.color-scheme accepts light or dark; ui.reduced-transparency accepts true or false. linkcheck.exclusions is a JSON array (as a string) of at most 100 domains, IP addresses or CIDR ranges, for example '[\"example.com\", \"203.0.113.0/24\"]'; a domain also matches its subdomains. Exclusions only skip link checks and never allow a private destination."
+    TokenCreateRequest:
+      type: object
+      required: [scopes]
+      additionalProperties: false
+      properties:
+        label: {type: string, description: Optional display label.}
+        scopes: {type: array, items: {type: string, enum: ['bookmarks:read', 'bookmarks:write', 'shares:read', 'shares:manage']}}
+        expiresAt: {type: string, format: date-time}
+    ConnectionCreateRequest:
+      type: object
+      required: [mode]
+      additionalProperties: false
+      properties:
+        label: {type: string}
+        mode: {type: string, enum: [view, edit]}
+        shareId: {type: integer, format: int64}
+    BulkMoveRequest:
+      type: object
+      required: [bookmarkIds, sourceFolderId, folderId]
+      additionalProperties: false
+      properties:
+        bookmarkIds: {type: array, minItems: 1, maxItems: 100, uniqueItems: true, items: {type: integer, format: int64, minimum: 1}}
+        sourceFolderId: {type: integer, format: int64, minimum: 1, description: Folder holding the placement to move.}
+        folderId: {type: integer, format: int64, minimum: 1, description: Destination folder.}
+    BookmarkCreateRequest:
+      type: object
+      required: [url, title, folders]
+      additionalProperties: false
+      properties:
+        url: {type: string}
+        title: {type: string}
+        folders: {type: array, items: {type: integer, format: int64}}
+        tags: {type: [array, 'null'], items: {type: string}}
+    BookmarkUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        url: {type: [string, 'null']}
+        title: {type: [string, 'null']}
+        folders: {type: [array, 'null'], items: {type: integer, format: int64}}
+        tags: {type: [array, 'null'], items: {type: string}}
+    FolderCreateRequest:
+      type: object
+      required: [parentId, title]
+      additionalProperties: false
+      properties:
+        parentId:
+          type: integer
+          format: int64
+          description: Required parent folder id. Use -1 for the selected collection root.
+          anyOf:
+            - {const: -1}
+            - {minimum: 1}
+        title: {type: string}
+    FolderUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        parentId: {type: [integer, 'null'], format: int64}
+        title: {type: [string, 'null']}
+    ChildRef:
+      type: object
+      required: [type, id]
+      additionalProperties: false
+      properties:
+        type: {type: string, enum: [folder, bookmark]}
+        id: {type: integer, format: int64}
+    ChildOrderRequest:
+      type: object
+      required: [children]
+      additionalProperties: false
+      properties:
+        children: {type: array, items: {$ref: '#/components/schemas/ChildRef'}}
+    ShareCreateRequest:
+      type: object
+      required: [folderId, recipient, mode]
+      additionalProperties: false
+      properties:
+        folderId: {type: integer, format: int64}
+        recipient: {type: string}
+        mode: {type: string, enum: [view, edit]}
+    ShareUpdateRequest:
+      type: object
+      required: [mode]
+      additionalProperties: false
+      properties:
+        mode: {type: string, enum: [view, edit]}
+    UserCreateRequest:
+      type: object
+      required: [username, password]
+      additionalProperties: false
+      properties:
+        username: {type: string}
+        password: {type: string, format: password}
+        isAdmin: {type: boolean}
+    UserUpdateRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        active: {type: [boolean, 'null']}
+        isAdmin: {type: [boolean, 'null']}
+    TOTPCodeRequest:
+      type: object
+      required: [code]
+      properties:
+        code: {type: string}
+    TOTPProofRequest:
+      type: object
+      oneOf:
+        - required: [code]
+        - required: [recoveryCode]
+      properties:
+        code: {type: string}
+        recoveryCode: {type: string}
+    CeremonyRequest:
+      type: object
+      required: [flowId, credential]
+      properties:
+        flowId: {type: string}
+        name: {type: string}
+        credential: {$ref: '#/components/schemas/OpenObject'}
+    PasskeyRegistrationFinishRequest:
+      type: object
+      required: [flowId, credential]
+      properties:
+        flowId: {type: string}
+        name: {type: string, description: Optional display name; defaults to Passkey when omitted.}
+        credential: {$ref: '#/components/schemas/OpenObject'}
+    RenamePasskeyRequest:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string}
+    PasswordResetRequest:
+      type: object
+      required: [newPassword]
+      additionalProperties: false
+      properties:
+        newPassword: {type: string, format: password}
+    FactorResetRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        totp: {type: boolean}
+        passkeys: {type: boolean}
+        oidc: {type: boolean}
+    ImportUpload:
+      type: object
+      required: [file]
+      properties:
+        file: {type: string, format: binary, description: Netscape HTML or XBEL upload.}
+    BackupSchedule:
+      type: object
+      required: [weeklyEnabled, monthlyEnabled, timezone, weeklyDay, weeklyHour, weeklyMinute, monthlyDay, monthlyHour, monthlyMinute, weeklyRetention, monthlyRetention]
+      properties:
+        weeklyEnabled: {type: boolean}
+        monthlyEnabled: {type: boolean}
+        timezone: {type: string, description: IANA time zone name.}
+        weeklyDay: {type: integer, minimum: 0, maximum: 6, description: Sunday is 0.}
+        weeklyHour: {type: integer, minimum: 0, maximum: 23}
+        weeklyMinute: {type: integer, minimum: 0, maximum: 59}
+        monthlyDay: {type: integer, minimum: 1, maximum: 28}
+        monthlyHour: {type: integer, minimum: 0, maximum: 23}
+        monthlyMinute: {type: integer, minimum: 0, maximum: 59}
+        weeklyRetention: {type: integer, minimum: 1, maximum: 100}
+        monthlyRetention: {type: integer, minimum: 1, maximum: 100}
+    BackupDestination:
+      type: object
+      required: [label, kind, reference, enabled]
+      properties:
+        id: {type: string, pattern: '^[0-9a-f]{16,64}$'}
+        label: {type: string, maxLength: 80}
+        kind: {type: string, enum: [local, nfs, rclone]}
+        reference: {type: string, maxLength: 1024, description: Host path or configured rclone remote path; credentials stay on the host.}
+        enabled: {type: boolean}
+        encrypted: {type: boolean, default: false, description: Encrypt archive files stored at this destination with a destination-specific recovery key.}
+        hasRecoveryKey: {type: boolean, readOnly: true, description: A recovery key is stored separately from system backup archives.}
+    BackupRun:
+      type: object
+      required: [id, batchId, trigger, destinationId, destinationLabel, archiveName, state, sizeBytes, startedAt]
+      properties:
+        id: {type: integer, format: int64}
+        batchId: {type: string}
+        trigger: {type: string, enum: [manual, weekly, monthly]}
+        destinationId: {type: string}
+        destinationLabel: {type: string}
+        archiveName: {type: string}
+        state: {type: string, enum: [running, succeeded, failed]}
+        sizeBytes: {type: integer, format: int64}
+        errorCode: {type: string}
+        startedAt: {type: string, format: date-time}
+        finishedAt: {type: string, format: date-time}
+    BackupSnapshot:
+      type: object
+      required: [schedule, destinations, runs, running]
+      properties:
+        schedule: {$ref: '#/components/schemas/BackupSchedule'}
+        destinations: {type: array, items: {$ref: '#/components/schemas/BackupDestination'}}
+        runs: {type: array, items: {$ref: '#/components/schemas/BackupRun'}}
+        running: {type: boolean}
+    NotificationAdminSettings:
+      type: object
+      required: [smtp, telegram, adminAlerts, deliveryFailures, userDeliveryFailures]
+      properties:
+        smtp: {type: object, required: [host, port, tlsMode, from, recipient, configured, authenticationConfigured], properties: {host: {type: string}, port: {type: integer}, tlsMode: {type: string, enum: [tls, starttls]}, from: {type: string}, recipient: {type: string, format: email}, configured: {type: boolean}, authenticationConfigured: {type: boolean}}}
+        telegram: {type: object, required: [configured, chatConfigured], properties: {configured: {type: boolean}, chatConfigured: {type: boolean}}}
+        adminAlerts: {type: object, required: [backupSuccess, backupFailure, security], properties: {backupSuccess: {type: boolean}, backupFailure: {type: boolean}, security: {type: boolean}}}
+        deliveryFailures: {type: integer, format: int64, minimum: 0, description: Provider delivery failures since process start.}
+        userDeliveryFailures: {type: integer, format: int64, minimum: 0, description: User notification delivery failures since process start.}
+    UserNotificationChannel:
+      type: object
+      required: [kind, destination, verifiedAt]
+      properties:
+        kind: {type: string, enum: [email, telegram]}
+        destination: {type: string}
+        verifiedAt: {type: string, format: date-time}
+    UserNotificationSettings:
+      type: object
+      required: [channels, securityAlerts, sharingAlerts]
+      properties:
+        channels: {type: array, items: {$ref: '#/components/schemas/UserNotificationChannel'}}
+        securityAlerts: {type: boolean}
+        sharingAlerts: {type: boolean}
+    UserNotificationPreferences:
+      type: object
+      required: [securityAlerts, sharingAlerts]
+      additionalProperties: false
+      properties:
+        securityAlerts: {type: boolean}
+        sharingAlerts: {type: boolean}
+    NotificationBindingRequest:
+      type: object
+      required: [kind, destination]
+      additionalProperties: false
+      properties:
+        kind: {type: string, enum: [email, telegram]}
+        destination: {type: string, maxLength: 254}
+    NotificationBindingConfirm:
+      type: object
+      required: [kind, code]
+      additionalProperties: false
+      properties:
+        kind: {type: string, enum: [email, telegram]}
+        code: {type: string, pattern: '^[0-9]{8}$'}
+    NotificationBindingStarted:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, const: verification_sent}
+    NotificationAdminUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        smtp: {type: object, additionalProperties: false, properties: {host: {type: string, maxLength: 253}, port: {type: integer, minimum: 1, maximum: 65535}, tlsMode: {type: string, enum: [tls, starttls]}, username: {type: string, maxLength: 256}, password: {type: string, maxLength: 1024, writeOnly: true}, from: {type: string, maxLength: 320}, recipient: {type: string, format: email, maxLength: 320}, clearPassword: {type: boolean}, clear: {type: boolean}}}
+        telegram: {type: object, additionalProperties: false, properties: {botToken: {type: string, maxLength: 256, writeOnly: true}, chatId: {type: string, maxLength: 24}, clear: {type: boolean}}}
+        adminAlerts: {type: object, additionalProperties: false, properties: {backupSuccess: {type: boolean}, backupFailure: {type: boolean}, security: {type: boolean}}}
+    NotificationTestRequest:
+      type: object
+      required: [channel]
+      additionalProperties: false
+      properties:
+        channel: {type: string, enum: [smtp, telegram]}
+    NotificationTestResult:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, enum: [ok]}
+    BackupBatchAccepted:
+      type: object
+      required: [batchId, status]
+      properties:
+        batchId: {type: string}
+        status: {type: string, const: accepted}
+    BackupTestResult:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, const: ok}
+  responses:
+    Error:
+      description: Standard JSON error response.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+paths:
+  /version: {get: {operationId: getVersion, security: [], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/VersionResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Version}}
+  /auth/login: {post: {operationId: passwordLogin, security: [], requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/LoginRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/AuthState'}}}, description: Successful response.}, "202": {content: {application/json: {schema: {$ref: '#/components/schemas/SecondFactorRequired'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Password Login}}
+  /auth/logout: {post: {operationId: logout, security: [{sessionCookie: []}], responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Logout}}
+  /auth/session: {get: {operationId: currentSession, security: [{sessionCookie: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/AuthState'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Current Session}}
+  /auth/csrf: {get: {operationId: csrfBootstrap, security: [{sessionCookie: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/CSRFResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Csrf Bootstrap}}
+  /auth/sessions: {get: {operationId: listSessions, security: [{sessionCookie: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/SessionList'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: List Sessions}}
+  /auth/sessions/{id}: {delete: {operationId: revokeSession, security: [{sessionCookie: []}], responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Revoke Session, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}}
+  /auth/reauthenticate: {post: {operationId: reauthenticate, security: [{sessionCookie: []}], requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/ReauthenticateRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/AuthState'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Reauthenticate}}
+  /auth/login/second-factor: {post: {operationId: completeSecondFactorLogin, security: [], requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/SecondFactorRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/AuthState'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Complete Second Factor Login}}
+  /auth/totp: {get: {operationId: totpStatus, security: [{sessionCookie: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/TOTPStatus'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: TOTP Status}}
+  /auth/totp/enroll: {post: {operationId: beginTotpEnrollment, security: [{sessionCookie: []}], x-recent-auth: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/TOTPEnrollment'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Begin TOTP Enrollment}}
+  /auth/totp/confirm: {post: {operationId: confirmTotpEnrollment, security: [{sessionCookie: []}], x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/TOTPCodeRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/RecoveryCodesResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Confirm TOTP Enrollment}}
+  /auth/totp/disable: {post: {operationId: disableTotp, security: [{sessionCookie: []}], x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/TOTPProofRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/CSRFResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Disable TOTP}}
+  /auth/recovery-codes: {post: {operationId: regenerateRecoveryCodes, security: [{sessionCookie: []}], x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/TOTPCodeRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/RecoveryCodesResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Regenerate Recovery Codes}}
+  /auth/passkey/login/begin: {post: {operationId: beginPasskeyLogin, security: [], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/Ceremony'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Begin Passkey Login}}
+  /auth/passkey/login/finish: {post: {operationId: finishPasskeyLogin, security: [], requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/CeremonyRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/AuthState'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Finish Passkey Login}}
+  /auth/passkeys: {get: {operationId: listPasskeys, security: [{sessionCookie: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/PasskeyList'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: List Passkeys}}
+  /auth/passkeys/register/begin: {post: {operationId: beginPasskeyRegistration, security: [{sessionCookie: []}], x-recent-auth: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/Ceremony'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Begin Passkey Registration}}
+  /auth/passkeys/register/finish: {post: {operationId: finishPasskeyRegistration, security: [{sessionCookie: []}], x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/PasskeyRegistrationFinishRequest'}}}, required: true}, responses: {"201": {content: {application/json: {schema: {$ref: '#/components/schemas/PasskeyCreated'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Finish Passkey Registration}}
+  /auth/passkeys/{id}: {patch: {operationId: renamePasskey, security: [{sessionCookie: []}], requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/RenamePasskeyRequest'}}}, required: true}, responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Rename Passkey, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}, delete: {operationId: deletePasskey, security: [{sessionCookie: []}], x-recent-auth: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/CSRFResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Delete Passkey, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}}
+  /auth/oidc/providers: {get: {operationId: listOidcProviders, security: [], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/OIDCProviderList'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: List OIDC Providers}}
+  /auth/oidc/{provider}/login: {post: {operationId: beginOidcLogin, security: [], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/OIDCStart'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Begin OIDC Login, parameters: [{name: provider, in: path, required: true, schema: {type: string}}]}}
+  /auth/oidc/{provider}/link: {post: {operationId: beginOidcLink, security: [{sessionCookie: []}], x-recent-auth: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/OIDCStart'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Begin OIDC Link, parameters: [{name: provider, in: path, required: true, schema: {type: string}}]}}
+  /auth/oidc/{provider}/callback: {get: {operationId: finishOidcFlow, security: [], responses: {"303": {description: OIDC callback redirect., headers: {Location: {schema: {format: uri, type: string}}}}, default: {$ref: '#/components/responses/Error'}}, parameters: [{in: query, name: state, required: false, schema: {type: string}}, {in: query, name: code, required: false, schema: {type: string}}, {in: query, name: error, required: false, schema: {type: string}}, {name: provider, in: path, required: true, schema: {type: string}}], summary: Finish OIDC Flow}}
+  /auth/oidc/identities: {get: {operationId: listOidcIdentities, security: [{sessionCookie: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/OIDCIdentityList'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: List OIDC Identities}}
+  /auth/oidc/identities/{id}: {delete: {operationId: unlinkOidcIdentity, security: [{sessionCookie: []}], x-recent-auth: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/CSRFResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Unlink OIDC Identity, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}}
+  /me: {get: {operationId: getMe, security: [{sessionCookie: []}, {personalToken: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/BasicUser'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Me}}
+  /me/notifications:
+    get: {operationId: getMyNotifications, security: [{sessionCookie: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/UserNotificationSettings'}}}, description: Verified channels and preferences for the signed-in account.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Notification Settings}
+    patch: {operationId: updateMyNotificationPreferences, security: [{sessionCookie: []}], requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/UserNotificationPreferences'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/UserNotificationSettings'}}}, description: Updated user notification preferences.}, default: {$ref: '#/components/responses/Error'}}, summary: Update Notification Preferences}
+  /me/notifications/bindings: {post: {operationId: beginNotificationBinding, security: [{sessionCookie: []}], requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/NotificationBindingRequest'}}}, required: true}, responses: {"202": {content: {application/json: {schema: {$ref: '#/components/schemas/NotificationBindingStarted'}}}, description: Verification message sent.}, default: {$ref: '#/components/responses/Error'}}, summary: Begin Notification Channel Verification}}
+  /me/notifications/bindings/confirm: {post: {operationId: confirmNotificationBinding, security: [{sessionCookie: []}], requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/NotificationBindingConfirm'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/UserNotificationSettings'}}}, description: Channel verified.}, default: {$ref: '#/components/responses/Error'}}, summary: Confirm Notification Channel}}
+  /me/notifications/bindings/{kind}: {delete: {operationId: removeNotificationBinding, security: [{sessionCookie: []}], parameters: [{name: kind, in: path, required: true, schema: {type: string, enum: [email, telegram]}}], responses: {"204": {description: Channel removed.}, default: {$ref: '#/components/responses/Error'}}, summary: Remove Notification Channel}}
+  /me/password: {patch: {operationId: changePassword, security: [{sessionCookie: []}], x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/PasswordChangeRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/CSRFResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Change Password}}
+  /me/dashboard:
+    get:
+      operationId: getDashboard
+      description: "Overview of the caller's own private collection: distinct live bookmark count, duplicate count, last Floccus contact and the last seven days of changes (current item state, newest first, paginated). Never includes shared folders or other users' data; the share selector is rejected."
+      security: [{sessionCookie: []}, {personalToken: []}]
+      x-token-scope: bookmarks:read
+      parameters:
+        - in: query
+          name: page
+          description: Zero-based page of recent change items.
+          required: false
+          schema: {default: 0, format: int64, maximum: 1000000, minimum: 0, type: integer}
+        - in: query
+          description: The handler caps the effective page size at 200; larger values are accepted.
+          name: limit
+          required: false
+          schema: {default: 20, format: int64, minimum: 1, type: integer}
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DashboardSummary'
+          description: Successful response.
+        default:
+          $ref: '#/components/responses/Error'
+      summary: Get Dashboard
+  /me/settings: {get: {operationId: getSettings, security: [{sessionCookie: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/SettingsResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Settings}, patch: {operationId: updateSettings, security: [{sessionCookie: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/SettingsResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/SettingsPatchRequest'}}}, required: true}, summary: Update Settings}}
+  /me/tokens: {get: {operationId: listTokens, security: [{sessionCookie: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/TokenList'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: List Tokens}, post: {operationId: createToken, security: [{sessionCookie: []}], x-recent-auth: true, responses: {"201": {content: {application/json: {schema: {$ref: '#/components/schemas/TokenCreated'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/TokenCreateRequest'}}}, required: true}, summary: Create Token}}
+  /me/tokens/{id}: {delete: {operationId: revokeToken, security: [{sessionCookie: []}], responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Revoke Token, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}}
+  /me/connections: {get: {operationId: listConnections, security: [{sessionCookie: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/ConnectionList'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: List Connections}, post: {operationId: createConnection, security: [{sessionCookie: []}], x-recent-auth: true, responses: {"201": {content: {application/json: {schema: {$ref: '#/components/schemas/ConnectionCreated'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/ConnectionCreateRequest'}}}, required: true}, summary: Create Connection}}
+  /me/connections/{id}: {patch: {operationId: renameConnection, security: [{sessionCookie: []}], description: "Changes only the display name of one of the caller's active connections. The secret, mode, kind, share and usage are unchanged and no secret is returned. Another user's, revoked or unknown connections are not found. Requires a web session and CSRF token but not recent reauthentication.", requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/ConnectionRenameRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/ConnectionResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Rename Connection, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}, delete: {operationId: revokeConnection, security: [{sessionCookie: []}], responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Revoke Connection, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}}
+  /bookmarks:
+    get:
+      operationId: listBookmarks
+      description: Returns a page of bookmarks. Supports page (zero-based), limit (default 50, maximum 200), folder, url, q, repeated tag, and favorite filters.
+      security: [{sessionCookie: []}, {personalToken: []}]
+      x-token-scope: bookmarks:read
+      parameters:
+        - in: query
+          name: page
+          required: false
+          schema:
+            default: 0
+            format: int64
+            maximum: 1000000
+            minimum: 0
+            type: integer
+        - in: query
+          description: The handler caps the effective page size at 200; larger values are accepted.
+          name: limit
+          required: false
+          schema:
+            default: 50
+            format: int64
+            minimum: 1
+            type: integer
+        - in: query
+          name: folder
+          required: false
+          schema:
+            format: int64
+            minimum: 0
+            type: integer
+        - in: query
+          name: url
+          required: false
+          schema:
+            type: string
+        - in: query
+          name: q
+          required: false
+          schema:
+            type: string
+        - explode: true
+          in: query
+          name: tag
+          required: false
+          schema:
+            items:
+              type: string
+            type: array
+          style: form
+        - description: Only bookmarks the caller has (true) or has not (false) marked as a favorite. Any other value is rejected with 400.
+          in: query
+          name: favorite
+          required: false
+          schema:
+            type: boolean
+        - description: Select a shared folder scope instead of the private collection.
+          in: query
+          name: share
+          required: false
+          schema:
+            format: int64
+            minimum: 1
+            type: integer
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookmarkPage'
+          description: Successful response.
+        default:
+          $ref: '#/components/responses/Error'
+      summary: List Bookmarks
+    post: {operationId: createBookmark, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:write', requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/BookmarkCreateRequest'}}}, required: true}, responses: {"201": {content: {application/json: {schema: {$ref: '#/components/schemas/Bookmark'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, parameters: [{description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}], summary: Create Bookmark}
+  /bookmarks/bulk-move:
+    post: {operationId: moveBookmarks, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:write', description: 'Atomically moves the placement the listed bookmarks have in sourceFolderId to folderId; placements in other folders are kept. Moved bookmarks are appended after the destination''s existing children in the submitted order. A bookmark already in the destination is not duplicated. All or nothing: an invisible folder or bookmark (404), a read-only scope (403), a Floccus lock (423) or another bookmark with the same exact URL in the destination (409) changes nothing.', requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/BulkMoveRequest'}}}, required: true}, responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, parameters: [{description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}], summary: Move Bookmarks}
+  /bookmarks/{id}:
+    get: {operationId: getBookmark, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:read', parameters: [{description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}, {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/Bookmark'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Bookmark}
+    patch: {operationId: updateBookmark, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:write', requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/BookmarkUpdateRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/Bookmark'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, parameters: [{description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}, {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}], summary: Update Bookmark}
+    delete: {operationId: deleteBookmark, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:write', parameters: [{description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}, {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}], responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Delete Bookmark}
+  /bookmarks/{id}/favorite:
+    put: {operationId: favoriteBookmark, description: "Marks a visible bookmark as the caller's favorite. Idempotent; takes no request body. A favorite is the caller's private metadata: recipients of a read-only share may favorite bookmarks they can view, and the bookmark, its other users' favorites, and the share grant are unchanged. Token callers need bookmarks:write.", security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:write', parameters: [{description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}, {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}], responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Favorite Bookmark}
+    delete: {operationId: unfavoriteBookmark, description: "Removes a visible bookmark from the caller's favorites. Idempotent; takes no request body. Works for recipients of a read-only share and never changes the bookmark, other users' favorites, or the share grant. Token callers need bookmarks:write.", security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:write', parameters: [{description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}, {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}], responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Unfavorite Bookmark}
+  /folders:
+    get: {operationId: listFolders, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:read', parameters: [{in: query, name: parent, required: false, schema: {default: -1, format: int64, type: integer}}, {in: query, name: depth, required: false, schema: {default: 2, maximum: 1000, minimum: 1, type: integer}}, {description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/FolderTree'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: List Folders}
+    post: {operationId: createFolder, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:write', requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/FolderCreateRequest'}}}, required: true}, responses: {"201": {content: {application/json: {schema: {$ref: '#/components/schemas/Folder'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, parameters: [{description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}], summary: Create Folder}
+  /folders/{id}:
+    get: {operationId: getFolder, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:read', parameters: [{description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}, {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/Folder'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Folder}
+    patch: {operationId: updateFolder, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:write', requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/FolderUpdateRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/Folder'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, parameters: [{description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}, {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}], summary: Update Folder}
+    delete: {operationId: deleteFolder, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:write', parameters: [{description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}, {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}], responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Delete Folder}
+  /folders/{folderId}/bookmarks/{id}: {delete: {operationId: removeBookmarkPlacement, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:write', parameters: [{description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}, {description: Use -1 only for the selected shared-folder root; private-root placement removal is unsupported. Otherwise provide a positive folder id., name: folderId, in: path, required: true, schema: {type: integer, format: int64, anyOf: [{const: -1}, {minimum: 1}]}}, {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}], responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Remove Bookmark Placement}}
+  /folders/{id}/order: {put: {operationId: reorderFolderChildren, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:write', requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/ChildOrderRequest'}}}, required: true}, responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, parameters: [{description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}, {description: Use -1 for the selected collection root; otherwise provide a positive folder id., name: id, in: path, required: true, schema: {type: integer, format: int64, anyOf: [{const: -1}, {minimum: 1}]}}], summary: Reorder Folder Children}}
+  /tags: {get: {operationId: listTags, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:read', parameters: [{description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/TagList'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: List Tags}}
+  /duplicates:
+    get:
+      operationId: listDuplicates
+      description: "Read-only duplicate review. Groups bookmark records that share an exact URL among the records visible to the caller, with the total number of excess distinct records. Multiple folder placements of one record are intentional and never counted. Nothing is removed automatically: to remove a chosen record, call DELETE /bookmarks/{id}, which moves it to the Trash (restorable). Read-only shares and bookmarks:read tokens can review but cannot remove."
+      security: [{sessionCookie: []}, {personalToken: []}]
+      x-token-scope: bookmarks:read
+      parameters:
+        - in: query
+          name: page
+          required: false
+          schema: {default: 0, format: int64, maximum: 1000000, minimum: 0, type: integer}
+        - in: query
+          description: The handler caps the effective page size at 1000; larger values are accepted.
+          name: limit
+          required: false
+          schema: {default: 50, format: int64, minimum: 1, type: integer}
+        - description: Select a shared folder scope instead of the private collection.
+          in: query
+          name: share
+          required: false
+          schema: {format: int64, minimum: 1, type: integer}
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DuplicateList'
+          description: Successful response.
+        default:
+          $ref: '#/components/responses/Error'
+      summary: List Duplicates
+  /link-checks:
+    post: {operationId: submitLinkCheck, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:write', description: "Queues a public-only link check of 1-50 distinct bookmarks visible in the selected scope and returns the job (202). Only http and https URLs are contacted, and only at public addresses: every DNS answer and every redirect target (at most 5) is re-resolved and validated, private, loopback, link-local, IPv4-mapped, reserved and rebinding destinations are reported as blocked, other schemes as skipped, and each URL is bounded to 10 seconds and 1 MiB. Domains and addresses in the user setting linkcheck.exclusions are reported as excluded without being contacted; exclusions never permit a private destination. Needs write authority in the scope: a view-only share is refused (403), an invisible bookmark is 404 and queues nothing, and more than 5 unfinished jobs per user is 429. Jobs are persisted and resume after a restart without repeating finished checks.", requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/LinkCheckRequest'}}}, required: true}, responses: {"202": {content: {application/json: {schema: {$ref: '#/components/schemas/LinkCheckJob'}}}, description: Job queued.}, default: {$ref: '#/components/responses/Error'}}, parameters: [{description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}], summary: Submit Link Check}
+  /link-checks/{id}:
+    get: {operationId: getLinkCheck, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:read', description: "Returns one job with its per-bookmark results. A job is visible only to the user who submitted it, in the exact private collection or share it was submitted in; anything else is 404. Results hold the checked URL and outcome only (no titles, tags or folders).", parameters: [{description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}, {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/LinkCheckJob'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Link Check}
+  /trash:
+    get: {operationId: listTrash, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:read', responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/TrashPage'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, parameters: [{in: query, name: page, required: false, schema: {default: 0, format: int64, maximum: 1000000, minimum: 0, type: integer}}, {description: The handler caps the effective page size at 1000; larger values are accepted., in: query, name: limit, required: false, schema: {default: 100, format: int64, minimum: 1, type: integer}}], summary: List Trash}
+    delete: {operationId: emptyTrash, security: [{sessionCookie: []}], x-recent-auth: true, responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Empty Trash}
+  /trash/{type}/{id}:
+    delete: {operationId: purgeTrashItem, security: [{sessionCookie: []}], x-recent-auth: true, responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Purge Trash Item, parameters: [{name: type, in: path, required: true, schema: {type: string, enum: [bookmark, folder]}}, {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}
+  /trash/{type}/{id}/restore: {post: {operationId: restoreTrashItem, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:write', responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/RestoredItem'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Restore Trash Item, parameters: [{name: type, in: path, required: true, schema: {type: string, enum: [bookmark, folder]}}, {name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}}
+  /import: {post: {operationId: importBookmarks, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:write', parameters: [{in: query, name: folder, required: false, schema: {format: int64, type: integer}}, {description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}], responses: {"201": {content: {application/json: {schema: {$ref: '#/components/schemas/ImportResult'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, requestBody: {content: {application/xbel+xml: {schema: {type: string}}, application/xml: {schema: {type: string}}, multipart/form-data: {schema: {$ref: '#/components/schemas/ImportUpload'}}, text/html: {schema: {type: string}}, text/xml: {schema: {type: string}}}, required: true}, summary: Import Bookmarks}}
+  /export: {get: {operationId: exportBookmarks, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'bookmarks:read', parameters: [{in: query, name: folder, required: false, schema: {format: int64, type: integer}}, {in: query, name: format, required: false, schema: {default: netscape, enum: [netscape, xbel], type: string}}, {description: Select a shared folder scope instead of the private collection., in: query, name: share, required: false, schema: {format: int64, minimum: 1, type: integer}}], responses: {"200": {content: {application/xbel+xml: {schema: {type: string}}, text/html: {schema: {type: string}}}, description: Netscape HTML or XBEL bookmark export., headers: {Content-Disposition: {schema: {type: string}}}}, default: {$ref: '#/components/responses/Error'}}, summary: Export Bookmarks}}
+  /shares/owned: {get: {operationId: listOwnedShares, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'shares:read', responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/ShareList'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: List Owned Shares}}
+  /shares/incoming: {get: {operationId: listIncomingShares, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'shares:read', responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/ShareList'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: List Incoming Shares}}
+  /shares: {post: {operationId: grantShare, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'shares:manage', requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/ShareCreateRequest'}}}, required: true}, responses: {"201": {content: {application/json: {schema: {$ref: '#/components/schemas/Share'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Grant Share}}
+  /shares/{id}:
+    patch: {operationId: updateShare, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'shares:manage', requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/ShareUpdateRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/Share'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Update Share, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}
+    delete: {operationId: revokeOrLeaveShare, security: [{sessionCookie: []}, {personalToken: []}], x-token-scope: 'shares:manage', responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Revoke Or Leave Share, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}
+  /admin/users:
+    get:
+      operationId: adminListUsers
+      description: "Returns paginated account metadata and aggregate bookmark counts. Supports page (zero-based) and limit (default 50, maximum 200)."
+      security: [{sessionCookie: []}]
+      x-admin-required: true
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AdminUserPage'
+          description: Successful response.
+        default:
+          $ref: '#/components/responses/Error'
+      parameters:
+        - in: query
+          name: page
+          required: false
+          schema:
+            default: 0
+            format: int64
+            maximum: 1000000
+            minimum: 0
+            type: integer
+        - in: query
+          description: The handler caps the effective page size at 200; larger values are accepted.
+          name: limit
+          required: false
+          schema:
+            default: 50
+            format: int64
+            minimum: 1
+            type: integer
+      summary: Admin List Users
+    post: {operationId: adminCreateUser, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/UserCreateRequest'}}}, required: true}, responses: {"201": {content: {application/json: {schema: {$ref: '#/components/schemas/User'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Admin Create User}
+  /admin/users/{id}:
+    patch: {operationId: adminUpdateUser, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/UserUpdateRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/User'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Admin Update User, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}
+  /admin/users/{id}/password-reset: {post: {operationId: adminResetPassword, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/PasswordResetRequest'}}}, required: true}, responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Admin Reset Password, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}}
+  /admin/users/{id}/factor-reset: {post: {operationId: adminResetFactors, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/FactorResetRequest'}}}, required: true}, responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Admin Reset Factors, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}}
+  /admin/users/{id}/connections: {get: {operationId: adminListConnections, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/ConnectionList'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Admin List Connections, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}}
+  /admin/users/{id}/connections/{cid}: {delete: {operationId: adminRevokeConnection, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Admin Revoke Connection, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}, {name: cid, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}}
+  /admin/system: {get: {operationId: adminSystemInfo, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/AdminSystem'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Admin System Info}}
+  /admin/updates: {get: {operationId: adminUpdateCatalog, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/UpdateCatalog'}}}, description: Published SHA-addressed Linux builds from the configured repository.}, default: {$ref: '#/components/responses/Error'}}, summary: List Available Updates}}
+  /admin/updates/approve: {post: {operationId: adminApproveUpdate, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/UpdateApprovalRequest'}}}, required: true}, responses: {"202": {content: {application/json: {schema: {$ref: '#/components/schemas/UpdateApproval'}}}, description: Selected release was queued by the restricted host updater.}, default: {$ref: '#/components/responses/Error'}}, summary: Approve and Queue Software Update}}
+  /admin/settings:
+    get: {operationId: adminGetSettings, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/SystemSettingsResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Get System Settings}
+    patch: {operationId: adminPatchSettings, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/SettingsPatchRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/SystemSettingsResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Update System Settings}
+  /admin/network-access:
+    get: {operationId: adminGetNetworkAccess, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/NetworkAccessPolicy'}}}, description: Network access policy and sanitized database status.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Network Access Policy}
+    patch: {operationId: adminUpdateNetworkAccess, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/NetworkAccessPolicyPatch'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/NetworkAccessPolicy'}}}, description: Updated policy.}, default: {$ref: '#/components/responses/Error'}}, summary: Update Network Access Policy}
+  /admin/settings/assets:
+    post: {operationId: adminUploadBrandingAsset, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {multipart/form-data: {schema: {type: object, required: [kind, asset], properties: {kind: {type: string, enum: [logo, background]}, asset: {type: string, format: binary}}}}}, required: true}, responses: {"201": {content: {application/json: {schema: {$ref: '#/components/schemas/BrandingAssetUpload'}}}, description: Image stored as a private, randomly named file.}, default: {$ref: '#/components/responses/Error'}}, summary: Upload Login Branding Asset}
+  /admin/users/{id}/settings:
+    get: {operationId: adminGetUserSettings, security: [{sessionCookie: []}], x-admin-required: true, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/SystemSettingsResponse'}}}, description: Per-user defaults.}, default: {$ref: '#/components/responses/Error'}}, summary: Get User Setting Defaults}
+    patch: {operationId: adminPatchUserSettings, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}], requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/SettingsPatchRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/SystemSettingsResponse'}}}, description: Per-user defaults.}, default: {$ref: '#/components/responses/Error'}}, summary: Update User Setting Defaults}
+  /admin/health: {get: {operationId: adminHealth, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/AdminHealth'}}}, description: Host metrics and readiness without user bookmark data.}, default: {$ref: '#/components/responses/Error'}}, summary: Admin Server Health}}
+  /admin/activity: {get: {operationId: adminListActivity, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/AdminActivity'}}}, description: Sanitized administrative events with no free-form content.}, default: {$ref: '#/components/responses/Error'}}, summary: Admin List Activity}}
+  /admin/backups:
+    get: {operationId: adminGetBackups, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/BackupSnapshot'}}}, description: Schedule, destinations and recent run history.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Backup Settings}
+  /admin/backups/schedule:
+    put: {operationId: adminUpdateBackupSchedule, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/BackupSchedule'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {type: object, required: [schedule], properties: {schedule: {$ref: '#/components/schemas/BackupSchedule'}}}}}, description: Schedule replaced.}, default: {$ref: '#/components/responses/Error'}}, summary: Replace Backup Schedule}
+  /admin/backups/destinations:
+    post: {operationId: adminCreateBackupDestination, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/BackupDestination'}}}, required: true}, responses: {"201": {content: {application/json: {schema: {$ref: '#/components/schemas/BackupDestination'}}}, description: Destination saved.}, default: {$ref: '#/components/responses/Error'}}, summary: Create Backup Destination}
+  /admin/backups/destinations/{id}:
+    put: {operationId: adminUpdateBackupDestination, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, parameters: [{name: id, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{16,64}$'}}], requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/BackupDestination'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/BackupDestination'}}}, description: Destination replaced.}, default: {$ref: '#/components/responses/Error'}}, summary: Replace Backup Destination}
+    delete: {operationId: adminDeleteBackupDestination, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, parameters: [{name: id, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{16,64}$'}}], responses: {"204": {description: Destination deleted.}, default: {$ref: '#/components/responses/Error'}}, summary: Delete Backup Destination}
+  /admin/backups/destinations/{id}/recovery-key:
+    get: {operationId: adminExportBackupRecoveryKey, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, parameters: [{name: id, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{16,64}$'}}], responses: {"200": {content: {application/json: {schema: {type: object, required: [recoveryKey], properties: {recoveryKey: {type: string, pattern: '^[0-9a-f]{64}$'}}}}}, description: Recovery key for encrypted backups; returned only on explicit request.}, default: {$ref: '#/components/responses/Error'}}, summary: Export Backup Recovery Key}
+  /admin/backups/destinations/test:
+    post: {operationId: adminTestBackupDestination, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/BackupDestination'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/BackupTestResult'}}}, description: Destination test passed.}, default: {$ref: '#/components/responses/Error'}}, summary: Test Backup Destination}
+  /admin/notifications:
+    get: {operationId: adminGetNotifications, security: [{sessionCookie: []}], x-admin-required: true, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/NotificationAdminSettings'}}}, description: Safe notification provider status; credentials are never returned.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Notification Settings}
+    put: {operationId: adminUpdateNotifications, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/NotificationAdminUpdate'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/NotificationAdminSettings'}}}, description: Provider settings saved without returning secrets.}, default: {$ref: '#/components/responses/Error'}}, summary: Update Notification Settings}
+  /admin/notifications/test:
+    post: {operationId: adminTestNotification, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTestRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/NotificationTestResult'}}}, description: Test message accepted by provider.}, default: {$ref: '#/components/responses/Error'}}, summary: Test Notification Provider}
+  /admin/backups/run:
+    post: {operationId: adminStartBackup, security: [{sessionCookie: []}], x-admin-required: true, x-recent-auth: true, responses: {"202": {content: {application/json: {schema: {$ref: '#/components/schemas/BackupBatchAccepted'}}}, description: Backup accepted.}, "409": {description: Another backup is running.}, default: {$ref: '#/components/responses/Error'}}, summary: Start Backup Now}
+  /auth/presentation: {get: {operationId: getAuthPresentation, x-public: true, security: [], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/PublicPresentation'}}}, description: Public login appearance and safe version information.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Public Login Presentation}}
+  /auth/presentation/assets/{id}: {get: {operationId: getAuthPresentationAsset, x-public: true, security: [], parameters: [{name: id, in: path, required: true, schema: {type: string, pattern: '^[0-9a-f]{32}$'}}], responses: {"200": {content: {image/png: {schema: {type: string, format: binary}}, image/jpeg: {schema: {type: string, format: binary}}, image/webp: {schema: {type: string, format: binary}}}, description: Login image asset.}, default: {$ref: '#/components/responses/Error'}}, summary: Get Public Login Image}}
+
+  /index.php/login/v2:
+    post:
+      servers: [{url: /}]
+      operationId: beginLoginFlow
+      summary: Begin an app connection
+      description: Anonymous Nextcloud Login Flow v2 initiation. Returns independent browser and poll handles valid for 20 minutes. State and per-peer requests are bounded.
+      security: []
+      x-public: true
+      responses:
+        "200":
+          description: Open the login URL and poll the returned endpoint.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [poll, login]
+                properties:
+                  login: {type: string, format: uri}
+                  poll:
+                    type: object
+                    required: [token, endpoint]
+                    properties:
+                      token: {type: string}
+                      endpoint: {type: string, format: uri}
+        default: {$ref: '#/components/responses/Error'}
+  /login/v2/poll:
+    post:
+      servers: [{url: /}]
+      operationId: pollLoginFlow
+      summary: Redeem an approved app connection once
+      description: Returns 404 while pending, expired or consumed. A successful response is returned once and contains a revocable private edit app credential. Responses are never cached.
+      security: []
+      x-public: true
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [token]
+              properties:
+                token: {type: string}
+      responses:
+        "200":
+          description: One-time application credentials.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [server, loginName, appPassword]
+                properties:
+                  server: {type: string, format: uri}
+                  loginName: {type: string}
+                  appPassword: {type: string}
+        default: {$ref: '#/components/responses/Error'}
+  /auth/connect:
+    get:
+      operationId: inspectLoginFlow
+      summary: Check a browser connection request
+      security: [{sessionCookie: []}]
+      parameters:
+        - {name: flow, in: query, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: Request awaits explicit consent.
+          content:
+            application/json:
+              schema: {type: object, required: [status], properties: {status: {type: string, const: pending}}}
+        default: {$ref: '#/components/responses/Error'}
+  /auth/connect/continuation:
+    get:
+      operationId: continueLoginFlow
+      summary: Resume an app connection after provider sign-in
+      security: [{sessionCookie: []}]
+      responses:
+        "200":
+          description: Allowlisted local destination; clears the HttpOnly continuation cookie.
+          content:
+            application/json:
+              schema: {type: object, required: [destination], properties: {destination: {type: string}}}
+        default: {$ref: '#/components/responses/Error'}
+  /auth/connect/approve:
+    post:
+      operationId: approveLoginFlow
+      summary: Approve a private edit app connection
+      security: [{sessionCookie: []}]
+      x-recent-auth: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [flow, sessionId], additionalProperties: false, properties: {flow: {type: string}, sessionId: {type: integer, format: int64}, label: {type: string, minLength: 1, maxLength: 200, description: 'Optional connection name for the minted credential, such as the client profile name. Surrounding white space is trimmed and the result must be 1-200 characters without control characters. When omitted the legacy name "Login Flow v2 connection" is used.'}}}
+      responses:
+        "200":
+          description: Approved for the requesting client to redeem; no credentials returned to this browser.
+          content:
+            application/json:
+              schema: {type: object, required: [status], properties: {status: {type: string, const: approved}}}
+        default: {$ref: '#/components/responses/Error'}

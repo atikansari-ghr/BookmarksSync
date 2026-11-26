@@ -1,0 +1,92 @@
+# Backup and Restore
+
+The Operations slice provides scheduled weekly and monthly full-system backups, manual runs from the admin interface, per-destination retention, archive verification, full-system restore, user-only recovery, and optional email/Telegram backup notifications. Backups use Deflate compression. Destination encryption is optional and off by default.
+
+## What the archive contains
+
+Each Deflate-compressed archive contains a format-versioned manifest, a consistent SQLite online snapshot, the private runtime configuration (`runtime.json`, including OIDC, SMTP, and Telegram secrets), the instance key when present, and branding images currently referenced by system settings. Manifest entries include expanded sizes and SHA-256 checksums. The manifest records application/build and schema versions, creation time, public origin, and provider IDs. Treat the archive as a credential-bearing secret; store it in an access-controlled location.
+
+`runtime.json` is created on server startup and is loaded as the default configuration on the next startup. Environment variables and explicit command-line flags override saved values. OIDC environment overrides must provide a complete provider configuration; values are not mixed with saved client secrets. Use `--disable-oidc-google`, `--disable-oidc-authentik`, or `--disable-public-url` to remove saved settings on the next start. Keep the same public origin when restoring if passkeys or external identity providers are in use. The restore includes authentication records and sessions, so restrict access to the recovered host and rotate credentials if the archive was exposed.
+
+## Create and verify
+
+The server's scheduled and admin-triggered jobs take a consistent SQLite online snapshot and serialize branding asset reads with admin asset changes. The standalone CLI command does not share that asset lock; stop the service before using it so the database, runtime file, and branding assets are captured together. Never copy `bookmarksync.db`, `-wal`, or `-shm` files manually while the service is active.
+
+## Scheduled backups and destinations
+
+Open **Administration → System backups** to set the timezone, weekly/monthly times, retention counts, and destinations. Schedules are disabled until enabled. Default times are Sunday at 03:00 and day 1 at 04:00 in `Asia/Riyadh`; missed times are skipped after downtime, with no startup catch-up. Retention is counted separately for weekly and monthly runs and applies only after a verified successful run. Manual runs do not trigger scheduled retention.
+
+Destinations are host-managed references; the web interface never stores provider credentials:
+
+- **Local folder:** an existing absolute directory writable by the service account.
+- **NFS mount:** an existing directory on an active NFS mount. The Linux server checks the mount type before writing, preventing writes into an unmounted host directory.
+- **rclone remote:** install rclone **v1.76.0** and configure a remote in a host-owned config file. Set `BOOKMARKSYNC_RCLONE_BINARY` to the executable path if it is not on `PATH`, and `BOOKMARKSYNC_RCLONE_CONFIG` to the config file path. Then enter a remote reference such as `nas:bookmarks` in the admin interface. The server rejects unsupported rclone versions and verifies transfers by downloading and comparing bytes before accepting the final archive.
+
+On Debian, configure the host-owned remote as the same OS account that runs BookmarksSync. For example:
+
+```sh
+sudo install -d -m 0700 -o <service-user> -g <service-group> /etc/bookmarksync
+sudo -u <service-user> rclone config --config /etc/bookmarksync/rclone.conf
+sudo chmod 0600 /etc/bookmarksync/rclone.conf
+```
+
+Add these variables to the BookmarksSync service environment (for systemd, a service drop-in), then reload and restart the unit:
+
+```ini
+BOOKMARKSYNC_RCLONE_BINARY=/usr/bin/rclone
+BOOKMARKSYNC_RCLONE_CONFIG=/etc/bookmarksync/rclone.conf
+```
+
+For Docker, configure the persistent rclone volume described in [distribution.md](distribution.md). Create remotes with `rclone config`; provider-specific setup is documented for [Google Drive](https://rclone.org/drive/), [OneDrive](https://rclone.org/onedrive/), and [SMB](https://rclone.org/smb/). A mounted NAS can instead use a local folder or the NFS destination type.
+
+Use **Test destination** before enabling a target. It creates a random temporary probe, verifies it, and removes it. Each successful archive has a generated name beginning `bookmarksync-`; retention deletes only archive names recorded by this server. Removing a destination stops future runs but leaves its existing files untouched. Backups contain authentication settings and must be protected as secrets.
+
+### Optional destination encryption
+
+Enable **Encrypt backup archives at this destination** to store `.zip.enc` files using AES-256-GCM. Encryption applies separately to each destination; the source archive is temporary and is removed after the run. Each destination receives its own random recovery key, stored in the host data directory under `backup-keys/` and excluded from all archives. The key is available through **Download recovery key** in Admin while the destination remains configured. Recent authentication is required.
+
+Download each recovery key and store it in a secure location separate from the server and backup files. Anyone with both an encrypted archive and its key can read the full-system data. The server does not back up recovery keys. If a key is lost, its archives cannot be decrypted. Disabling encryption affects future runs only; old encrypted files and their keys remain. Download the key before removing a destination, because the key cannot then be exported from Admin.
+
+```sh
+bookmarksync backup create --data-dir /var/lib/bookmarksync --output /backup/bookmarksync-2026-11-22.zip
+bookmarksync backup verify --file /backup/bookmarksync-2026-11-22.zip
+```
+
+For an encrypted destination, export the key from Admin to a private file and pass it to verification or restore:
+
+```sh
+bookmarksync backup verify --file /backup/bookmarksync-2026-11-22.zip.enc --key-file /secure/recovery-key.txt
+bookmarksync backup restore --file /backup/bookmarksync-2026-11-22.zip.enc --key-file /secure/recovery-key.txt --target-dir /var/lib/bookmarksync-restored
+bookmarksync backup restore-user --file /backup/bookmarksync-2026-11-22.zip.enc --key-file /secure/recovery-key.txt --username alice --data-dir /var/lib/bookmarksync
+```
+
+Keep the key file private and do not place it in the backup destination or server data directory. CLI key files must contain the 64-character hexadecimal key exported by Admin, with an optional final newline.
+
+On Debian/Linux, restrict a downloaded key file before using it:
+
+```sh
+chmod 600 /secure/recovery-key.txt
+```
+
+The output archive is created as a new private temporary file beside its final path and atomically published without replacing an existing archive. Use a local filesystem that supports atomic no-replace publication for the output; copy the verified archive to NAS/cloud storage afterward. Keep backups outside the server's live data directory. Do not pass secrets as command-line arguments.
+
+## Restore
+
+Restore verifies the complete archive, hashes, SQLite integrity, schema compatibility, and runtime configuration before publishing any files. The destination must not exist; restore never merges into an existing data directory.
+
+```sh
+bookmarksync backup restore --file /backup/bookmarksync-2026-11-22.zip --target-dir /var/lib/bookmarksync-restored
+bookmarksync serve --data-dir /var/lib/bookmarksync-restored --listen 127.0.0.1:8080
+```
+
+The restored database may be migrated forward by a newer server build at startup. Archives from a newer database schema are rejected. For safety, restore disables weekly/monthly schedules and every external backup destination; review and re-enable the intended targets in Admin after confirming the new host's mount paths and rclone configuration. Any run recorded as still in progress is marked failed. A restore is published by renaming a private staging directory beside the destination; use a local filesystem for the destination. Keep your reverse-proxy TLS, DNS, and external identity-provider redirect URI configuration operational outside this server restore.
+
+### Recover one user's data
+
+To restore only one account's private bookmarks and personal setting overrides into an already running instance, use the host CLI:
+
+```sh
+bookmarksync backup restore-user --file /backup/bookmarksync-2026-11-22.zip --username alice --data-dir /var/lib/bookmarksync
+```
+
+The archive is fully verified before recovery. The username must exist and be active in both the archive and the current server. Bookmark Bar and Other Bookmarks trees, tags, and that user's favorites are merged into the current user's matching roots; other users, shared collections, system settings, sessions, passwords, passkeys, API tokens, and app credentials are not restored. Existing personal setting overrides are replaced with those from the archive, while server-provided defaults remain in effect. Repeating the same archive does not duplicate its bookmark folders; it rechecks settings so an interrupted run can be retried. This command is for host administrators and records no bookmark content in logs.

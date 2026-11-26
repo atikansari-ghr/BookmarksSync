@@ -1,0 +1,347 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# Actions are pinned to full commit SHAs, verified against official actions/*
+# repositories (tag -> commit). The release action pins were checked 2026-11-23.
+#   actions/checkout   v7.0.1 3d3c42e5aac5ba805825da76410c181273ba90b1
+#   actions/setup-go   v7.0.0 b7ad1dad31e06c5925ef5d2fc7ad053ef454303e
+#   actions/setup-node v7.1.0 949feb2413d6458794dcd2491c4babbbce0c15c1
+#   actions/upload-artifact v7.0.2 cf430e030ddbb5b0abf93d22962f4752f3646cd9
+#   actions/download-artifact v8.0.1 3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+#   actions/attest v4.2.1 508db95dd578ae2727ebd6217d5ba78e4fbda05d
+# All six actions run on node24.
+# govulncheck is pinned to golang.org/x/vuln v1.9.0 (Go module proxy @latest).
+# Node 26 (LTS "Lithium") satisfies selenium-webdriver 4.46.0 and playwright
+# 1.65.1, which declare engines node >=20.
+
+# Pull-request runs for the same ref supersede each other. Main runs are never
+# cancelled once running: an interrupted publish-image/publish-build can leave an
+# unattested image or a draft release that a routine rerun cannot repair. A newer
+# queued main run may still replace an older run that has not started.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: test -z "$(gofmt -l cmd internal)"
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test ./...
+
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Test with race detector
+        env:
+          CGO_ENABLED: "1" # the race detector requires cgo
+        run: go test -race ./...
+
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+      - name: govulncheck
+        run: govulncheck ./...
+
+  browser-harness:
+    # Unit suites only: no browsers, extension assets or network services needed.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tests/browser
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: tests/browser/package-lock.json
+      - name: Install (lockfile)
+        run: npm ci
+      - name: Chrome harness unit tests
+        run: npm test
+      - name: Firefox harness unit tests
+        run: npm run test:firefox
+
+  npm-audit:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tests/browser
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+      - name: npm audit (high and above)
+        run: npm audit --audit-level=high
+      - name: npm audit web UI runtime dependencies (high and above)
+        # Gates only what ships in the embedded UI (react, react-dom). As of
+        # 2026-11-17 every picomatch release (used by the Vite/Vitest build and test
+        # tooling on trusted config globs, never shipped) carries GHSA-fc5q-39xc-vjpf
+        # with no patched version; see the Task 6 report.
+        working-directory: web
+        run: npm audit --omit=dev --audit-level=high
+
+  web:
+    # The sign-in UI (web/) is built into internal/webui/static and embedded in the
+    # Go binary. The committed build must match a fresh build from the lockfile.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install (lockfile)
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: Component and flow tests
+        run: npm test
+      - name: Build
+        run: npm run build
+      - name: Embedded build is up to date
+        working-directory: .
+        run: |
+          git add --intent-to-add internal/webui/static
+          git diff --exit-code --stat -- internal/webui/static
+
+  ui-smoke:
+    # Real-browser sign-in and account-security flow (tests/browser/ui-smoke.mjs) in
+    # Playwright Chromium against a disposable server built from this commit.
+    runs-on: ubuntu-latest
+    env:
+      # lib/harness.mjs defaults to <repo>/.tools/pw-browsers; install and launch must agree.
+      PLAYWRIGHT_BROWSERS_PATH: ${{ github.workspace }}/.tools/pw-browsers
+    defaults:
+      run:
+        working-directory: tests/browser
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "26"
+          cache: npm
+          cache-dependency-path: tests/browser/package-lock.json
+      - name: Install (lockfile)
+        run: npm ci
+      - name: Install Playwright Chromium and system dependencies
+        run: npx playwright install --with-deps chromium
+      - name: Sign-in UI smoke
+        # ui-smoke.mjs finds Go only through BH_GO_EXE or a local .tools/go toolchain.
+        run: BH_GO_EXE="$(command -v go)" npm run ui
+      - name: Client connection consent smoke
+        run: BH_GO_EXE="$(command -v go)" npm run connect
+
+  docker:
+    # Build both targets without publishing; exercise host/updater failure paths.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: GeoLite updater lifecycle tests
+        run: sh scripts/docker/test-geoip-update.sh
+      - name: Docker maintenance lifecycle tests
+        run: bash scripts/docker/test-maintain.sh
+      - name: Docker offline rollback data retention tests
+        run: sh scripts/docker/test-restore-volume.sh
+      - name: Restricted Docker update worker regression tests
+        run: bash scripts/docker/test-admin-updates.sh
+      - name: Browser-approved Docker image persistence tests
+        run: sudo --preserve-env=PATH bash scripts/docker/test-image-env.sh
+      - name: Debian maintenance regression tests
+        run: bash scripts/debian/test-maintenance.sh
+      - name: Debian installer lifecycle regression tests
+        # Installer fixtures assert root-owned binaries, units and queue state.
+        run: sudo --preserve-env=PATH bash scripts/debian/test-bookmarksync.sh
+      - name: Debian approval queue regression tests
+        run: sudo --preserve-env=PATH bash scripts/debian/test-update-queue.sh
+      - name: Debian GeoLite regression tests
+        run: |
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/bookmarksync-geoip-test" ./cmd/bookmarksync
+          sudo env BOOKMARKSYNC_TEST_BINARY="$RUNNER_TEMP/bookmarksync-geoip-test" bash scripts/debian/test-update-geoip.sh
+      - name: Validate Compose configuration
+        run: docker compose --profile geoip config --quiet
+      - name: Isolated Docker image and runtime regression
+        run: sudo --preserve-env=PATH bash scripts/docker/test-runtime.sh
+
+  build:
+    needs: [test, race, govulncheck, browser-harness, npm-audit, web, ui-smoke, docker]
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Prepare build output directory
+        shell: bash
+        run: mkdir -p dist
+      - name: Build linux/amd64
+        env:
+          GOOS: linux
+          GOARCH: amd64
+          COMMIT: ${{ github.sha }}
+          OUT: dist/bookmarksync-linux-amd64
+        run: |
+          # Commit-based build date keeps builds reproducible for a given SHA.
+          BUILD_DATE="$(git show -s --format=%cI "$COMMIT")"
+          pkg=github.com/atikansari-ghr/BookmarksSync/internal/version
+          go build -trimpath \
+            -ldflags "-s -w -X ${pkg}.Version=0.0.0-${COMMIT:0:12} -X ${pkg}.Commit=${COMMIT} -X ${pkg}.Date=${BUILD_DATE}" \
+            -o "$OUT" ./cmd/bookmarksync
+      - name: Upload build for release assembly
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bookmarksync-linux-amd64
+          path: dist/bookmarksync-linux-amd64
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-build:
+    # A successful push to main becomes a SHA-addressed prerelease. Pull requests
+    # and manually dispatched workflows never publish assets.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # Catalog-visible binary releases require an available, attested image too.
+    needs: [build, publish-image]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: bookmarksync-linux-amd64
+          path: dist
+      - name: Prepare release manifest and checksums
+        env:
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test -s dist/bookmarksync-linux-amd64
+          BUILD_DATE="$(git show -s --format=%cI "$COMMIT")"
+          printf 'commit=%s\nbuild_date=%s\nversion=0.0.0-%s\n' \
+            "$COMMIT" "$BUILD_DATE" "${COMMIT:0:12}" > dist/BUILD_INFO.txt
+          (cd dist && sha256sum bookmarksync-linux-amd64 BUILD_INFO.txt > SHA256SUMS)
+      - name: Attest release files
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-path: 'dist/*'
+      - name: Create and publish immutable-ready prerelease
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          tag="build-${COMMIT}"
+          gh release create "$tag" dist/bookmarksync-linux-amd64 dist/BUILD_INFO.txt dist/SHA256SUMS \
+            --draft --prerelease --latest=false --target "$COMMIT" \
+            --title "Build ${COMMIT:0:12}" \
+            --notes "Successful main-branch build for commit ${COMMIT}. Verify binary provenance with: gh attestation verify <binary> -R atikansari-ghr/BookmarksSync"
+          gh release edit "$tag" --draft=false
+
+  publish-image:
+    # No registry credentials or write permissions enter pull-request jobs.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Build and publish SHA-addressed Linux image
+        id: image
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_ACTOR: ${{ github.actor }}
+          REPOSITORY: ${{ github.repository }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${REPOSITORY,,}"
+          build_date="$(git show -s --format=%cI "$COMMIT")"
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io --username "$GH_ACTOR" --password-stdin
+          docker buildx create --name bookmarksync-release --driver docker-container --use
+          docker buildx build --platform linux/amd64 --pull --push --provenance=mode=max \
+            --build-arg "BOOKMARKSYNC_VERSION=0.0.0-${COMMIT:0:12}" \
+            --build-arg "BOOKMARKSYNC_COMMIT=$COMMIT" --build-arg "BOOKMARKSYNC_DATE=$build_date" \
+            --label "org.opencontainers.image.source=https://github.com/$REPOSITORY" \
+            --label "org.opencontainers.image.revision=$COMMIT" \
+            --label "org.opencontainers.image.created=$build_date" \
+            --tag "$image:build-$COMMIT" --metadata-file "$RUNNER_TEMP/image-metadata.json" .
+          digest="$(jq -er '."containerimage.digest"' "$RUNNER_TEMP/image-metadata.json")"
+          [[ "$digest" =~ ^sha256:[a-f0-9]{64}$ ]]
+          printf 'name=%s\ndigest=%s\n' "$image" "$digest" >> "$GITHUB_OUTPUT"
+      - name: Attest published image digest
+        uses: actions/attest@508db95dd578ae2727ebd6217d5ba78e4fbda05d # v4.2.1
+        with:
+          subject-name: ${{ steps.image.outputs.name }}
+          subject-digest: ${{ steps.image.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+      - name: Remove registry credentials
+        if: always()
+        run: docker logout ghcr.io

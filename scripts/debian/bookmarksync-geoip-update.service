@@ -1,0 +1,15 @@
+# Managed by BookmarksSync GeoLite setup.
+[Unit]
+Description=Update the BookmarksSync GeoLite2 Country database
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/bookmarksync-update-geoip
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+TimeoutStartSec=10min

@@ -1,0 +1,7 @@
+# Opt in only after the root-owned host worker has been installed.
+services:
+  bookmarksync:
+    environment:
+      BOOKMARKSYNC_DOCKER_UPDATE_QUEUE: /run/bookmarksync/update-queue
+    volumes:
+      - /var/lib/bookmarksync-docker-updates/inbox:/run/bookmarksync/update-queue

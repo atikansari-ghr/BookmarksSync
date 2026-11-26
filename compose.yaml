@@ -1,0 +1,78 @@
+services:
+  bookmarksync:
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BOOKMARKSYNC_VERSION: ${BOOKMARKSYNC_VERSION:-dev}
+        BOOKMARKSYNC_COMMIT: ${BOOKMARKSYNC_COMMIT:-unknown}
+        BOOKMARKSYNC_DATE: ${BOOKMARKSYNC_DATE:-unknown}
+    image: ${BOOKMARKSYNC_IMAGE:-bookmarksync:local}
+    restart: unless-stopped
+    ports:
+      - "${BOOKMARKSYNC_HTTP_BIND:-127.0.0.1}:${BOOKMARKSYNC_HTTP_PORT:-8080}:8080"
+    environment:
+      BOOKMARKSYNC_LISTEN: 0.0.0.0:8080
+      BOOKMARKSYNC_DATA_DIR: /var/lib/bookmarksync
+      BOOKMARKSYNC_PUBLIC_URL: ${BOOKMARKSYNC_PUBLIC_URL:-}
+      BOOKMARKSYNC_MANAGEMENT_CIDRS: ${BOOKMARKSYNC_MANAGEMENT_CIDRS:-}
+      BOOKMARKSYNC_GEOIP_DB: /geo/GeoLite2-Country.mmdb
+      BOOKMARKSYNC_TRUSTED_PROXIES: ${BOOKMARKSYNC_TRUSTED_PROXIES:-}
+      BOOKMARKSYNC_OIDC_GOOGLE_CLIENT_ID: ${BOOKMARKSYNC_OIDC_GOOGLE_CLIENT_ID:-}
+      BOOKMARKSYNC_OIDC_GOOGLE_CLIENT_SECRET: ${BOOKMARKSYNC_OIDC_GOOGLE_CLIENT_SECRET:-}
+      BOOKMARKSYNC_OIDC_AUTHENTIK_ISSUER: ${BOOKMARKSYNC_OIDC_AUTHENTIK_ISSUER:-}
+      BOOKMARKSYNC_OIDC_AUTHENTIK_CLIENT_ID: ${BOOKMARKSYNC_OIDC_AUTHENTIK_CLIENT_ID:-}
+      BOOKMARKSYNC_OIDC_AUTHENTIK_CLIENT_SECRET: ${BOOKMARKSYNC_OIDC_AUTHENTIK_CLIENT_SECRET:-}
+      BOOKMARKSYNC_RCLONE_BINARY: /usr/local/bin/rclone
+      BOOKMARKSYNC_RCLONE_CONFIG: /run/bookmarksync/rclone/rclone.conf
+    volumes:
+      - bookmarksync-data:/var/lib/bookmarksync
+      - ${BOOKMARKSYNC_GEOIP_DIR:-./geoip}:/geo:ro
+      - bookmarksync-rclone-config:/run/bookmarksync/rclone
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=${BOOKMARKSYNC_TMPFS_SIZE:-1g}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  geoip-updater:
+    profiles: [geoip]
+    platform: linux/amd64
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: geoip-updater
+      args:
+        BOOKMARKSYNC_VERSION: ${BOOKMARKSYNC_VERSION:-dev}
+        BOOKMARKSYNC_COMMIT: ${BOOKMARKSYNC_COMMIT:-unknown}
+        BOOKMARKSYNC_DATE: ${BOOKMARKSYNC_DATE:-unknown}
+    image: bookmarksync-geoip:local
+    restart: unless-stopped
+    environment:
+      BOOKMARKSYNC_GEOIP_INTERVAL: ${BOOKMARKSYNC_GEOIP_INTERVAL:-86400}
+    secrets:
+      - source: maxmind_config
+        target: maxmind_config
+        uid: "65532"
+        gid: "65532"
+        mode: 0400
+    volumes:
+      - ${BOOKMARKSYNC_GEOIP_DIR:-./geoip}:/geo
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+secrets:
+  maxmind_config:
+    file: ${BOOKMARKSYNC_MAXMIND_CONFIG:-./secrets/GeoIP.conf}
+
+volumes:
+  bookmarksync-data:
+  bookmarksync-rclone-config:
