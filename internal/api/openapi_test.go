@@ -230,7 +230,7 @@ func TestOpenAPIOperationsDocumentSuccessContracts(t *testing.T) {
 	// accidental omission of requestBody while allowing bodyless POST actions.
 	bodyOperations := map[string]bool{
 		"pollLoginFlow": true, "approveLoginFlow": true, "passwordLogin": true, "changePassword": true, "updateSettings": true,
-		"createToken": true, "createConnection": true, "createBookmark": true,
+		"createToken": true, "createConnection": true, "renameConnection": true, "createBookmark": true,
 		"updateBookmark": true, "createFolder": true, "updateFolder": true,
 		"reorderFolderChildren": true, "grantShare": true, "updateShare": true,
 		"adminCreateUser": true, "adminUpdateUser": true, "reauthenticate": true,
@@ -272,7 +272,7 @@ func TestOpenAPIOperationsDocumentSuccessContracts(t *testing.T) {
 		"get /me/settings": {"200"}, "patch /me/settings": {"200"}, "get /me/dashboard": {"200"},
 		"get /me/tokens": {"200"}, "post /me/tokens": {"201"},
 		"delete /me/tokens/{id}": {"204"}, "get /me/connections": {"200"},
-		"post /me/connections": {"201"}, "delete /me/connections/{id}": {"204"},
+		"post /me/connections": {"201"}, "patch /me/connections/{id}": {"200"}, "delete /me/connections/{id}": {"204"},
 		"get /bookmarks": {"200"}, "post /bookmarks": {"201"},
 		"get /bookmarks/{id}": {"200"}, "patch /bookmarks/{id}": {"200"},
 		"post /bookmarks/bulk-move": {"204"},
@@ -419,6 +419,8 @@ func TestOpenAPIClientSchemasIncludeCriticalFields(t *testing.T) {
 		"TokenCreated":          {"token", "secret"},
 		"ConnectionCreated":     {"connection", "secret"},
 	}
+	want["ConnectionRenameRequest"] = []string{"label"}
+	want["ConnectionResponse"] = []string{"connection"}
 	for schemaName, properties := range want {
 		schema, ok := spec.Components.Schemas[schemaName]
 		if !ok {
@@ -491,6 +493,29 @@ func TestOpenAPIContractsMatchHandlerEdgeCases(t *testing.T) {
 		if !yamlEnumIs(kind, "private", "share") {
 			t.Errorf("%s.kind must enumerate the two credential kinds returned by the service", schemaName)
 		}
+	}
+	// Connection naming: rename returns metadata only and approval names are optional.
+	if !schemaRequired(spec.Components.Schemas["ConnectionRenameRequest"], "label") || spec.Components.Schemas["ConnectionRenameRequest"].AdditionalProperties != false {
+		t.Error("ConnectionRenameRequest must require label and reject other properties")
+	}
+	if _, leaks := spec.Components.Schemas["ConnectionResponse"].Properties["secret"]; leaks {
+		t.Error("ConnectionResponse must not expose a secret")
+	}
+	if rename := spec.Paths["/me/connections/{id}"]["patch"]; rename.Recent || rename.OperationID != "renameConnection" {
+		t.Errorf("renameConnection must be documented without x-recent-auth: %+v", rename.OperationID)
+	}
+	approve := spec.Paths["/auth/connect/approve"]["post"]
+	if approve.RequestBody == nil {
+		t.Fatal("approveLoginFlow has no request body")
+	}
+	approveSchema := approve.RequestBody.Content["application/json"].Schema
+	approveProps, _ := approveSchema["properties"].(map[string]any)
+	label, _ := approveProps["label"].(map[string]any)
+	if label == nil || label["type"] != "string" || label["maxLength"] != 200 {
+		t.Errorf("approveLoginFlow.label must be a documented string of at most 200 characters: %v", label)
+	}
+	if required, _ := approveSchema["required"].([]any); len(required) != 2 {
+		t.Errorf("approveLoginFlow must keep only flow and sessionId required: %v", required)
 	}
 	for operationID, max := range map[string]float64{"listBookmarks": 200, "listTrash": 1000, "adminListUsers": 200} {
 		var found bool

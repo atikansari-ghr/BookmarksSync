@@ -62,6 +62,7 @@ type Identity interface {
 	CreateCredential(context.Context, identity.NewCredential) (identity.Credential, string, error)
 	ListCredentials(context.Context, int64) ([]identity.CredentialInfo, error)
 	RevokeUserCredential(context.Context, int64, int64) error
+	RenameCredential(context.Context, int64, int64, string) (identity.CredentialInfo, error)
 	Settings(context.Context, int64) (map[string]string, error)
 	UpdateSettings(context.Context, int64, map[string]*string) (map[string]string, error)
 	UserSettingDefaults(context.Context, int64) (map[string]string, error)
@@ -282,6 +283,7 @@ var routePolicies = []RouteInfo{
 	{Method: "DELETE", Path: "/api/v1/me/tokens/{id}"},
 	{Method: "GET", Path: "/api/v1/me/connections"},
 	{Method: "POST", Path: "/api/v1/me/connections", Recent: true},
+	{Method: "PATCH", Path: "/api/v1/me/connections/{id}"},
 	{Method: "DELETE", Path: "/api/v1/me/connections/{id}"},
 	{Method: "GET", Path: "/api/v1/bookmarks", TokenScope: identity.ScopeBookmarksRead},
 	{Method: "POST", Path: "/api/v1/bookmarks", TokenScope: identity.ScopeBookmarksWrite},

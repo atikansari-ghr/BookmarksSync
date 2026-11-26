@@ -17,12 +17,53 @@ describe('client connection consent', () => {
       'POST /api/v1/auth/connect/approve': { status: 200, body: { status: 'approved' } },
     })
     render(<App />)
+    const user = userEvent.setup()
     const approve = await screen.findByRole('button', { name: 'Approve connection' })
     expect(screen.getByText(/read, create, change and delete/)).toBeInTheDocument()
     expect(api.find('POST', '/api/v1/auth/connect/approve')).toHaveLength(0)
-    await userEvent.click(approve)
+    await user.type(screen.getByLabelText('Connection name'), '  BookmarksSync-Home-Firefox  ')
+    await user.click(approve)
     expect(await screen.findByRole('heading', { name: 'Connection approved' })).toBeInTheDocument()
-    expect(api.find('POST', '/api/v1/auth/connect/approve')[0].body).toEqual({ flow, sessionId: 7 })
+    expect(api.find('POST', '/api/v1/auth/connect/approve')[0].body).toEqual({ flow, sessionId: 7, label: 'BookmarksSync-Home-Firefox' })
+    expect(api.find('GET', '/api/v1/auth/connect')).toHaveLength(1)
+  })
+
+  it('asks for the Floccus profile name honestly and refuses a blank name', async () => {
+    const api = mockServer({
+      'GET /api/v1/auth/session': { status: 200, body: sessionState() },
+      'GET /api/v1/me/settings': { status: 200, body: { settings: {} } },
+      'GET /api/v1/auth/connect': { status: 200, body: { status: 'pending' } },
+      'POST /api/v1/auth/connect/approve': { status: 200, body: { status: 'approved' } },
+    })
+    render(<App />)
+    const user = userEvent.setup()
+    const approve = await screen.findByRole('button', { name: 'Approve connection' })
+    const name = screen.getByLabelText('Connection name') as HTMLInputElement
+    expect(name.value).toBe('')
+    expect(name).toBeRequired()
+    expect(name.maxLength).toBe(200)
+    expect(name).toHaveAccessibleDescription('Use the same name as your Floccus profile. Floccus does not send its label to the server.')
+    await user.click(approve)
+    expect(await screen.findByRole('alert')).toHaveTextContent('Enter a connection name')
+    await user.type(name, '   ')
+    await user.click(approve)
+    expect(api.find('POST', '/api/v1/auth/connect/approve')).toHaveLength(0)
+    expect(screen.queryByRole('heading', { name: 'Connection approved' })).not.toBeInTheDocument()
+  })
+
+  it('keeps the typed name and shows the error when approval fails', async () => {
+    mockServer({
+      'GET /api/v1/auth/session': { status: 200, body: sessionState() },
+      'GET /api/v1/me/settings': { status: 200, body: { settings: {} } },
+      'GET /api/v1/auth/connect': { status: 200, body: { status: 'pending' } },
+      'POST /api/v1/auth/connect/approve': err(500, 'internal', 'boom'),
+    })
+    render(<App />)
+    const user = userEvent.setup()
+    await user.type(await screen.findByLabelText('Connection name'), 'Work laptop')
+    await user.click(screen.getByRole('button', { name: 'Approve connection' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('could not be approved')
+    expect((screen.getByLabelText('Connection name') as HTMLInputElement).value).toBe('Work laptop')
   })
 
   it('continues password login to consent without approving automatically', async () => {

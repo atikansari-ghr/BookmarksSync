@@ -10,6 +10,10 @@ import (
 
 const LoginFlowLifetime = 20 * time.Minute
 
+// DefaultLoginFlowLabel names credentials from approvals that do not choose a
+// connection name, matching the label used before names could be chosen.
+const DefaultLoginFlowLabel = "Login Flow v2 connection"
+
 var ErrLoginFlowCapacity = errors.New("login flow capacity reached")
 
 // BeginLoginFlow bounds durable anonymous state and returns independent browser
@@ -56,12 +60,19 @@ func (s *Service) LoginFlowPending(ctx context.Context, browser string) error {
 	return err
 }
 
-// ApproveLoginFlow binds consent to this live recently authenticated session. A
-// second approval cannot transfer the flow to another account or session.
-func (s *Service) ApproveLoginFlow(ctx context.Context, browser string, sessionID int64) error {
+// ApproveLoginFlow binds consent to this live recently authenticated session and
+// records the connection name the credential will receive. The label is trimmed
+// and validated like a connection rename; an invalid label (ErrInvalid) leaves the
+// flow pending. A second approval cannot transfer the flow to another account or
+// session.
+func (s *Service) ApproveLoginFlow(ctx context.Context, browser string, sessionID int64, label string) error {
+	label, err := normalizeConnectionLabel(label)
+	if err != nil {
+		return err
+	}
 	now := s.now().UnixMilli()
-	res, err := s.db.ExecContext(ctx, `UPDATE login_flows_v2 SET session_id=?3 WHERE browser_hash=?4 AND expires_at>?1 AND session_id IS NULL
- AND EXISTS(SELECT 1 FROM web_sessions ws WHERE ws.id=?3 AND `+liveSessionSQL+` AND ws.authenticated_at>?1-300000)`, now, SessionIdleTimeout.Milliseconds(), sessionID, hashSecret(browser))
+	res, err := s.db.ExecContext(ctx, `UPDATE login_flows_v2 SET session_id=?3, credential_label=?5 WHERE browser_hash=?4 AND expires_at>?1 AND session_id IS NULL
+ AND EXISTS(SELECT 1 FROM web_sessions ws WHERE ws.id=?3 AND `+liveSessionSQL+` AND ws.authenticated_at>?1-300000)`, now, SessionIdleTimeout.Milliseconds(), sessionID, hashSecret(browser), label)
 	if err != nil {
 		return err
 	}
@@ -86,7 +97,8 @@ func (s *Service) PollLoginFlow(ctx context.Context, poll string) (username, sec
 	}
 	defer tx.Rollback()
 	var sid int64
-	err = tx.QueryRowContext(ctx, `DELETE FROM login_flows_v2 WHERE poll_hash=? AND expires_at>? AND session_id IS NOT NULL RETURNING session_id`, hashSecret(poll), s.now().UnixMilli()).Scan(&sid)
+	var label string
+	err = tx.QueryRowContext(ctx, `DELETE FROM login_flows_v2 WHERE poll_hash=? AND expires_at>? AND session_id IS NOT NULL RETURNING session_id, credential_label`, hashSecret(poll), s.now().UnixMilli()).Scan(&sid, &label)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", "", ErrNotFound
 	}
@@ -108,7 +120,7 @@ func (s *Service) PollLoginFlow(ctx context.Context, poll string) (username, sec
 	if err != nil {
 		return "", "", err
 	}
-	res, err := tx.ExecContext(ctx, `INSERT INTO credentials(user_id,label,secret_hash,kind,share_id,mode,created_at) VALUES(?,?,?,'private',NULL,'edit',?)`, uid, "Login Flow v2 connection", hashSecret(random), s.now().UnixMilli())
+	res, err := tx.ExecContext(ctx, `INSERT INTO credentials(user_id,label,secret_hash,kind,share_id,mode,created_at) VALUES(?,?,?,'private',NULL,'edit',?)`, uid, label, hashSecret(random), s.now().UnixMilli())
 	if err != nil {
 		return "", "", err
 	}

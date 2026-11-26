@@ -226,6 +226,79 @@ describe('security page', () => {
     expect(srv.find('POST', '/api/v1/me/connections')).toHaveLength(2)
   })
 
+  it('renames a Floccus connection without touching its secret or access', async () => {
+    let conns = [
+      { id: 9, label: 'Login Flow v2 connection', kind: 'private', mode: 'edit', createdAt: now, lastUsedAt: null, revoked: false },
+      { id: 10, label: 'office', kind: 'private', mode: 'view', createdAt: now, lastUsedAt: null, revoked: false },
+    ]
+    const srv = mockServer(base({
+      'GET /api/v1/me/connections': () => ({ status: 200, body: { connections: conns } }),
+      'PATCH /api/v1/me/connections/9': (c) => {
+        conns = [{ ...conns[0], label: (c.body as { label: string }).label }, conns[1]]
+        return { status: 200, body: { connection: conns[0] } }
+      },
+    }))
+    render(<App />)
+    const user = userEvent.setup()
+    const sec = await screen.findByRole('region', { name: 'Floccus connections' })
+    await user.click(await within(sec).findByRole('button', { name: 'Rename Login Flow v2 connection' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Rename connection' })
+    const input = within(dialog).getByLabelText('New connection name') as HTMLInputElement
+    expect(input.value).toBe('Login Flow v2 connection')
+    expect(input.maxLength).toBe(200)
+    await user.clear(input)
+    await user.type(input, '  BookmarksSync-Home-Firefox ')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    const patches = srv.find('PATCH', '/api/v1/me/connections/9')
+    expect(patches).toHaveLength(1)
+    expect(patches[0].body).toEqual({ label: 'BookmarksSync-Home-Firefox' })
+    expect(patches[0].headers.get('X-CSRF-Token')).toBe('csrf-1')
+    expect(await within(sec).findByText('BookmarksSync-Home-Firefox')).toBeInTheDocument()
+    expect(srv.find('POST', '/api/v1/auth/reauthenticate')).toHaveLength(0)
+    expect(srv.find('POST', '/api/v1/me/connections')).toHaveLength(0)
+    expect(srv.find('DELETE', '/api/v1/me/connections/9')).toHaveLength(0)
+    // Create and Revoke stay available beside Rename.
+    expect(within(sec).getByLabelText('Connection name')).toBeInTheDocument()
+    expect(within(sec).getByRole('button', { name: 'Revoke BookmarksSync-Home-Firefox' })).toBeInTheDocument()
+    expect(within(sec).getByRole('button', { name: 'Rename office' })).toBeInTheDocument()
+  })
+
+  it('cancelling a rename writes nothing and failed renames keep the typed name', async () => {
+    const conns = [{ id: 9, label: 'laptop', kind: 'private', mode: 'edit', createdAt: now, lastUsedAt: null, revoked: false }]
+    const srv = mockServer(base({
+      'GET /api/v1/me/connections': { status: 200, body: { connections: conns } },
+      'PATCH /api/v1/me/connections/9': err(404, 'not_found', 'connection not found'),
+    }))
+    render(<App />)
+    const user = userEvent.setup()
+    const sec = await screen.findByRole('region', { name: 'Floccus connections' })
+    await user.click(await within(sec).findByRole('button', { name: 'Rename laptop' }))
+    let dialog = await screen.findByRole('dialog', { name: 'Rename connection' })
+    await user.type(within(dialog).getByLabelText('New connection name'), ' changed')
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(srv.find('PATCH', '/api/v1/me/connections/9')).toHaveLength(0)
+    expect(within(sec).getByText('laptop')).toBeInTheDocument()
+
+    await user.click(within(sec).getByRole('button', { name: 'Rename laptop' }))
+    dialog = await screen.findByRole('dialog', { name: 'Rename connection' })
+    const input = within(dialog).getByLabelText('New connection name') as HTMLInputElement
+    await user.clear(input)
+    await user.type(input, '   ')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Enter a connection name')
+    expect(srv.find('PATCH', '/api/v1/me/connections/9')).toHaveLength(0)
+
+    await user.clear(input)
+    await user.type(input, 'Home Firefox')
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }))
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('This connection no longer exists')
+    expect(screen.getByRole('dialog', { name: 'Rename connection' })).toBeInTheDocument()
+    expect((within(dialog).getByLabelText('New connection name') as HTMLInputElement).value).toBe('Home Firefox')
+    expect(srv.find('PATCH', '/api/v1/me/connections/9')).toHaveLength(1)
+  })
+
   it('sets up TOTP, shows recovery codes once, and turns it off with a code', async () => {
     let enabled = false
     const srv = mockServer(base({

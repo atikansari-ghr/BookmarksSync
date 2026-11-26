@@ -235,6 +235,17 @@ components:
         createdAt: {type: string, format: date-time}
         lastUsedAt: {type: [string, 'null'], format: date-time}
         revoked: {type: boolean}
+    ConnectionResponse:
+      type: object
+      required: [connection]
+      properties:
+        connection: {$ref: '#/components/schemas/Connection'}
+    ConnectionRenameRequest:
+      type: object
+      required: [label]
+      additionalProperties: false
+      properties:
+        label: {type: string, minLength: 1, maxLength: 200, description: 'Connection name; surrounding white space is trimmed and the result must be 1-200 characters without control characters.'}
     ConnectionList:
       type: object
       required: [connections]
@@ -965,7 +976,7 @@ paths:
   /me/tokens: {get: {operationId: listTokens, security: [{sessionCookie: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/TokenList'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: List Tokens}, post: {operationId: createToken, security: [{sessionCookie: []}], x-recent-auth: true, responses: {"201": {content: {application/json: {schema: {$ref: '#/components/schemas/TokenCreated'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/TokenCreateRequest'}}}, required: true}, summary: Create Token}}
   /me/tokens/{id}: {delete: {operationId: revokeToken, security: [{sessionCookie: []}], responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Revoke Token, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}}
   /me/connections: {get: {operationId: listConnections, security: [{sessionCookie: []}], responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/ConnectionList'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: List Connections}, post: {operationId: createConnection, security: [{sessionCookie: []}], x-recent-auth: true, responses: {"201": {content: {application/json: {schema: {$ref: '#/components/schemas/ConnectionCreated'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/ConnectionCreateRequest'}}}, required: true}, summary: Create Connection}}
-  /me/connections/{id}: {delete: {operationId: revokeConnection, security: [{sessionCookie: []}], responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Revoke Connection, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}}
+  /me/connections/{id}: {patch: {operationId: renameConnection, security: [{sessionCookie: []}], description: "Changes only the display name of one of the caller's active connections. The secret, mode, kind, share and usage are unchanged and no secret is returned. Another user's, revoked or unknown connections are not found. Requires a web session and CSRF token but not recent reauthentication.", requestBody: {content: {application/json: {schema: {$ref: '#/components/schemas/ConnectionRenameRequest'}}}, required: true}, responses: {"200": {content: {application/json: {schema: {$ref: '#/components/schemas/ConnectionResponse'}}}, description: Successful response.}, default: {$ref: '#/components/responses/Error'}}, summary: Rename Connection, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}, delete: {operationId: revokeConnection, security: [{sessionCookie: []}], responses: {"204": {description: No content.}, default: {$ref: '#/components/responses/Error'}}, summary: Revoke Connection, parameters: [{name: id, in: path, required: true, schema: {type: integer, format: int64, minimum: 1}}]}}
   /bookmarks:
     get:
       operationId: listBookmarks
@@ -1282,7 +1293,7 @@ paths:
         required: true
         content:
           application/json:
-            schema: {type: object, required: [flow, sessionId], additionalProperties: false, properties: {flow: {type: string}, sessionId: {type: integer, format: int64}}}
+            schema: {type: object, required: [flow, sessionId], additionalProperties: false, properties: {flow: {type: string}, sessionId: {type: integer, format: int64}, label: {type: string, minLength: 1, maxLength: 200, description: 'Optional connection name for the minted credential, such as the client profile name. Surrounding white space is trimmed and the result must be 1-200 characters without control characters. When omitted the legacy name "Login Flow v2 connection" is used.'}}}
       responses:
         "200":
           description: Approved for the requesting client to redeem; no credentials returned to this browser.

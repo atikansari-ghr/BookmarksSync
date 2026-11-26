@@ -338,6 +338,8 @@ func TestRoutePolicies(t *testing.T) {
 		"PATCH /api/v1/me/password":                                {Recent: true},
 		"POST /api/v1/me/tokens":                                   {Recent: true},
 		"POST /api/v1/me/connections":                              {Recent: true},
+		"PATCH /api/v1/me/connections/{id}":                        {},
+		"DELETE /api/v1/me/connections/{id}":                       {},
 		"GET /api/v1/bookmarks":                                    {TokenScope: "bookmarks:read"},
 		"POST /api/v1/bookmarks":                                   {TokenScope: "bookmarks:write"},
 		"PUT /api/v1/bookmarks/{id}/favorite":                      {TokenScope: "bookmarks:write"},

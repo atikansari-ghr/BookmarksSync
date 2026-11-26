@@ -15,7 +15,9 @@ import (
 type LoginFlowStore interface {
 	BeginLoginFlow(context.Context) (string, string, error)
 	LoginFlowPending(context.Context, string) error
-	ApproveLoginFlow(context.Context, string, int64) error
+	// ApproveLoginFlow(ctx, browser, sessionID, label) names the credential the
+	// flow will mint; an invalid label is identity.ErrInvalid.
+	ApproveLoginFlow(context.Context, string, int64, string) error
 	PollLoginFlow(context.Context, string) (string, string, error)
 }
 
@@ -118,9 +120,12 @@ func (h *Handler) inspectLoginFlow(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) approveLoginFlow(w http.ResponseWriter, r *http.Request) {
+	// Label is optional: callers that predate connection names omit it and keep
+	// the legacy name, while an explicit value is validated.
 	var in struct {
-		Flow      string `json:"flow"`
-		SessionID int64  `json:"sessionId"`
+		Flow      string  `json:"flow"`
+		SessionID int64   `json:"sessionId"`
+		Label     *string `json:"label"`
 	}
 	if !decodeBody(w, r, &in) {
 		return
@@ -134,7 +139,15 @@ func (h *Handler) approveLoginFlow(w http.ResponseWriter, r *http.Request) {
 		server.WriteError(w, http.StatusConflict, "session_changed", "your signed-in account changed; reload before approving")
 		return
 	}
-	err := h.loginFlows.ApproveLoginFlow(r.Context(), in.Flow, sess.ID)
+	label := identity.DefaultLoginFlowLabel
+	if in.Label != nil {
+		label = *in.Label
+	}
+	err := h.loginFlows.ApproveLoginFlow(r.Context(), in.Flow, sess.ID, label)
+	if errors.Is(err, identity.ErrInvalid) {
+		server.WriteError(w, http.StatusBadRequest, "invalid_request", "connection name must be 1-200 characters without control characters")
+		return
+	}
 	if errors.Is(err, identity.ErrNotFound) {
 		flowNotFound(w)
 		return

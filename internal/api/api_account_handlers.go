@@ -331,6 +331,32 @@ func (a *API) serveConnections(w http.ResponseWriter, r *http.Request) bool {
 			return true
 		}
 	}
+	if strings.HasPrefix(r.URL.Path, "/api/v1/me/connections/") && r.Method == http.MethodPatch {
+		// Renaming changes display metadata only: no secret is reissued and no
+		// permission changes, so ordinary session and CSRF protection suffice.
+		id, e := requestID(r, "id")
+		if e != nil {
+			writeDomainError(w, identity.ErrNotFound)
+			return true
+		}
+		var in struct {
+			Label *string `json:"label"`
+		}
+		if !decodeJSON(w, r, &in) {
+			return true
+		}
+		if in.Label == nil {
+			server.WriteError(w, 400, "validation_failed", "label is required")
+			return true
+		}
+		c, err := a.ids.RenameCredential(r.Context(), uid, id, *in.Label)
+		if err != nil {
+			writeDomainError(w, err)
+			return true
+		}
+		writeJSON(w, 200, map[string]any{"connection": credentialJSON(c)})
+		return true
+	}
 	if strings.HasPrefix(r.URL.Path, "/api/v1/me/connections/") && r.Method == http.MethodDelete {
 		id, e := requestID(r, "id")
 		if e != nil {

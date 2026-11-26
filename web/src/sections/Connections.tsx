@@ -1,7 +1,7 @@
-import { useState, type FormEvent } from 'react'
-import { describe, isCancelled } from '../api'
+import { useRef, useState, type FormEvent } from 'react'
+import { ApiError, describe, isCancelled } from '../api'
 import { useApp } from '../context'
-import { ConfirmDialog } from '../components/Dialog'
+import { ConfirmDialog, Dialog } from '../components/Dialog'
 import { Busy, CopyButton, Reveal, Section, formatTime } from '../components/common'
 import type { Notify } from '../pages/SecurityPage'
 import { useLoad } from './useLoad'
@@ -34,6 +34,7 @@ export function ConnectionsSection({ notify, username }: { notify: Notify; usern
   const [error, setError] = useState('')
   const [secret, setSecret] = useState('')
   const [revoking, setRevoking] = useState<Connection | null>(null)
+  const [renaming, setRenaming] = useState<Connection | null>(null)
   const shareList = shares.state === 'ready' ? shares.data : []
   const shareTitle = (id?: number) => shareList.find((s) => s.id === id)?.folderTitle
   // A view-only share can only back a read-only connection; the server refuses edit.
@@ -131,10 +132,25 @@ export function ConnectionsSection({ notify, username }: { notify: Notify; usern
                   {c.kind === 'share' ? `Shared folder${shareTitle(c.shareId) ? ` “${shareTitle(c.shareId)}”` : ''}` : 'Your bookmarks'} · {c.mode === 'edit' ? 'read and write' : 'read only'} · last used {formatTime(c.lastUsedAt)}
                 </p>
               </div>
-              <button type="button" className="btn ghost small" aria-label={`Revoke ${c.label || 'Unnamed connection'}`} onClick={() => setRevoking(c)}>Revoke</button>
+              <div className="actions">
+                <button type="button" className="btn ghost small" aria-label={`Rename ${c.label || 'Unnamed connection'}`} onClick={() => setRenaming(c)}>Rename</button>
+                <button type="button" className="btn ghost small" aria-label={`Revoke ${c.label || 'Unnamed connection'}`} onClick={() => setRevoking(c)}>Revoke</button>
+              </div>
             </li>
           ))}
         </ul>
+      )}
+      {renaming && (
+        <RenameConnectionDialog
+          connection={renaming}
+          onSave={async (name) => {
+            await client.request('PATCH', `/api/v1/me/connections/${renaming.id}`, { label: name })
+            setRenaming(null)
+            notify('Connection renamed.')
+            await reload()
+          }}
+          onClose={() => setRenaming(null)}
+        />
       )}
       {revoking && (
         <ConfirmDialog
@@ -146,5 +162,47 @@ export function ConnectionsSection({ notify, username }: { notify: Notify; usern
         />
       )}
     </Section>
+  )
+}
+
+/** Rename only: the credential, its access and its share stay exactly as they are. */
+function RenameConnectionDialog({ connection, onSave, onClose }: { connection: Connection; onSave: (name: string) => Promise<void>; onClose: () => void }) {
+  const [name, setName] = useState(connection.label)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const first = useRef<HTMLInputElement>(null)
+
+  async function save(e: FormEvent) {
+    e.preventDefault()
+    const label = name.trim()
+    if (!label) return setError('Enter a connection name, for example the name of your Floccus profile.')
+    setError('')
+    setBusy(true)
+    try {
+      await onSave(label)
+    } catch (err) {
+      if (isCancelled(err)) return
+      if (err instanceof ApiError && err.status === 404) setError('This connection no longer exists. It may have been revoked.')
+      else setError(describe(err, 'The connection could not be renamed.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <Dialog title="Rename connection" onClose={onClose} initialFocus={first}>
+      <form className="stack compact" onSubmit={save} noValidate>
+        {error && <p className="error" role="alert">{error}</p>}
+        <div className="field">
+          <label htmlFor="rename-connection-label">New connection name</label>
+          <input id="rename-connection-label" ref={first} value={name} required maxLength={200} autoComplete="off" aria-describedby="rename-connection-help" onChange={(e) => setName(e.target.value)} />
+          <small id="rename-connection-help" className="muted">Only the name shown here changes. Floccus keeps the same app password and access. This does not change the profile label inside Floccus.</small>
+        </div>
+        <div className="actions">
+          <button type="button" className="btn ghost" onClick={onClose}>Cancel</button>
+          <button type="submit" className="btn primary" disabled={busy}>{busy ? 'Saving…' : 'Save'}</button>
+        </div>
+      </form>
+    </Dialog>
   )
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import { ApiError, type SessionState } from '../api'
 import { useApp } from '../context'
 import { connectionHandle } from '../connection'
@@ -12,6 +12,8 @@ export function ConnectPage() {
   const [pending, setPending] = useState(false)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [label, setLabel] = useState('')
+  const [nameError, setNameError] = useState('')
 
   useEffect(() => {
     if (!flow) { setLoading(false); setError('This connection link is invalid. Start again from your app.'); return }
@@ -36,13 +38,20 @@ export function ConnectPage() {
     return () => { live = false }
   }, [client, flow, session?.user.id])
 
-  async function approve() {
-    setBusy(true); setError('')
+  async function approve(e: FormEvent) {
+    e.preventDefault()
+    const name = label.trim()
+    setError('')
+    // Stock Floccus keeps its profile label locally and never sends it, so the
+    // server can only store a name the user types here.
+    if (!name) { setNameError('Enter a connection name, for example the name of your Floccus profile.'); return }
+    setNameError('')
+    setBusy(true)
     try {
-      await client.request('POST', '/api/v1/auth/connect/approve', { flow, sessionId: session?.session.id })
+      await client.request('POST', '/api/v1/auth/connect/approve', { flow, sessionId: session?.session.id, label: name })
       setApproved(true)
-    } catch (e) {
-      setError(e instanceof ApiError && e.status === 404 ? 'This connection request has expired or was already used. Start again from your app.' : 'The connection could not be approved. Try again.')
+    } catch (err) {
+      setError(err instanceof ApiError && err.status === 404 ? 'This connection request has expired or was already used. Start again from your app.' : 'The connection could not be approved. Try again.')
     } finally { setBusy(false) }
   }
 
@@ -59,7 +68,15 @@ export function ConnectPage() {
       {session && pending && <>
         <p>Signed in as <strong>{session.user.username}</strong>. Approving lets the app read, create, change and delete your private bookmarks and folders.</p>
         <p className="muted">Approve only if you just started this connection from your own app. The app receives its own revocable credential; your sign-in password stays private.</p>
-        <div className="actions"><button className="btn primary" disabled={busy} onClick={() => void approve()}>{busy ? 'Approving…' : 'Approve connection'}</button><a className="btn" href="/auth/security">Cancel</a></div>
+        <form className="stack compact" onSubmit={(e) => void approve(e)} noValidate>
+          {nameError && <p className="error" role="alert">{nameError}</p>}
+          <div className="field">
+            <label htmlFor="connect-label">Connection name</label>
+            <input id="connect-label" value={label} required maxLength={200} autoComplete="off" aria-describedby="connect-label-help" aria-invalid={nameError ? true : undefined} onChange={(e) => setLabel(e.target.value)} />
+            <small id="connect-label-help" className="muted">Use the same name as your Floccus profile. Floccus does not send its label to the server.</small>
+          </div>
+          <div className="actions"><button type="submit" className="btn primary" disabled={busy}>{busy ? 'Approving…' : 'Approve connection'}</button><a className="btn" href="/auth/security">Cancel</a></div>
+        </form>
       </>}
     </>}
   </div></AuthLayout>

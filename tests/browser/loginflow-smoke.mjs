@@ -10,6 +10,28 @@ import { makeRunRoot, removeRunRoot, findGo, pickLoopbackPort, startProcessServe
 
 const results = []
 const wizardScreenshots = process.argv.includes('--screenshots')
+// Stock floccus keeps its profile label locally and starts Login Flow with only the
+// server URL, so the consent page asks the user to type the same name. Fill it like
+// a user would, then prove the server stored it on the credential the client got.
+const approveNamed = async (consentPage, name) => {
+  const field = consentPage.getByLabel('Connection name', { exact: true })
+  await field.waitFor()
+  assert.equal(await field.inputValue(), '', 'connection name must start empty (no generated label)')
+  await field.fill(name)
+  await consentPage.getByRole('button', { name: 'Approve connection' }).click()
+}
+const assertServerLabel = async (request, origin, appPassword, label) => {
+  const id = Number(/^bms1\.(\d+)\./.exec(appPassword)?.[1])
+  assert.ok(Number.isSafeInteger(id) && id > 0, 'issued app password must carry its connection id')
+  const res = await request.get(origin + '/api/v1/me/connections')
+  assert.equal(res.status(), 200)
+  const { connections } = await res.json()
+  const connection = (connections || []).find(c => c.id === id)
+  assert.ok(connection, 'issued credential must be listed in the owner\'s connections')
+  assert.equal(connection.label, label, 'server connection label must equal the typed name')
+  assert.equal(connection.mode, 'edit')
+  assert.ok(!connection.revoked)
+}
 let stock
 const secrets = []
 const runRoot = makeRunRoot()
@@ -45,6 +67,9 @@ try {
   await page.getByRole('button', { name: 'Sign in', exact: true }).click()
   await page.getByRole('button', { name: 'Approve connection' }).waitFor()
   assert.equal((await poll()).status, 404)
+  const defaultLabel = 'Login flow smoke'
+  assert.equal(await page.getByLabel('Connection name', { exact: true }).inputValue(), '', 'connection name must start empty')
+  await page.getByLabel('Connection name', { exact: true }).fill(defaultLabel)
   fs.mkdirSync(RESULTS_DIR, { recursive: true })
   for (const [name, viewport] of [['desktop', { width: 1440, height: 1000 }], ['mobile', { width: 390, height: 844 }]]) {
     await page.setViewportSize(viewport)
@@ -63,12 +88,24 @@ try {
   const rest = await fetch(origin + '/index.php/apps/bookmarks/public/rest/v2/folder', { headers: { Authorization: 'Basic ' + Buffer.from(credential.loginName + ':' + credential.appPassword).toString('base64') } })
   assert.equal(rest.status, 200, 'issued credential must authenticate to actual Floccus route')
   assert.equal((await poll()).status, 404)
+  await assertServerLabel(context.request, origin, credential.appPassword, defaultLabel)
   const storage = await page.evaluate(() => ({ local: localStorage.length, session: sessionStorage.length, cookie: document.cookie }))
   assert.equal(storage.local, 0)
   assert.equal(storage.session, 0)
   assert.equal(storage.cookie.includes('bookmarksync'), false)
-  results.push({ name: 'real password login → explicit consent → one-time app credential → Floccus folder API', status: 'PASS' })
+  results.push({ name: 'real password login → named explicit consent → one-time app credential → Floccus folder API → server label', status: 'PASS' })
   results.push({ name: 'desktop/mobile layout and script-inaccessible secrets', status: 'PASS' })
+  // Exercise the real Settings control and keep using the original app password.
+  await page.goto(origin + '/auth/security')
+  await page.getByRole('button', { name: `Rename ${defaultLabel}`, exact: true }).click()
+  const rename = page.getByRole('dialog', { name: 'Rename connection', exact: true })
+  await rename.getByLabel('New connection name', { exact: true }).fill('BookmarksSync-Home-Firefox')
+  await rename.getByRole('button', { name: 'Save', exact: true }).click()
+  await page.getByRole('button', { name: 'Rename BookmarksSync-Home-Firefox', exact: true }).waitFor()
+  await assertServerLabel(context.request, origin, credential.appPassword, 'BookmarksSync-Home-Firefox')
+  assert.equal((await fetch(origin + '/index.php/apps/bookmarks/public/rest/v2/folder', { headers: { Authorization: 'Basic ' + Buffer.from(credential.loginName + ':' + credential.appPassword).toString('base64') } })).status, 200)
+  await page.screenshot({ path: path.join(RESULTS_DIR, 'connection-renamed.png'), fullPage: true })
+  results.push({ name: 'Settings rename to BookmarksSync-Home-Firefox preserves original Floccus app password', status: 'PASS' })
   if (process.argv.includes('--stock') || process.argv.includes('--wizard')) {
     stock = await launchWithExtension({ browser: 'chrome', headless: true })
     const extensionPage = await openExtensionPage(stock.pageContext, stock.extensionId)
@@ -76,6 +113,8 @@ try {
       // Set up only native test bookmarks. Profile credentials/configuration are
       // created entirely through the unmodified extension's visible wizard.
       const folderTitle = 'Login Flow Wizard Smoke'
+      // Typed once into the stock wizard and once into the website consent page.
+      const profileLabel = 'Wizard acceptance'
       const testFolder = await createSandboxFolder(stock.serviceWorker, folderTitle)
       await stock.serviceWorker.evaluate(async id => {
         await chrome.bookmarks.create({ parentId: id, title: 'Wizard acceptance bookmark', url: 'https://example.com/login-flow-wizard' })
@@ -119,7 +158,7 @@ try {
       await stepButton(step, 'Continue').click()
       // Step 1: profile label.
       step = await activeStep('Profile label')
-      await step.getByLabel('Profile label', { exact: true }).fill('Wizard acceptance')
+      await step.getByLabel('Profile label', { exact: true }).fill(profileLabel)
       await stepButton(step, 'Continue').click()
       // Step 2: server URL → Connect (stock server test) → Sign in with Nextcloud.
       step = await activeStep('Which server do you want to sync to?')
@@ -138,7 +177,7 @@ try {
       await consentPage.getByLabel('Username', { exact: true }).fill('connect-smoke')
       await consentPage.getByLabel('Password', { exact: true }).fill(password)
       await consentPage.getByRole('button', { name: 'Sign in', exact: true }).click()
-      await consentPage.getByRole('button', { name: 'Approve connection' }).click()
+      await approveNamed(consentPage, profileLabel)
       await consentPage.getByRole('heading', { name: 'Connection approved' }).waitFor()
       diagPage = wizard
       // Step 3: the wizard advances after its own poll receives credentials.
@@ -180,8 +219,10 @@ try {
       assert.equal(account.url, origin)
       assert.equal(account.username, 'connect-smoke')
       assert.equal(account.localRoot, browserRoot, 'chooser must save the absolute browser root')
-      assert.equal(account.label, 'Wizard acceptance')
+      assert.equal(account.label, profileLabel)
       assert.match(account.password, /^bms1\.\d+\.[A-Za-z0-9_-]{43}$/)
+      // The connection minted for this exact credential carries the local profile label.
+      await assertServerLabel(stock.pageContext.request, origin, account.password, account.label)
       const headers = { Authorization: 'Basic ' + Buffer.from(account.username + ':' + account.password).toString('base64') }
       assert.equal((await fetch(origin + '/index.php/apps/bookmarks/public/rest/v2/folder', { headers })).status, 200)
       // Stock background sync (same message the stock UI posts); the default
@@ -206,7 +247,7 @@ try {
         return Object.values(accounts || {}).map(a => a.type)
       })
       assert.deepEqual(after, ['nextcloud-bookmarks'], 'still exactly one saved profile after sync')
-      results.push({ name: 'stock floccus 5.13.0 Chrome wizard: type/URL → consent → saved profile → native bookmark upload', status: 'PASS' })
+      results.push({ name: 'stock floccus 5.13.0 Chrome wizard: type/label/URL → named consent → saved profile → server label equals local profile label → native bookmark upload', status: 'PASS' })
     } else {
     await extensionPage.waitForFunction(() => {
       for (const element of document.querySelectorAll('*')) {
@@ -231,7 +272,8 @@ try {
     await consentPage.getByLabel('Username', { exact: true }).fill('connect-smoke')
     await consentPage.getByLabel('Password', { exact: true }).fill(password)
     await consentPage.getByRole('button', { name: 'Sign in', exact: true }).click()
-    await consentPage.getByRole('button', { name: 'Approve connection' }).click()
+    const stockLabel = 'Stock login action'
+    await approveNamed(consentPage, stockLabel)
     await extensionPage.waitForFunction(() => !!window.__connectionCheck, undefined, { timeout: 15000 })
     const returned = await extensionPage.evaluate(() => window.__connectionCheck)
     if (returned.credentials?.password) secrets.push(returned.credentials.password)
@@ -239,7 +281,8 @@ try {
     assert.equal(returned.credentials.username, 'connect-smoke')
     const usable = await fetch(origin + '/index.php/apps/bookmarks/public/rest/v2/folder', { headers: { Authorization: 'Basic ' + Buffer.from(returned.credentials.username + ':' + returned.credentials.password).toString('base64') } })
     assert.equal(usable.status, 200, 'stock extension must receive a usable application credential')
-    results.push({ name: 'stock floccus 5.13.0 login action opens consent and receives usable credentials', status: 'PASS' })
+    await assertServerLabel(stock.pageContext.request, origin, returned.credentials.password, stockLabel)
+    results.push({ name: 'stock floccus 5.13.0 login action opens named consent and receives usable, labelled credentials', status: 'PASS' })
     }
   }
   exitCode = 0
